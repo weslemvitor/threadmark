@@ -1,0 +1,325 @@
+# Threadmark
+
+Threadmark é uma central de suporte local-first que organiza conversas recebidas pelo WhatsApp em tickets e contexto operacional. Grupos e pessoas permanecem entidades nativas, enquanto o Diretório permite modelar organizações, projetos, produtos ou qualquer outro contexto por meio de registros personalizados. A captura é estritamente de entrada: o produto não possui composer, endpoint de envio nem automação de respostas no WhatsApp.
+
+A persistência operacional de mensagens, anexos, configurações e investigações fica na máquina do operador. Quando um provedor remoto de IA é configurado, o recorte sanitizado necessário à tarefa é enviado a esse provedor. Uma sugestão de resposta só pode ser copiada e enviada manualmente pela equipe no aplicativo oficial.
+
+> Threadmark usa o Baileys, um cliente não oficial e não afiliado ao WhatsApp ou à Meta. Avalie os termos aplicáveis e use apenas uma conta autorizada pela sua organização.
+
+> A versão `0.2.x` continua em fase comunitária inicial e é validada de ponta a ponta somente no macOS. Faça backup antes de atualizar e não trate o conector não oficial como infraestrutura sem plano de contingência.
+
+## Principais recursos
+
+- Captura de histórico recuperado e novas mensagens de grupos, com deduplicação entre sincronizações e reconexões.
+- Conversas completas no estilo WhatsApp, sem transformar automaticamente cada mensagem em ticket.
+- Triagem supervisionada com janela de silêncio configurável, agrupamento semântico, espera por contexto e atualização de sugestões existentes.
+- Seleção manual de mensagens para criar um ticket, anexar a um caso existente, guardar como contexto ou restaurar itens revisados.
+- Diretório agnóstico com grupos, pessoas, tipos de registro, campos personalizados, relações e segmentos salvos.
+- Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período e exportação.
+- Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
+- Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.
+- Broker de ferramentas tipadas readonly, disponível somente dentro da sala manual.
+- Cockpit OpenTUI para acompanhar fila, tickets, grupos, captura e investigações.
+- SQLite como fonte de verdade e arquivos locais com permissões restritivas.
+
+## Invariantes de segurança
+
+- Nunca existe envio de mensagem pelo Threadmark.
+- Mensagens da própria equipe são contexto e não abrem tickets.
+- Casos ambíguos permanecem em revisão; não são descartados silenciosamente.
+- Conteúdo de mensagens, anexos e documentos é tratado como não confiável pelo agente.
+- A triagem não executa shell, código, banco ou infraestrutura.
+- Ferramentas técnicas da investigação profunda devem ser configuradas explicitamente e operar somente em leitura.
+- Credenciais, sessão do WhatsApp, banco, anexos, logs, backups e chaves ficam fora do Git.
+
+Leia também a [política de segurança](SECURITY.md) e o guia de [privacidade e dados locais](docs/privacy.md).
+
+## Arquitetura
+
+```text
+Baileys inbound-only
+  -> normalização + deduplicação
+  -> SQLite + anexos locais
+  -> conversas permanentes
+  -> blocos sugeridos para revisão humana
+  -> ticket confirmado como recorte de mensagens
+  -> contexto completo aberto pelo card do Kanban
+  -> sala de investigação profunda opcional e persistente
+  -> Web UI local + OpenTUI
+  -> cópia manual da resposta pelo operador
+  -> resolução documentada no ticket
+```
+
+A Web UI é a interface operacional; o OpenTUI acompanha o mesmo SQLite e a mesma API local. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md) e a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md).
+
+## Requisitos
+
+- Node.js `>=22.13.0`.
+- Bun `>=1.3.11` para o renderer nativo do OpenTUI.
+- Uma conta do WhatsApp autorizada para o pareamento.
+- Um provedor de IA configurado, caso deseje triagem e sala de investigação profunda.
+
+O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, OpenTUI, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
+
+## Instalação local
+
+```bash
+git clone https://github.com/weslemvitor/threadmark.git
+cd threadmark
+install -m 600 .env.example .env
+npm ci
+npm run build
+npm link
+threadmark on
+```
+
+Esta versão é instalada a partir do código-fonte e não está publicada no registro npm. Não use `npm install -g threadmark`: o `npm link` acima registra o executável do clone atual. O tarball e a instalação global já são validados pela CI para uma publicação futura, mas nenhum pacote será enviado ao registro sem uma release explícita. Para atualizar ou remover a instalação, consulte [UPGRADE.md](UPGRADE.md).
+
+Abra [http://127.0.0.1:3000](http://127.0.0.1:3000). Em uma instalação nova, o assistente inicial cria o administrador local e identifica o workspace. Depois, a área **Configurações** permite cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. O login é local; não existe conta hospedada pelo projeto. Use esse endereço exato para que a sessão permaneça no mesmo host da API local.
+
+As configurações básicas também podem ser preparadas em `.env`:
+
+```dotenv
+SUPPORT_API_HOST=127.0.0.1
+SUPPORT_API_PORT=4317
+SUPPORT_WEB_ORIGIN=http://127.0.0.1:3000
+SUPPORT_DATA_DIR=.data
+SUPPORT_WORKSPACE_NAME=Meu workspace
+SUPPORT_WHATSAPP_NAME=Conta de suporte
+SUPPORT_MONITORED_GROUPS=
+SUPPORT_STAFF_IDENTITIES=
+```
+
+Não coloque tokens, senhas, pastas de código ou conexões técnicas no `.env.example`. Cadastre cada recurso em **Configurações → Ferramentas**; segredos são cifrados no cofre local e não entram no SQLite nem no Git. A interface mostra somente as ferramentas atualmente cadastradas. Instalações antigas que ainda possuem `SUPPORT_CODE_ROOTS` ou `SUPPORT_VAULT_DIR` podem migrá-las explicitamente pela CLI com `threadmark tools discover` e `threadmark tools recover`.
+
+## Pareamento e grupos
+
+1. Inicie o serviço com `threadmark on` (ou `npm run support:on` durante o desenvolvimento).
+2. Escaneie o QR Code exibido na configuração ou no terminal.
+3. Aguarde a descoberta dos grupos.
+4. Escolha os grupos monitorados pela interface ou pelo comando `threadmark monitor <jid>`.
+5. Cadastre os números, JIDs ou LIDs da equipe para que suas mensagens sejam apenas contexto.
+6. Para medir uma possível revisão de mensagens já salvas, execute `threadmark rescan --days=30`. O comando mostra somente uma prévia: não altera mensagens, não reabre a fila e não chama a IA.
+
+Com a lista de grupos monitorados vazia, o sistema opera em modo descoberta: salva o que for recebido, mas não abre candidatos de ticket para os grupos.
+
+Mensagens privadas novas só entram na triagem quando o remetente está vinculado a pelo menos um grupo conhecido. Histórico privado antigo e contatos sem vínculo permanecem armazenados apenas como contexto.
+
+## Diretório personalizável
+
+O Diretório separa as identidades capturadas do modelo operacional criado por cada instalação:
+
+- **grupos e pessoas** vêm do WhatsApp e preservam seus identificadores técnicos;
+- **tipos de registro** definem o que a equipe deseja organizar, como organização, projeto, produto ou contrato;
+- **campos personalizados** podem armazenar texto, número, booleano, data, URL, seleção, múltipla seleção ou relação;
+- **registros** conectam grupos, pessoas e outros registros sem alterar o histórico original;
+- **segmentos** salvam filtros combinados para localizar conjuntos de registros.
+
+Exemplo: uma equipe pode criar o tipo `Organização`, adicionar os campos `Plano`, `Região` e `Responsável`, vincular dois grupos e três pessoas ao mesmo registro e salvar um segmento para organizações prioritárias. Outra instalação pode usar tipos completamente diferentes. Nenhuma taxonomia comercial é obrigatória.
+
+## IA e investigação
+
+O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket e investigação profunda. O Codex CLI integrado pode ser usado nas duas; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão ou turno da sala recebe um identificador e um estado persistido, evitando reprocessamento contínuo da mesma mensagem.
+
+Nas sugestões de ticket, a janela de silêncio padrão é de três minutos e pode ser alterada na mesma tela. Cada nova mensagem externa reinicia a contagem; mensagens da equipe entram somente como contexto. A IA pode aguardar mais informações sem criar um card, atualizar uma sugestão pendente quando o assunto continua ou separar assuntos distintos. **Analisar agora** antecipa essa avaliação, mas não cria tickets automaticamente.
+
+Ao resolver um ticket, a resolução é salva somente no atendimento. O encerramento não cria conteúdo reutilizável nem executa IA automaticamente.
+
+No Codex, sugestões e investigação profunda rodam em uma execução efêmera sem rede livre, navegador, apps, plugins, MCP, memória ou HOME pessoal. A triagem recebe somente o contexto sanitizado e até cinco imagens preparadas. A sala manual pode acessar apenas a codebase e as ferramentas locais explicitamente autorizadas, sempre em modo de leitura.
+
+Na investigação profunda, qualquer modelo selecionado pode **solicitar** uma operação tipada. O Threadmark valida o ID e a operação contra **Configurações → Ferramentas**, executa a leitura fora do processo do modelo e devolve apenas um resultado limitado e sanitizado no turno seguinte. Tokens e senhas nunca entram no prompt. Isso permite combinar Codex, OpenAI, Anthropic, OpenRouter ou Ollama com as mesmas autorizações locais, sem dar shell ao modelo.
+
+O botão **Testar conexão** faz uma leitura real, mínima e readonly no recurso configurado — inclusive PostgreSQL, ClickHouse, CloudWatch e Vercel — e persiste o último resultado. Uma configuração bem formada nunca é apresentada como conexão válida sem esse probe.
+
+A triagem recebe apenas as mensagens candidatas, sugestões ainda abertas, anexos suportados e o contexto necessário da conversa. Ela pode separar assuntos, aguardar novas informações ou propor criar/anexar um ticket, mas não recebe precedentes resolvidos nem ferramentas técnicas. Áudios candidatos aguardam a transcrição local antes dessa avaliação.
+
+Na sala profunda, o operador conversa com o agente a partir do contexto do ticket. Esse fluxo recebe o recorte da conversa, os registros vinculados do Diretório e precedentes resolvidos compatíveis. Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos.
+
+Ferramentas disponíveis nesta versão:
+
+- pasta de código e pasta de conhecimento: listar, buscar e ler arquivos dentro da raiz autorizada;
+- skill de depuração: leitura da metodologia, sem execução automática dos comandos descritos nela;
+- PostgreSQL e ClickHouse: descrição de esquema e consulta `SELECT/WITH`, com timeout e limite de linhas;
+- AWS CloudWatch: filtros de logs por prefixos autorizados e leitura de métricas;
+- Vercel: deployments e runtime logs do projeto configurado.
+
+Para PostgreSQL, use obrigatoriamente um usuário realmente readonly. O Threadmark inclui o cliente PostgreSQL no próprio pacote, portanto não exige a instalação do comando `psql`. O executor também aplica transação somente leitura, bloqueia instruções mutáveis e funções perigosas e limita a saída em streaming. No ClickHouse, table functions externas são recusadas. Esses controles não transformam uma credencial administrativa em uma credencial segura.
+
+Para o runner local do Codex, instale e autentique o CLI e deixe `CODEX_BIN=codex`. A interface lê o catálogo exposto pela própria CLI e permite usar o padrão da conta ou um modelo específico em cada tarefa. Outros conectores podem exigir uma chave cadastrada localmente. Nunca versionar chaves.
+
+“Codex local” significa que a CLI, a autenticação e a orquestração rodam na máquina. Ao usar modelos hospedados da OpenAI, o recorte sanitizado necessário à tarefa é enviado ao serviço da OpenAI; para inferência integralmente local, configure Ollama ou outro backend local compatível.
+
+### Transcrição local de áudios
+
+Em **Configurações → IA → Transcrição local de áudios**, escolha e baixe um dos modelos Whisper disponíveis. Essa função não usa Codex, Ollama nem uma API paga: o modelo é baixado uma vez e executado pelo próprio processo do Threadmark. A tela informa o espaço estimado em disco, o consumo estimado de RAM, o andamento do download e o estado da fila. O primeiro download exige acesso à internet; depois disso, a inferência funciona localmente.
+
+A transcrição vem desativada em instalações novas. Depois de instalar o modelo, ative o processamento de novos áudios. O texto aparece junto ao player nas conversas e nos tickets; resultados incertos ficam marcados para revisão. O arquivo original é preservado, e o modelo é descarregado da memória após um período sem uso.
+
+Áudios novos só alimentam a triagem depois que a transcrição termina. Para evitar custo inesperado e uma fila retroativa em massa, o histórico entra apenas por uma ação manual de até 100 áudios por vez. Transcrever histórico nunca reabre mensagens nem cria candidatos retroativos de ticket.
+
+## Uso diário
+
+```bash
+threadmark on             # inicia API, Web UI, captura, triagem e worker
+threadmark tui            # abre o cockpit OpenTUI
+threadmark open           # abre a Web UI
+threadmark status         # mostra o estado local
+threadmark doctor         # verifica processo, API, Web, SQLite, WhatsApp, IA e disco
+threadmark tools open     # cadastra pastas, bancos e observabilidade autorizados
+threadmark tools list     # mostra as ferramentas locais sem revelar credenciais
+threadmark tools discover # revisa fontes encontradas na configuração antiga
+threadmark tools recover  # importa fontes antigas após confirmação explícita
+threadmark tools test ID  # executa um probe real, limitado e readonly
+threadmark off            # encerra os processos com segurança
+```
+
+`npm link` registra o executável local `threadmark` sem copiar dados ou configurações.
+Use `threadmark configure` para escolher uma área de configuração, ou abra diretamente
+`threadmark configure ai`, `threadmark configure tools`, `threadmark configure whatsapp`
+e `threadmark configure team`.
+
+No macOS, o serviço opcional inicia após o login e recupera falhas do processo:
+
+```bash
+threadmark service install
+threadmark service status
+threadmark service uninstall # preserva banco, anexos e configurações
+```
+
+O watchdog interno recupera somente a Web UI com backoff quando ela cai; API, captura e
+workers continuam ativos. O arquivo `logs/daemon.log` dentro de `SUPPORT_DATA_DIR` é rotacionado de forma conservadora
+ao atingir 5 MiB, mantendo cinco gerações.
+
+`threadmark on` confirma a identidade da API antes de abrir ou migrar o SQLite e só anuncia sucesso após API e assets Web estarem prontos. `threadmark off` solicita shutdown pela API com o token desta instalação; ele nunca encerra um PID apenas porque apareceu num arquivo antigo. O Doctor testa somente os provedores usados pelos perfis ativos.
+
+Atalhos principais do OpenTUI:
+
+```text
+↑/↓ ou j/k  selecionar ticket
+Enter / 1   abrir detalhe ou voltar à fila
+f           alternar filtro
+i           enfileirar investigação
+c           copiar sugestão
+g           abrir visão operacional
+o           abrir a Web UI
+r           atualizar
+? / Esc     ajuda ou voltar
+q           sair somente da TUI
+```
+
+Sair da TUI não interrompe a captura nem o worker.
+
+## Dados locais e backup
+
+No fluxo de instalação acima, `.env.example` define `SUPPORT_DATA_DIR=.data`, então o estado privado fica no clone:
+
+```text
+.data/
+  threadmark.sqlite
+  threadmark.sqlite-wal
+  threadmark.sqlite-shm
+  attachments/
+  backups/
+  models/transcription/
+  secrets/
+  whatsapp-auth/
+  logs/
+  local-access.token
+  runtime.json
+  settings.json
+```
+
+Se `SUPPORT_DATA_DIR` não for definido, o runtime usa o diretório de dados do sistema operacional, como `~/Library/Application Support/Threadmark` no macOS. Confira sempre o caminho efetivo antes de copiar, restaurar ou apagar dados.
+
+Crie um snapshot consistente em **Configurações → Dados → Criar backup** ou pelo terminal:
+
+```bash
+threadmark backup                  # rápido: SQLite + configurações
+threadmark backup --full           # completo: SQLite + configurações + anexos
+threadmark backups list            # lista e valida os backups
+threadmark backup validate <id>    # valida manifesto, SHA-256 e SQLite
+threadmark off
+threadmark restore <id>            # exige confirmação e cria safety backup
+```
+
+A interface e o comando informam o diretório exato gerado. Use o backup rápido antes de alterações de configuração e o completo antes de limpezas ou periodicamente quando os anexos forem importantes. Antes de qualquer migração pendente, o Threadmark cria automaticamente um snapshot versionado do SQLite.
+
+Cada backup possui manifesto v2, checksums SHA-256 e verificação de integridade. O restore só roda com daemon e SQLite parados, prepara os dados em staging, salva o estado atual em um backup de segurança e tenta rollback se algo falhar. A limpeza por retenção ocorre somente depois do commit e nunca remove o estado restaurado se falhar. A retenção padrão mantém 7 rápidos, 4 completos, 3 de segurança e 5 pré-migração.
+
+Sessão do WhatsApp, chaves de IA, credenciais de ferramentas e o cache dos modelos de transcrição são deliberadamente excluídos dos backups; depois de restaurar em outra máquina, reconecte o WhatsApp, recadastre os segredos e baixe novamente o modelo desejado. Guarde backups em destino criptografado e nunca os envie em relatórios de bug.
+
+## Ambiente de demonstração
+
+O seed usa nomes, telefones e negócios fictícios e só aceita um diretório terminado em `/presentation`:
+
+```bash
+SUPPORT_DATA_DIR=.data/presentation \
+SUPPORT_WHATSAPP_ENABLED=false \
+SUPPORT_AGENT_ENABLED=true \
+npm run demo:reset
+
+SUPPORT_DATA_DIR=.data/presentation \
+SUPPORT_WHATSAPP_ENABLED=false \
+SUPPORT_AGENT_ENABLED=true \
+npm run support:on
+```
+
+O reset preserva o estado anterior em `.data/presentation-backups/`. O cenário inclui grupos, pessoas, registros organizacionais, tickets resolvidos, um PDF e uma imagem; nenhuma investigação começa sozinha.
+
+## Desenvolvimento e validação
+
+```bash
+npm run dev
+npm run test:unit
+npm run test:tui
+npm run typecheck
+npm run lint
+npm run build
+npm run audit:runtime
+```
+
+Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
+
+## Estrutura do repositório
+
+- `app/`: interface web local.
+- `tui/`: cockpit OpenTUI e cliente da API local.
+- `server/whatsapp/`: fronteira Baileys inbound-only.
+- `server/ingestion/`: normalização e persistência de mensagens e mídias.
+- `server/db/`: schema e migrações SQLite.
+- `server/domain/`: tickets, Diretório, categorias, conhecimento e auditoria.
+- `server/triage/`: detecção conservadora de demandas.
+- `server/agent/`: prompts, provedores e worker da sala de investigação.
+- `server/transcription/`: catálogo, download, execução e fila local de transcrição.
+- `server/runtime/`: configuração, estado e settings locais.
+- `shared/`: contratos compartilhados pela API e UI.
+- `docs/`: arquitetura, privacidade e decisões técnicas.
+- `.data/`: estado local privado, ignorado pelo Git.
+
+## Limitações atuais
+
+- A transcrição local aceita inicialmente os áudios OGG/Opus recebidos pelo WhatsApp; outros codecs podem permanecer apenas preservados.
+- A Web UI precisa permanecer aberta para notificações do navegador.
+- Imagens e PDFs são os principais responsáveis pelo crescimento em disco.
+- O Baileys não é uma API oficial; mudanças no WhatsApp podem exigir manutenção do conector.
+
+Threadmark não é afiliado, patrocinado ou endossado pelo WhatsApp, Meta, OpenAI, Anthropic ou pelos provedores compatíveis.
+
+## Documentação
+
+- [Arquitetura e API principal](docs/architecture.md)
+- [Diretório personalizável](docs/directory.md)
+- [Privacidade e dados locais](docs/privacy.md)
+- [Decisão sobre Web UI e Obsidian](docs/decisions/0001-web-ui-and-obsidian.md)
+- [Decisão sobre organização por features](docs/decisions/0002-feature-first-architecture.md)
+- [Atualização, rollback e desinstalação](UPGRADE.md)
+- [Política de segurança](SECURITY.md)
+- [Guia de contribuição](CONTRIBUTING.md)
+- [Código de Conduta](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md)
+- [Contrato interno do conector WhatsApp](server/whatsapp/README.md)
+- [Convenções para agentes de código](AGENTS.md)
+
+## Licença
+
+Threadmark é distribuído sob a [licença MIT](LICENSE). Copyright © 2026 Weslem Vitor.

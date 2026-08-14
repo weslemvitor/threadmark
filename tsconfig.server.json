@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "types": ["node"],
+    "incremental": false
+  },
+  "include": ["server/**/*.ts", "shared/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".next", ".vinext"]
+}

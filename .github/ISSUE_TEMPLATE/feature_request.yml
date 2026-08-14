@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a focused improvement for Threadmark.
+title: "[Feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What local support workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what the user should be able to accomplish.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: inbound-only
+    attributes:
+      label: Safety model
+      options:
+        - label: This request preserves Threadmark's inbound-only WhatsApp behavior.
+          required: true

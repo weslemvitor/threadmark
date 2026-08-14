@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "assistantMessage",
+    "phase",
+    "threadSummary",
+    "evidence",
+    "suggestedResponse",
+    "nextAction",
+    "confidence",
+    "toolRequests"
+  ],
+  "properties": {
+    "assistantMessage": { "type": "string" },
+    "phase": {
+      "type": "string",
+      "enum": ["analysis", "needs_information", "conclusion"]
+    },
+    "threadSummary": { "type": "string" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "summary", "reference"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "knowledge",
+              "resolved_ticket",
+              "database",
+              "clickhouse",
+              "aws",
+              "code",
+              "deployment"
+            ]
+          },
+          "summary": { "type": "string" },
+          "reference": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "suggestedResponse": { "type": ["string", "null"] },
+    "nextAction": { "type": ["string", "null"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "toolRequests": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "toolId",
+          "operation",
+          "argumentsJson",
+          "purpose"
+        ],
+        "properties": {
+          "requestId": { "type": "string" },
+          "toolId": { "type": "string" },
+          "operation": { "type": "string" },
+          "argumentsJson": { "type": "string" },
+          "purpose": { "type": "string" }
+        }
+      }
+    }
+  }
+}
