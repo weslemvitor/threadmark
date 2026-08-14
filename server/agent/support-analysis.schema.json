@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "createTicket",
+    "outcome",
+    "relation",
+    "relatedTicketId",
+    "title",
+    "summary",
+    "affectedEcommerce",
+    "priority",
+    "categories",
+    "evidence",
+    "suggestedResponse",
+    "missingInformation",
+    "nextAction",
+    "confidence"
+  ],
+  "properties": {
+    "createTicket": { "type": "boolean" },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "reply_ready",
+        "already_answered",
+        "needs_information",
+        "technical_investigation_required"
+      ]
+    },
+    "relation": {
+      "type": "string",
+      "enum": [
+        "new",
+        "continuation",
+        "possible_reopen",
+        "informational",
+        "social",
+        "uncertain"
+      ]
+    },
+    "relatedTicketId": { "type": ["string", "null"] },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "affectedEcommerce": { "type": ["string", "null"] },
+    "priority": {
+      "type": "string",
+      "enum": ["low", "normal", "high", "urgent"]
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contactReason", "productArea", "platform", "symptom"],
+      "properties": {
+        "contactReason": { "type": "array", "items": { "type": "string" } },
+        "productArea": { "type": "array", "items": { "type": "string" } },
+        "platform": { "type": "array", "items": { "type": "string" } },
+        "symptom": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "summary", "reference"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "conversation",
+              "resolved_ticket"
+            ]
+          },
+          "summary": { "type": "string" },
+          "reference": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "suggestedResponse": { "type": ["string", "null"] },
+    "missingInformation": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "nextAction": { "type": "string" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}
