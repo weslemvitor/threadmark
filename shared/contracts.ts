@@ -25,40 +25,6 @@ export const PRODUCT_FORWARDING_EXTERNAL_REFERENCE_MAX_LENGTH = 1_000;
 export const CLIENT_KINDS = ["agency", "ecommerce"] as const;
 export type ClientKind = (typeof CLIENT_KINDS)[number];
 
-export const DIRECTORY_FIELD_TYPES = [
-  "text",
-  "number",
-  "boolean",
-  "date",
-  "url",
-  "select",
-  "multi_select",
-  "relation",
-] as const;
-
-export type DirectoryFieldType = (typeof DIRECTORY_FIELD_TYPES)[number];
-
-export const DIRECTORY_SEGMENT_OPERATORS = [
-  "equals",
-  "not_equals",
-  "contains",
-  "not_contains",
-  "is_empty",
-  "is_not_empty",
-  "greater_than",
-  "less_than",
-] as const;
-
-export type DirectorySegmentOperator =
-  (typeof DIRECTORY_SEGMENT_OPERATORS)[number];
-
-export type DirectoryFieldValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | null;
-
 export const TRIAGE_KINDS = [
   "unclassified",
   "demand",
@@ -616,45 +582,6 @@ export interface SentResponseDto {
   capturedAt: string;
 }
 
-export type TicketDirectoryContextSource =
-  | "ticket"
-  | "group"
-  | "requester";
-
-export interface TicketDirectoryContextFieldDto {
-  id: string;
-  key: string;
-  label: string;
-  type: DirectoryFieldType;
-  value: DirectoryFieldValue;
-  displayValue: string;
-}
-
-export interface TicketDirectoryContextRecordDto {
-  id: string;
-  name: string;
-  description: string | null;
-  type: {
-    id: string;
-    name: string;
-    pluralName: string;
-    slug: string;
-    icon: string | null;
-    color: string | null;
-  };
-  fields: TicketDirectoryContextFieldDto[];
-  sources: TicketDirectoryContextSource[];
-}
-
-export interface TicketDirectoryContextDto {
-  records: TicketDirectoryContextRecordDto[];
-  explicitRecordIds: string[];
-}
-
-export interface UpdateTicketDirectoryContextInput {
-  recordIds: string[];
-}
-
 export interface AddTicketInternalNoteInput {
   body: string;
   clientNoteId: string;
@@ -691,7 +618,6 @@ export interface UpsertTicketProductForwardingInput {
 export interface TicketDetailDto extends TicketSummaryDto {
   requesterOverrideId: string | null;
   requesterCandidates: TicketRequesterDto[];
-  directoryContext: TicketDirectoryContextDto;
   productForwarding: TicketProductForwardingDto | null;
   timeline: TimelineItemDto[];
   suggestions: SuggestionDto[];
@@ -713,56 +639,6 @@ export interface StatusCountDto {
   count: number;
 }
 
-export interface DirectoryRecordTypeDto {
-  id: string;
-  name: string;
-  pluralName: string;
-  slug: string;
-  description: string | null;
-  icon: string | null;
-  color: string | null;
-  system: boolean;
-  archivedAt: string | null;
-  recordCount: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface DirectoryFieldDefinitionDto {
-  id: string;
-  recordTypeId: string;
-  key: string;
-  label: string;
-  type: DirectoryFieldType;
-  required: boolean;
-  options: string[];
-  relationRecordTypeId: string | null;
-  position: number;
-  archivedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface DirectoryRecordTypeInput {
-  name: string;
-  pluralName: string;
-  slug?: string;
-  description?: string | null;
-  icon?: string | null;
-  color?: string | null;
-}
-
-export interface DirectoryFieldDefinitionInput {
-  recordTypeId: string;
-  key?: string;
-  label: string;
-  type: DirectoryFieldType;
-  required?: boolean;
-  options?: string[];
-  relationRecordTypeId?: string | null;
-  position?: number;
-}
-
 export interface DirectoryGroupDto {
   id: string;
   subject: string;
@@ -772,7 +648,6 @@ export interface DirectoryGroupDto {
   ticketCount: number;
   openTicketCount: number;
   lastActivityAt: string | null;
-  linkedRecordIds: string[];
 }
 
 export interface DirectoryPersonDto {
@@ -783,163 +658,15 @@ export interface DirectoryPersonDto {
   isStaff: boolean;
   activeGroupCount: number;
   lastActivityAt: string | null;
-  linkedRecordIds: string[];
-}
-
-export interface DirectoryRecordDto {
-  id: string;
-  typeId: string;
-  legacyClientId: string | null;
-  name: string;
-  slug: string;
-  description: string | null;
-  archivedAt: string | null;
-  values: Record<string, DirectoryFieldValue>;
-  groupIds: string[];
-  personIds: string[];
-  relatedRecordIds: string[];
-  ticketCount: number;
-  openTicketCount: number;
-  lastActivityAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface DirectoryRecordInput {
-  typeId: string;
-  name: string;
-  slug?: string;
-  description?: string | null;
-  values?: Record<string, DirectoryFieldValue>;
-  groupIds?: string[];
-  personIds?: string[];
-  relatedRecordIds?: string[];
-}
-
-export interface DirectorySegmentFilterDto {
-  fieldId: string;
-  operator: DirectorySegmentOperator;
-  value?: DirectoryFieldValue;
-}
-
-export interface DirectorySegmentInput {
-  name: string;
-  description?: string | null;
-  recordTypeId?: string | null;
-  match: "all" | "any";
-  filters: DirectorySegmentFilterDto[];
-}
-
-export interface DirectorySegmentDto extends DirectorySegmentInput {
-  id: string;
-  memberCount: number;
-  memberRecordIds: string[];
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface DirectorySnapshotDto {
   groups: DirectoryGroupDto[];
   people: DirectoryPersonDto[];
-  recordTypes: DirectoryRecordTypeDto[];
-  fields: DirectoryFieldDefinitionDto[];
-  records: DirectoryRecordDto[];
-  segments: DirectorySegmentDto[];
   totals: {
     groups: number;
     people: number;
-    records: number;
-    segments: number;
   };
-}
-
-export const RECORD_CONNECTOR_METHODS = ["POST", "PUT", "PATCH"] as const;
-export type RecordConnectorMethod = (typeof RECORD_CONNECTOR_METHODS)[number];
-
-export const RECORD_CONNECTOR_INPUT_TYPES = [
-  "text",
-  "number",
-  "boolean",
-] as const;
-export type RecordConnectorInputType =
-  (typeof RECORD_CONNECTOR_INPUT_TYPES)[number];
-
-export interface RecordConnectorInputFieldDto {
-  key: string;
-  label: string;
-  type: RecordConnectorInputType;
-  required: boolean;
-  placeholder: string | null;
-}
-
-export interface RecordConnectorFieldMappingDto {
-  fieldId: string;
-  valuePath: string;
-}
-
-export interface RecordConnectorDto {
-  id: string;
-  name: string;
-  description: string | null;
-  enabled: boolean;
-  method: RecordConnectorMethod;
-  urlTemplate: string;
-  headersTemplate: string;
-  bodyTemplate: string;
-  targetRecordTypeId: string;
-  recordNamePath: string;
-  recordDescriptionPath: string | null;
-  inputFields: RecordConnectorInputFieldDto[];
-  fieldMappings: RecordConnectorFieldMappingDto[];
-  hasToken: boolean;
-  tokenLastFour: string | null;
-  archivedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface RecordConnectorSummaryDto {
-  id: string;
-  name: string;
-  description: string | null;
-  method: RecordConnectorMethod;
-  targetRecordTypeId: string;
-  inputFields: RecordConnectorInputFieldDto[];
-}
-
-export interface RecordConnectorWriteInput {
-  name: string;
-  description?: string | null;
-  enabled?: boolean;
-  method: RecordConnectorMethod;
-  urlTemplate: string;
-  headersTemplate: string;
-  bodyTemplate: string;
-  targetRecordTypeId: string;
-  recordNamePath: string;
-  recordDescriptionPath?: string | null;
-  inputFields: RecordConnectorInputFieldDto[];
-  fieldMappings: RecordConnectorFieldMappingDto[];
-  /** Write-only. Omit preserves the current token; null removes it. */
-  token?: string | null;
-}
-
-export type RecordConnectorExecutionValue =
-  | string
-  | number
-  | boolean
-  | null;
-
-export interface ExecuteRecordConnectorInput {
-  clientRequestId: string;
-  values: Record<string, RecordConnectorExecutionValue>;
-}
-
-export interface ExecuteRecordConnectorResponse {
-  ticket: TicketDetailDto;
-  record: DirectoryRecordDto;
-  connectorId: string;
-  httpStatus: number;
 }
 
 export const DASHBOARD_TIME_ZONE = "America/Sao_Paulo" as const;
@@ -990,33 +717,12 @@ export interface DashboardResponse {
     clients: number;
     /** Native WhatsApp groups represented in the current ticket period. */
     groups: number;
-    /** Optional active directory records represented in the current ticket period. */
-    records: number;
   };
   statusCounts: StatusCountDto[];
   ticketsByDay: Array<{ date: string; created: number; resolved: number }>;
   topCategories: Array<{ category: CategoryDto; count: number }>;
   topGroups: Array<{ groupId: string; groupSubject: string; count: number }>;
-  topRecords: Array<{
-    recordId: string;
-    recordName: string;
-    recordTypeId: string;
-    recordTypeName: string;
-    count: number;
-  }>;
-  recordBreakdowns: Array<{
-    recordTypeId: string;
-    recordTypeName: string;
-    items: Array<{ recordId: string; recordName: string; count: number }>;
-  }>;
-  fieldBreakdowns: Array<{
-    fieldId: string;
-    fieldLabel: string;
-    recordTypeId: string;
-    recordTypeName: string;
-    items: Array<{ value: string; count: number }>;
-  }>;
-  /** @deprecated Use topGroups or recordBreakdowns. */
+  /** @deprecated Use topGroups. */
   topClients: Array<{ clientId: string; clientName: string; count: number }>;
   recentTickets: TicketSummaryDto[];
 }

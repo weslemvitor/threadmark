@@ -1,61 +1,25 @@
-# Diretório personalizável
+# Diretório
 
-O Diretório organiza o contexto das conversas sem impor que todo grupo seja um cliente ou que toda instalação use a mesma taxonomia. Ele combina identidades sincronizadas do WhatsApp com registros operacionais criados localmente.
+O Diretório apresenta os grupos e as pessoas observados nas conversas sincronizadas do WhatsApp. Ele não impõe que um grupo seja um cliente nem cria uma camada adicional de classificação.
 
-## Conceitos
+## Grupos
 
-### Grupos e pessoas
+Cada grupo preserva seu identificador técnico e exibe, de forma amigável:
 
-Grupos e pessoas são entidades nativas capturadas do WhatsApp. Seus identificadores, participantes e vínculos sustentam autoria, timeline e elegibilidade de triagem. Eles não precisam virar registros personalizados para continuarem disponíveis como contexto.
+- nome do grupo;
+- estado de monitoramento;
+- quantidade de participantes ativos;
+- quantidade de tickets vinculados e ainda abertos;
+- última atividade conhecida.
 
-### Tipos de registro
+## Pessoas
 
-Um tipo define a categoria de uma entidade criada pela instalação. Exemplos genéricos incluem `Organização`, `Projeto`, `Produto`, `Contrato` e `Unidade`. O nome, plural, descrição e cor podem ser definidos pela interface.
+Pessoas são participantes observados em grupos sincronizados. A visão mostra nome, telefone, quantidade de grupos ativos, última atividade e se a identidade pertence à equipe.
 
-### Campos personalizados
+Aliases de telefone (`@s.whatsapp.net`) e LID (`@lid`) são consolidados quando o vínculo é conhecido, evitando duplicidade. Quando não existe um nome confiável, a interface usa o telefone; identificadores protegidos permanecem apresentados sem expor o JID técnico como nome.
 
-Cada tipo possui seu próprio conjunto de campos:
+## Uso nos tickets
 
-| Tipo | Uso típico |
-| --- | --- |
-| Texto | código interno, observação curta ou responsável |
-| Número | limite, quantidade ou valor de referência |
-| Booleano | condição ativa/inativa |
-| Data | renovação, implantação ou vencimento |
-| URL | painel, documentação ou sistema externo |
-| Seleção | uma opção controlada |
-| Múltipla seleção | etiquetas controladas |
-| Relação | referência a outro tipo de registro |
-
-Campos podem ser obrigatórios, ordenados e editados. Alterar um campo não modifica mensagens do WhatsApp.
-
-### Registros e relações
-
-Um registro é uma instância de um tipo. Ele pode conter valores personalizados e se vincular a:
-
-- um ou mais grupos;
-- uma ou mais pessoas;
-- outros registros.
-
-Esses vínculos permitem compartilhar contexto. Um `Projeto`, por exemplo, pode se relacionar com uma `Organização`, dois grupos e as pessoas responsáveis. Arquivar um registro o remove das visões ativas sem apagar conversas ou tickets.
-
-### Segmentos
-
-Um segmento salva filtros sobre campos de um tipo. Os filtros podem exigir que todas as regras sejam verdadeiras ou aceitar qualquer uma delas. Operadores disponíveis incluem igualdade, diferença, conteúdo, vazio, comparação numérica e comparação de data conforme o tipo do campo.
-
-## Exemplo de configuração
-
-1. Abra **Diretório** e confirme que os grupos e pessoas esperados foram sincronizados.
-2. Crie o tipo `Organização`.
-3. Adicione os campos `Plano` como seleção, `Região` como seleção e `Renovação` como data.
-4. Crie um registro para uma organização fictícia e associe seus grupos e pessoas.
-5. Crie o segmento `Renova neste ciclo` usando o campo de data e os critérios adequados à operação.
-6. Use os registros vinculados para analisar tickets e indicadores sem alterar o histórico original.
-
-Outra instalação pode criar tipos e campos completamente diferentes. O Threadmark não exige uma estrutura comercial específica.
-
-## Permissões e persistência
-
-Tipos e campos exigem papel de owner ou admin. Registros e segmentos ficam no mesmo SQLite operacional e participam da auditoria local. A rota `DELETE /api/directory/records/:id` arquiva o registro; não exclui mensagens, anexos ou autoria.
+O grupo e o solicitante continuam vinculados ao ticket como contexto nativo. Organização adicional é feita por categorias, prioridade e responsável do atendimento. Nenhum vínculo do Diretório altera ou envia mensagens ao WhatsApp.
 
 Para o modelo de dados e as rotas, consulte [architecture.md](architecture.md). Para retenção e eliminação, consulte [privacy.md](privacy.md).

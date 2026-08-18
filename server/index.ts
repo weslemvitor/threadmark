@@ -13,8 +13,6 @@ import {
   CATEGORY_FACETS,
   INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH,
   CLIENT_KINDS,
-  DIRECTORY_FIELD_TYPES,
-  DIRECTORY_SEGMENT_OPERATORS,
   PRODUCT_FORWARDING_DESCRIPTION_MAX_LENGTH,
   PRODUCT_FORWARDING_EXTERNAL_REFERENCE_MAX_LENGTH,
   PRODUCT_FORWARDING_KINDS,
@@ -35,9 +33,6 @@ import {
   type LocalToolTestResult,
   LOCAL_TOOL_OPERATIONS,
   LOCAL_TOOL_TYPES,
-  RECORD_CONNECTOR_INPUT_TYPES,
-  RECORD_CONNECTOR_METHODS,
-  type RecordConnectorWriteInput,
   type CategoryFacet,
 } from "../shared/contracts.js";
 import {
@@ -88,7 +83,6 @@ import {
 import { DeepToolExecutor } from "./tools/deep-tool-executor.js";
 import { TRIAGE_PROMPT_VERSION } from "./triage/index.js";
 import { LegacyLocalToolImportService } from "./tools/legacy-tool-import.js";
-import { RecordConnectorService } from "./connectors/record-connector-service.js";
 import { AudioTranscriptionService } from "./transcription/index.js";
 
 interface RuntimeStateReader {
@@ -120,7 +114,6 @@ export interface StartApiServerOptions {
   localSettings?: LocalSettingsFile;
   aiSettings?: AiProviderSettingsService;
   tools?: LocalToolService;
-  recordConnectors?: RecordConnectorService;
   legacyTools?: LegacyLocalToolImportService;
   toolTester?: LocalToolTester;
   storageUsage?: LocalStorageUsageReader;
@@ -156,7 +149,6 @@ interface ApiServices {
   localSettings?: LocalSettingsFile;
   aiSettings?: AiProviderSettingsService;
   tools?: LocalToolService;
-  recordConnectors?: RecordConnectorService;
   legacyTools?: LegacyLocalToolImportService;
   toolTester?: LocalToolTester;
   storageUsage?: LocalStorageUsageReader;
@@ -203,17 +195,6 @@ const ticketMetadataInputSchema = z
 const ticketAssigneeInputSchema = z
   .object({
     assigneeId: z.union([z.string().trim().min(1).max(200), z.null()]),
-  })
-  .strict();
-
-const ticketDirectoryContextInputSchema = z
-  .object({
-    recordIds: z
-      .array(z.string().trim().min(1).max(200))
-      .max(500)
-      .refine((recordIds) => new Set(recordIds).size === recordIds.length, {
-        message: "A seleção contém registros duplicados",
-      }),
   })
   .strict();
 
@@ -549,55 +530,6 @@ const localToolUpdateSchema = localToolWriteSchema
     message: "Informe ao menos uma configuração para alterar",
   });
 
-const recordConnectorInputFieldSchema = z
-  .object({
-    key: z.string().trim().min(1).max(120),
-    label: z.string().trim().min(1).max(120),
-    type: z.enum(RECORD_CONNECTOR_INPUT_TYPES),
-    required: z.boolean(),
-    placeholder: z.union([z.string().trim().max(300), z.null()]),
-  })
-  .strict();
-
-const recordConnectorFieldMappingSchema = z
-  .object({
-    fieldId: z.string().trim().min(1).max(200),
-    valuePath: z.string().trim().min(1).max(500),
-  })
-  .strict();
-
-const recordConnectorWriteSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120),
-    description: z.union([z.string().trim().max(1_000), z.null()]).optional(),
-    enabled: z.boolean().optional(),
-    method: z.enum(RECORD_CONNECTOR_METHODS),
-    urlTemplate: z.string().trim().min(1).max(50_000),
-    headersTemplate: z.string().trim().min(1).max(50_000),
-    bodyTemplate: z.string().trim().min(1).max(50_000),
-    targetRecordTypeId: z.string().trim().min(1).max(200),
-    recordNamePath: z.string().trim().min(1).max(500),
-    recordDescriptionPath: z
-      .union([z.string().trim().max(500), z.null()])
-      .optional(),
-    inputFields: z.array(recordConnectorInputFieldSchema).max(30),
-    fieldMappings: z.array(recordConnectorFieldMappingSchema).max(100),
-    token: z
-      .union([z.string().trim().min(1).max(20_000), z.null()])
-      .optional(),
-  })
-  .strict();
-
-const executeRecordConnectorSchema = z
-  .object({
-    clientRequestId: z.string().trim().min(1).max(200),
-    values: z.record(
-      z.string().trim().min(1).max(120),
-      z.union([z.string().max(20_000), z.number(), z.boolean(), z.null()]),
-    ),
-  })
-  .strict();
-
 const legacyLocalToolImportSchema = z
   .object({
     candidateIds: z
@@ -634,94 +566,6 @@ const clientProfileInputSchema = z
           .strict(),
       )
       .max(250),
-  })
-  .strict();
-
-const directoryNullableText = z.union([
-  z.string().trim().max(4_000),
-  z.null(),
-]);
-
-const directoryRecordTypeInputSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120),
-    pluralName: z.string().trim().min(1).max(120),
-    slug: z.string().trim().min(1).max(80).optional(),
-    description: directoryNullableText.optional(),
-    icon: z.union([z.string().trim().max(80), z.null()]).optional(),
-    color: z.union([z.string().trim().max(40), z.null()]).optional(),
-  })
-  .strict();
-
-const directoryFieldDefinitionInputSchema = z
-  .object({
-    recordTypeId: z.string().trim().min(1).max(200),
-    key: z.string().trim().min(1).max(80).optional(),
-    label: z.string().trim().min(1).max(120),
-    type: z.enum(DIRECTORY_FIELD_TYPES),
-    required: z.boolean().optional(),
-    options: z
-      .array(z.string().trim().min(1).max(200))
-      .max(250)
-      .optional(),
-    relationRecordTypeId: z
-      .union([z.string().trim().min(1).max(200), z.null()])
-      .optional(),
-    position: z.number().int().min(0).max(10_000).optional(),
-  })
-  .strict();
-
-const directoryFieldValueSchema = z.union([
-  z.string().max(10_000),
-  z.number().finite(),
-  z.boolean(),
-  z.array(z.string().trim().min(1).max(500)).max(250),
-  z.null(),
-]);
-
-const directoryRecordInputSchema = z
-  .object({
-    typeId: z.string().trim().min(1).max(200),
-    name: z.string().trim().min(1).max(200),
-    slug: z.string().trim().min(1).max(100).optional(),
-    description: directoryNullableText.optional(),
-    values: z
-      .record(z.string().trim().min(1).max(200), directoryFieldValueSchema)
-      .optional(),
-    groupIds: z
-      .array(z.string().trim().min(1).max(200))
-      .max(500)
-      .optional(),
-    personIds: z
-      .array(z.string().trim().min(1).max(200))
-      .max(1_000)
-      .optional(),
-    relatedRecordIds: z
-      .array(z.string().trim().min(1).max(200))
-      .max(500)
-      .optional(),
-  })
-  .strict();
-
-const directorySegmentInputSchema = z
-  .object({
-    name: z.string().trim().min(1).max(160),
-    description: directoryNullableText.optional(),
-    recordTypeId: z
-      .union([z.string().trim().min(1).max(200), z.null()])
-      .optional(),
-    match: z.enum(["all", "any"]),
-    filters: z
-      .array(
-        z
-          .object({
-            fieldId: z.string().trim().min(1).max(200),
-            operator: z.enum(DIRECTORY_SEGMENT_OPERATORS),
-            value: directoryFieldValueSchema.optional(),
-          })
-          .strict(),
-      )
-      .max(25),
   })
   .strict();
 
@@ -942,19 +786,6 @@ function requireLocalTools(services: ApiServices): LocalToolService {
     );
   }
   return services.tools;
-}
-
-function requireRecordConnectors(
-  services: ApiServices,
-): RecordConnectorService {
-  if (!services.recordConnectors) {
-    throw new DomainError(
-      "Conectores de registros indisponíveis",
-      "service_unavailable",
-      503,
-    );
-  }
-  return services.recordConnectors;
 }
 
 function requireLegacyLocalTools(
@@ -1780,50 +1611,6 @@ function createApiAppInternal(
     );
   });
 
-  app.get("/api/settings/record-connectors", (context) => {
-    requireRole(context, ["owner", "admin"]);
-    return context.json({
-      items: requireRecordConnectors(services).list(),
-    });
-  });
-
-  app.post("/api/settings/record-connectors", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = recordConnectorWriteSchema.parse(await context.req.json());
-    return context.json(
-      await requireRecordConnectors(services).create(
-        input as RecordConnectorWriteInput,
-        actorFor(context),
-      ),
-      201,
-    );
-  });
-
-  app.put("/api/settings/record-connectors/:id", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = recordConnectorWriteSchema.parse(await context.req.json());
-    return context.json(
-      await requireRecordConnectors(services).update(
-        context.req.param("id"),
-        input as RecordConnectorWriteInput,
-        actorFor(context),
-      ),
-    );
-  });
-
-  app.delete("/api/settings/record-connectors/:id", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    await requireRecordConnectors(services).archive(
-      context.req.param("id"),
-      actorFor(context),
-    );
-    return context.json({ ok: true as const });
-  });
-
-  app.get("/api/record-connectors", (context) =>
-    context.json({ items: requireRecordConnectors(services).listEnabled() }),
-  );
-
   app.post("/api/settings/backup", async (context) => {
     requireRole(context, ["owner", "admin"]);
     const input = backupInputSchema.parse(await context.req.json());
@@ -2251,19 +2038,6 @@ function createApiAppInternal(
     );
   });
 
-  app.patch("/api/tickets/:id/directory-context", async (context) => {
-    const input = ticketDirectoryContextInputSchema.parse(
-      await context.req.json(),
-    );
-    return context.json(
-      store.updateTicketDirectoryContext(
-        context.req.param("id"),
-        input,
-        actorFor(context),
-      ),
-    );
-  });
-
   app.post("/api/tickets/:id/notes", async (context) => {
     const input = ticketInternalNoteInputSchema.parse(await context.req.json());
     return context.json(
@@ -2313,23 +2087,6 @@ function createApiAppInternal(
     );
   });
 
-  app.post(
-    "/api/tickets/:id/record-connectors/:connectorId/execute",
-    async (context) => {
-      const input = executeRecordConnectorSchema.parse(
-        await context.req.json(),
-      );
-      return context.json(
-        await requireRecordConnectors(services).execute(
-          context.req.param("connectorId"),
-          context.req.param("id"),
-          input,
-          actorFor(context),
-        ),
-      );
-    },
-  );
-
   app.post("/api/tickets/:id/investigation-thread", (context) =>
     context.json(
       store.getOrCreateInvestigationThread(context.req.param("id")),
@@ -2363,72 +2120,6 @@ function createApiAppInternal(
 
   app.get("/api/directory", (context) =>
     context.json(directory.getSnapshot()),
-  );
-
-  app.post("/api/directory/types", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = directoryRecordTypeInputSchema.parse(await context.req.json());
-    return context.json(directory.createRecordType(input, actorFor(context)), 201);
-  });
-
-  app.put("/api/directory/types/:id", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = directoryRecordTypeInputSchema.parse(await context.req.json());
-    return context.json(
-      directory.updateRecordType(context.req.param("id"), input, actorFor(context)),
-    );
-  });
-
-  app.post("/api/directory/fields", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = directoryFieldDefinitionInputSchema.parse(await context.req.json());
-    return context.json(directory.createField(input, actorFor(context)), 201);
-  });
-
-  app.put("/api/directory/fields/:id", async (context) => {
-    requireRole(context, ["owner", "admin"]);
-    const input = directoryFieldDefinitionInputSchema.parse(await context.req.json());
-    return context.json(
-      directory.updateField(context.req.param("id"), input, actorFor(context)),
-    );
-  });
-
-  app.post("/api/directory/records", async (context) => {
-    const input = directoryRecordInputSchema.parse(await context.req.json());
-    return context.json(directory.createRecord(input, actorFor(context)), 201);
-  });
-
-  app.put("/api/directory/records/:id", async (context) => {
-    const input = directoryRecordInputSchema.parse(await context.req.json());
-    return context.json(
-      directory.updateRecord(context.req.param("id"), input, actorFor(context)),
-    );
-  });
-
-  app.delete("/api/directory/records/:id", (context) => {
-    requireRole(context, ["owner", "admin"]);
-    return context.json(
-      directory.archiveRecord(context.req.param("id"), actorFor(context)),
-    );
-  });
-
-  app.post("/api/directory/segments", async (context) => {
-    const input = directorySegmentInputSchema.parse(await context.req.json());
-    return context.json(directory.createSegment(input, actorFor(context)), 201);
-  });
-
-  app.put("/api/directory/segments/:id", async (context) => {
-    const input = directorySegmentInputSchema.parse(await context.req.json());
-    return context.json(
-      directory.updateSegment(context.req.param("id"), input, actorFor(context)),
-    );
-  });
-
-  app.delete("/api/directory/segments/:id", (context) =>
-    context.json({
-      id: context.req.param("id"),
-      deleted: directory.deleteSegment(context.req.param("id")),
-    }),
   );
 
   app.get("/api/clients", (context) => context.json(store.listClients()));
@@ -2603,13 +2294,6 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
       operationalDatabase,
       new LocalSecretVault(pathForSecrets(config.dataDir)),
     );
-  const recordConnectors =
-    options.recordConnectors ??
-    new RecordConnectorService(
-      operationalDatabase,
-      store,
-      new LocalSecretVault(pathForSecrets(config.dataDir)),
-    );
   const legacyTools =
     options.legacyTools ??
     new LegacyLocalToolImportService(tools, {
@@ -2640,7 +2324,6 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
         { codexBin: config.codexBin, attachmentsRoot: config.attachmentsDir },
       ),
     tools,
-    recordConnectors,
     legacyTools,
     toolTester: options.toolTester ?? new DeepToolExecutor(tools),
     storageUsage:

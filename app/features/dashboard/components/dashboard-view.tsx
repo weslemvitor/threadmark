@@ -98,7 +98,6 @@ export function DashboardView({
   const [exporting, setExporting] = useState(false);
   const [exported, setExported] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
-  const [rankingDimension, setRankingDimension] = useState("group");
   const [loadedDashboard, setLoadedDashboard] = useState<{
     rangeKey: string;
     data: DashboardData;
@@ -340,44 +339,11 @@ export function DashboardView({
   const chartPeriodDescription = currentDashboard.period
     ? "Criações e resoluções dentro do período"
     : "Todo o período · gráfico dos últimos 14 dias";
-  const availableRankingDimension =
-    rankingDimension === "group" ||
-    currentDashboard.recordBreakdowns.some(
-      (breakdown) => `record:${breakdown.recordTypeId}` === rankingDimension,
-    ) ||
-    currentDashboard.fieldBreakdowns.some(
-      (breakdown) => `field:${breakdown.fieldId}` === rankingDimension,
-    )
-      ? rankingDimension
-      : "group";
-  const selectedRecordBreakdown = availableRankingDimension.startsWith("record:")
-    ? currentDashboard.recordBreakdowns.find(
-        (breakdown) =>
-          `record:${breakdown.recordTypeId}` === availableRankingDimension,
-      ) ?? null
-    : null;
-  const selectedFieldBreakdown = availableRankingDimension.startsWith("field:")
-    ? currentDashboard.fieldBreakdowns.find(
-        (breakdown) => `field:${breakdown.fieldId}` === availableRankingDimension,
-      ) ?? null
-    : null;
-  const rankingItems = selectedFieldBreakdown
-    ? selectedFieldBreakdown.items.map((item) => ({
-        id: `${selectedFieldBreakdown.fieldId}:${item.value}`,
-        label: item.value,
-        count: item.count,
-      }))
-    : selectedRecordBreakdown
-    ? selectedRecordBreakdown.items.map((item) => ({
-        id: item.recordId,
-        label: item.recordName,
-        count: item.count,
-      }))
-    : currentDashboard.topGroups.map((group) => ({
-        id: group.groupId,
-        label: group.groupSubject,
-        count: group.count,
-      }));
+  const rankingItems = currentDashboard.topGroups.map((group) => ({
+    id: group.groupId,
+    label: group.groupSubject,
+    count: group.count,
+  }));
 
   return (
     <div aria-busy={filterLoading} className="min-h-full w-full p-4 sm:p-5">
@@ -483,33 +449,9 @@ export function DashboardView({
 
         <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm">
           <DashboardPanelHeader
-            action={(
-              <label className="shrink-0">
-                <span className="sr-only">Agrupar tickets por</span>
-                <NativeSelect
-                  aria-label="Agrupar tickets por"
-                  className="h-8 min-w-28 text-xs"
-                  onChange={(event) => setRankingDimension(event.target.value)}
-                  value={availableRankingDimension}
-                  wrapperClassName="w-fit"
-                >
-                  <option value="group">Grupo</option>
-                  {currentDashboard.recordBreakdowns.map((breakdown) => (
-                    <option key={breakdown.recordTypeId} value={`record:${breakdown.recordTypeId}`}>
-                      {breakdown.recordTypeName}
-                    </option>
-                  ))}
-                  {currentDashboard.fieldBreakdowns.map((breakdown) => (
-                    <option key={breakdown.fieldId} value={`field:${breakdown.fieldId}`}>
-                      {breakdown.fieldLabel} · {breakdown.recordTypeName}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </label>
-            )}
-            description="Grupos por padrão; registros são opcionais"
+            description="Grupos com mais tickets no período"
             icon={<MessagesSquare size={17} />}
-            title="Tickets por"
+            title="Tickets por grupo"
           />
           <ol className="grid list-none gap-1.5 p-0">
             {rankingItems.slice(0, 5).map((item, index) => (

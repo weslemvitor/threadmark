@@ -96,20 +96,20 @@ export function TicketMetadataEditor({
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
       <DialogContent
-        className="max-h-[calc(100dvh-2rem)] max-w-2xl gap-0 overflow-hidden p-0"
+        className="max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)] sm:w-full"
         onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
         onInteractOutside={(event) => { if (saving) event.preventDefault(); }}
         showCloseButton={false}
       >
       <form
-        className="flex max-h-[calc(100dvh-2rem)] min-h-0 flex-col"
+        className="flex max-h-[calc(100dvh-1rem)] min-h-0 flex-col sm:max-h-[calc(100dvh-2rem)]"
         onSubmit={(event) => {
           event.preventDefault();
           if (!changed || !valid || saving) return;
           void onSave(input);
         }}
       >
-        <DialogHeader className="relative flex-row items-start gap-3 border-b border-border px-5 py-4 pr-14 text-left">
+        <DialogHeader className="relative flex-row items-start gap-3 border-b border-border px-4 py-4 pr-12 text-left sm:px-5 sm:pr-14">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
             <FilePenLine size={20} />
           </span>
@@ -133,7 +133,7 @@ export function TicketMetadataEditor({
           </Button>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-5">
           <section className="space-y-4">
             <div className="flex items-start gap-3">
               <FilePenLine className="mt-0.5 text-primary" size={17} />
@@ -142,8 +142,8 @@ export function TicketMetadataEditor({
                 <span className="text-xs text-muted-foreground">Esses dados aparecem nas listas, no Kanban e nas análises.</span>
               </div>
             </div>
-            <div className="grid grid-cols-[minmax(0,1fr)_180px] gap-4 max-[620px]:grid-cols-1">
-              <label className="grid gap-1.5 text-xs font-medium text-foreground">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <label className="grid min-w-0 gap-1.5 text-xs font-medium text-foreground sm:col-span-2">
                 <span>Título</span>
                 <Input
                   autoFocus
@@ -158,7 +158,7 @@ export function TicketMetadataEditor({
                   {TICKET_TITLE_MAX_LENGTH.toLocaleString("pt-BR")}
                 </small>
               </label>
-              <label className="grid gap-1.5 self-start text-xs font-medium text-foreground">
+              <label className="grid min-w-0 gap-1.5 self-start text-xs font-medium text-foreground">
                 <span>Prioridade</span>
                 <NativeSelect
                   disabled={saving}
@@ -174,7 +174,7 @@ export function TicketMetadataEditor({
                   ))}
                 </NativeSelect>
               </label>
-              <label className="col-span-full grid gap-1.5 text-xs font-medium text-foreground">
+              <label className="grid min-w-0 gap-1.5 text-xs font-medium text-foreground sm:col-span-3">
                 <span>Descrição</span>
                 <Textarea
                   disabled={saving}
@@ -243,11 +243,10 @@ export function TicketMetadataEditor({
           </div>
         </div>
 
-        <DialogFooter className="m-0 flex-row items-center justify-between rounded-none px-5 py-4 max-[520px]:flex-col-reverse">
-          <span className="mr-auto text-xs text-muted-foreground max-[520px]:mr-0">Campos obrigatórios: título e descrição.</span>
-          <div className="flex gap-2 max-[520px]:w-full">
+        <DialogFooter className="m-0 flex-col-reverse items-stretch rounded-none px-4 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-5">
+          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
             <Button
-              className="max-[520px]:flex-1"
+              className="min-w-0"
               disabled={saving}
               onClick={onCancel}
               type="button"
@@ -256,7 +255,7 @@ export function TicketMetadataEditor({
               Cancelar
             </Button>
             <Button
-              className="max-[520px]:flex-1"
+              className="min-w-0"
               disabled={!changed || !valid || saving}
               type="submit"
               variant="default"

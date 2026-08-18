@@ -32,8 +32,6 @@ import type {
   DeleteClientResponse,
   DeleteTicketInput,
   DeleteTicketResponse,
-  DirectoryFieldType,
-  DirectoryFieldValue,
   InvestigationJobListResponse,
   InvestigationJobState,
   InvestigationOutcome,
@@ -51,9 +49,6 @@ import type {
   SentResponseDto,
   SuggestionDto,
   TicketDetailDto,
-  TicketDirectoryContextDto,
-  TicketDirectoryContextRecordDto,
-  TicketDirectoryContextSource,
   TicketBulkStatusInput,
   TicketBulkStatusResponse,
   TicketListResponse,
@@ -75,7 +70,6 @@ import type {
   TimelineMessageDto,
   UpdateClientProfileInput,
   UpdateTicketContextInput,
-  UpdateTicketDirectoryContextInput,
   UpdateTicketInternalNoteInput,
   UpdateTicketMetadataInput,
   UpdateTicketStatusInput,
@@ -100,7 +94,6 @@ import {
 import type { SupportDatabase } from "../db/index.js";
 import type {
   AnalysisCategoryCatalog,
-  DirectoryAnalysisRecord,
   InvestigationThreadInput,
   InvestigationToolResult,
   InvestigationTurnResult,
@@ -543,8 +536,6 @@ function describeTicketEvent(input: {
         : "Status do ticket alterado.";
     case "ticket_context_changed":
       return "Cliente e ecommerce do ticket atualizados.";
-    case "ticket_directory_context_changed":
-      return "Registros do Diretório vinculados ao ticket foram atualizados.";
     case "internal_note_added":
       return `Nota interna adicionada por ${input.actor}.`;
     case "internal_note_updated":
@@ -990,35 +981,6 @@ function presentMessageText(
     presented = presented.replaceAll(`@${mentionId}`, `@${name}`);
   }
   return presented;
-}
-
-function isDirectoryFieldValue(value: unknown): value is DirectoryFieldValue {
-  return (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    (Array.isArray(value) && value.every((item) => typeof item === "string"))
-  );
-}
-
-function directoryFieldDisplayValue(
-  value: DirectoryFieldValue,
-  type: DirectoryFieldType,
-  recordNames: ReadonlyMap<string, string>,
-): string {
-  if (value === null) return "Não informado";
-  if (type === "boolean" && typeof value === "boolean") {
-    return value ? "Sim" : "Não";
-  }
-  if (type === "number" && typeof value === "number") {
-    return value.toLocaleString("pt-BR");
-  }
-  const values = Array.isArray(value) ? value : [String(value)];
-  if (type === "relation") {
-    return values.map((item) => recordNames.get(item) ?? item).join(", ");
-  }
-  return values.join(", ");
 }
 
 function emptyTriageCategories(): TriageAnalysis["groups"][number]["categories"] {
@@ -2024,132 +1986,6 @@ export class SupportStore {
         occurredAt: timestamp,
       });
 
-      return this.getTicketDetail(ticketId);
-    })();
-  }
-
-  updateTicketDirectoryContext(
-    ticketId: string,
-    input: UpdateTicketDirectoryContextInput,
-    actor = "Operador local",
-  ): TicketDetailDto {
-    if (!Array.isArray(input.recordIds)) {
-      throw new ValidationError("Informe os registros do Diretório selecionados");
-    }
-    if (input.recordIds.length > 500) {
-      throw new ValidationError(
-        "Vincule no máximo 500 registros do Diretório por ticket",
-      );
-    }
-    const recordIds = input.recordIds.map((recordId) =>
-      normalizedBoundedText(recordId, "ID do registro", 200),
-    );
-    if (new Set(recordIds).size !== recordIds.length) {
-      throw new ValidationError("A seleção contém registros duplicados");
-    }
-    const responsible = normalizedBoundedText(actor, "Responsável", 200);
-
-    return this.database.transaction(() => {
-      this.assertEntityExists("Ticket", "tickets", ticketId);
-      const selectedRecords = recordIds.length
-        ? (this.database
-            .prepare(
-              `SELECT record.id, record.name
-               FROM directory_records record
-               JOIN directory_record_types record_type
-                 ON record_type.id = record.record_type_id
-                AND record_type.archived_at IS NULL
-               WHERE record.archived_at IS NULL
-                 AND record.id IN (${recordIds.map(() => "?").join(", ")})`,
-            )
-            .all(...recordIds) as Array<{ id: string; name: string }>)
-        : [];
-      const selectedIds = new Set(selectedRecords.map((record) => record.id));
-      const missingRecordIds = recordIds.filter(
-        (recordId) => !selectedIds.has(recordId),
-      );
-      if (missingRecordIds.length) {
-        throw new ValidationError(
-          "Somente registros ativos do Diretório podem ser vinculados ao ticket",
-          { recordIds: missingRecordIds },
-        );
-      }
-
-      const currentLinks = this.database
-        .prepare(
-          `SELECT record_id, relationship_key
-           FROM ticket_record_links
-           WHERE ticket_id = ? AND archived_at IS NULL
-           ORDER BY record_id, relationship_key`,
-        )
-        .all(ticketId) as Array<{
-        record_id: string;
-        relationship_key: string;
-      }>;
-      const currentRecordIds = [
-        ...new Set(currentLinks.map((link) => link.record_id)),
-      ].toSorted();
-      const nextRecordIds = [...recordIds].toSorted();
-      const alreadyCanonical =
-        currentLinks.length === nextRecordIds.length &&
-        currentLinks.every((link) => link.relationship_key === "context") &&
-        currentRecordIds.length === nextRecordIds.length &&
-        currentRecordIds.every(
-          (recordId, index) => recordId === nextRecordIds[index],
-        );
-      if (alreadyCanonical) return this.getTicketDetail(ticketId);
-
-      const timestamp = nowUtc();
-      this.database
-        .prepare(
-          `UPDATE ticket_record_links
-           SET archived_at = ?, archived_by = ?, updated_by = ?, updated_at = ?
-           WHERE ticket_id = ? AND archived_at IS NULL`,
-        )
-        .run(timestamp, responsible, responsible, timestamp, ticketId);
-      const insert = this.database.prepare(
-        `INSERT INTO ticket_record_links (
-           ticket_id, record_id, relationship_key, archived_at, archived_by,
-           created_by, updated_by, created_at, updated_at
-         ) VALUES (?, ?, 'context', NULL, NULL, ?, ?, ?, ?)
-         ON CONFLICT(ticket_id, record_id, relationship_key) DO UPDATE SET
-           archived_at = NULL,
-           archived_by = NULL,
-           updated_by = excluded.updated_by,
-           updated_at = excluded.updated_at`,
-      );
-      for (const recordId of recordIds) {
-        insert.run(
-          ticketId,
-          recordId,
-          responsible,
-          responsible,
-          timestamp,
-          timestamp,
-        );
-      }
-      this.database
-        .prepare("UPDATE tickets SET updated_at = ? WHERE id = ?")
-        .run(timestamp, ticketId);
-      this.invalidateLegacyAutomaticGuidance(ticketId, timestamp);
-      this.insertTicketEvent({
-        ticketId,
-        eventType: "ticket_directory_context_changed",
-        actor: responsible,
-        fromStatus: null,
-        toStatus: null,
-        data: {
-          previousRecordIds: currentRecordIds,
-          recordIds: nextRecordIds,
-          recordNames: selectedRecords.map((record) => record.name),
-          description: nextRecordIds.length
-            ? `${nextRecordIds.length} ${
-                nextRecordIds.length === 1 ? "registro vinculado" : "registros vinculados"
-              } ao contexto do ticket por ${responsible}.`
-            : `Registros específicos removidos do contexto do ticket por ${responsible}.`,
-        },
-        occurredAt: timestamp,
-      });
       return this.getTicketDetail(ticketId);
     })();
   }
@@ -5657,7 +5493,6 @@ export class SupportStore {
       accountType: "unknown",
       groupName: "Conversa",
       knownEcommerces: [],
-      directoryContext: [],
       categoryCatalog: this.getAnalysisCategoryCatalog(),
       candidateMessageIds: [],
       messages: [],
@@ -5774,7 +5609,6 @@ export class SupportStore {
         accountType: "unknown",
         groupName: "Conversa",
         knownEcommerces: [],
-        directoryContext: [],
         categoryCatalog: this.getAnalysisCategoryCatalog(),
         candidateMessageIds: candidateIds,
         messages: [],
@@ -6190,280 +6024,6 @@ export class SupportStore {
     return accepted;
   }
 
-  private getTicketDirectoryContext(ticketId: string): TicketDirectoryContextDto {
-    const directorySchemaAvailable = Boolean(
-      this.database
-        .prepare(
-          `SELECT 1
-           FROM sqlite_master
-           WHERE type = 'table' AND name = 'ticket_record_links'`,
-        )
-        .get(),
-    );
-    if (!directorySchemaAvailable) {
-      return { records: [], explicitRecordIds: [] };
-    }
-    const rows = this.database
-      .prepare(
-        `WITH ticket_requester AS (
-           SELECT requester.external_jid
-           FROM ticket_messages ticket_message
-           JOIN messages message ON message.id = ticket_message.message_id
-           JOIN participants requester ON requester.id = message.sender_id
-           LEFT JOIN staff_members staff
-             ON staff.participant_id = requester.id AND staff.active = 1
-           WHERE ticket_message.ticket_id = ?
-             AND staff.participant_id IS NULL
-           ORDER BY message.occurred_at, message.id
-           LIMIT 1
-         ), requester_aliases(external_jid) AS (
-           SELECT external_jid FROM ticket_requester
-           UNION
-           SELECT identity_link.phone_jid
-           FROM ticket_requester requester
-           JOIN whatsapp_identity_links identity_link
-             ON identity_link.phone_jid = requester.external_jid
-             OR identity_link.lid_jid = requester.external_jid
-           UNION
-           SELECT identity_link.lid_jid
-           FROM ticket_requester requester
-           JOIN whatsapp_identity_links identity_link
-             ON identity_link.phone_jid = requester.external_jid
-             OR identity_link.lid_jid = requester.external_jid
-         ), linked_records(record_id, source) AS (
-           SELECT ticket_link.record_id, 'ticket'
-           FROM ticket_record_links ticket_link
-           WHERE ticket_link.ticket_id = ?
-             AND ticket_link.archived_at IS NULL
-           UNION ALL
-           SELECT group_link.record_id, 'group'
-           FROM tickets ticket
-           JOIN directory_group_links group_link
-             ON group_link.group_id = ticket.group_id
-            AND group_link.archived_at IS NULL
-           WHERE ticket.id = ?
-           UNION ALL
-           SELECT person_link.record_id, 'requester'
-           FROM requester_aliases requester_alias
-           JOIN participants requester
-             ON requester.external_jid = requester_alias.external_jid
-           JOIN directory_person_links person_link
-             ON person_link.participant_id = requester.id
-            AND person_link.archived_at IS NULL
-         )
-         SELECT record.id, record.name, record.description,
-                record_type.id AS type_id,
-                record_type.name AS type_name,
-                record_type.plural_name AS type_plural_name,
-                record_type.slug AS type_slug,
-                record_type.icon AS type_icon,
-                record_type.color AS type_color,
-                linked.source
-         FROM linked_records linked
-         JOIN directory_records record
-           ON record.id = linked.record_id
-          AND record.archived_at IS NULL
-         JOIN directory_record_types record_type
-           ON record_type.id = record.record_type_id
-          AND record_type.archived_at IS NULL
-         ORDER BY record_type.name COLLATE NOCASE,
-                  record.name COLLATE NOCASE,
-                  record.id,
-                  CASE linked.source
-                    WHEN 'ticket' THEN 0
-                    WHEN 'group' THEN 1
-                    ELSE 2
-                  END`,
-      )
-      .all(ticketId, ticketId, ticketId) as Array<{
-      id: string;
-      name: string;
-      description: string | null;
-      type_id: string;
-      type_name: string;
-      type_plural_name: string;
-      type_slug: string;
-      type_icon: string | null;
-      type_color: string | null;
-      source: TicketDirectoryContextSource;
-    }>;
-
-    const records = new Map<
-      string,
-      TicketDirectoryContextRecordDto & {
-        sourceSet: Set<TicketDirectoryContextSource>;
-      }
-    >();
-    for (const row of rows) {
-      const current = records.get(row.id) ?? {
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        type: {
-          id: row.type_id,
-          name: row.type_name,
-          pluralName: row.type_plural_name,
-          slug: row.type_slug,
-          icon: row.type_icon,
-          color: row.type_color,
-        },
-        fields: [],
-        sources: [],
-        sourceSet: new Set<TicketDirectoryContextSource>(),
-      };
-      current.sourceSet.add(row.source);
-      records.set(row.id, current);
-    }
-
-    const recordIds = [...records.keys()];
-    if (recordIds.length) {
-      const placeholders = recordIds.map(() => "?").join(", ");
-      const recordNames = new Map(
-        (this.database
-          .prepare("SELECT id, name FROM directory_records")
-          .all() as Array<{ id: string; name: string }>).map((record) => [
-          record.id,
-          record.name,
-        ]),
-      );
-      const fields = this.database
-        .prepare(
-          `SELECT field_value.record_id,
-                  field.id, field.key, field.label, field.field_type AS type,
-                  field_value.value_json
-           FROM directory_field_values field_value
-           JOIN directory_field_definitions field
-             ON field.id = field_value.field_id
-            AND field.archived_at IS NULL
-           WHERE field_value.record_id IN (${placeholders})
-           ORDER BY field_value.record_id, field.position, field.label, field.id`,
-        )
-        .all(...recordIds) as Array<{
-        record_id: string;
-        id: string;
-        key: string;
-        label: string;
-        type: DirectoryFieldType;
-        value_json: string;
-      }>;
-      for (const field of fields) {
-        const value = parseJson<unknown>(field.value_json, undefined);
-        if (!isDirectoryFieldValue(value)) continue;
-        records.get(field.record_id)?.fields.push({
-          id: field.id,
-          key: field.key,
-          label: field.label,
-          type: field.type,
-          value,
-          displayValue: directoryFieldDisplayValue(
-            value,
-            field.type,
-            recordNames,
-          ),
-        });
-      }
-    }
-
-    const sourceOrder: TicketDirectoryContextSource[] = [
-      "ticket",
-      "group",
-      "requester",
-    ];
-    const mappedRecords = [...records.values()].map((record) => {
-      const { sourceSet, ...mapped } = record;
-      return {
-        ...mapped,
-        sources: sourceOrder.filter((source) => sourceSet.has(source)),
-      };
-    });
-    return {
-      records: mappedRecords,
-      explicitRecordIds: mappedRecords
-        .filter((record) => record.sources.includes("ticket"))
-        .map((record) => record.id)
-        .toSorted(),
-    };
-  }
-
-  private getDirectoryAnalysisContext(
-    groupId: string,
-    ticketId?: string,
-  ): DirectoryAnalysisRecord[] {
-    if (ticketId) {
-      return this.getTicketDirectoryContext(ticketId).records.map((record) => ({
-        id: record.id,
-        type: record.type.name,
-        name: record.name,
-        fields: record.fields.map((field) => ({
-          label: field.label,
-          value: field.value,
-        })),
-      }));
-    }
-    const rows = this.database
-      .prepare(
-        `SELECT record.id,
-                record_type.name AS type_name,
-                record.name,
-                field.label AS field_label,
-                field_value.value_json
-         FROM directory_group_links group_link
-         JOIN directory_records record
-           ON record.id = group_link.record_id
-          AND record.archived_at IS NULL
-         JOIN directory_record_types record_type
-           ON record_type.id = record.record_type_id
-          AND record_type.archived_at IS NULL
-         LEFT JOIN directory_field_values field_value
-           ON field_value.record_id = record.id
-         LEFT JOIN directory_field_definitions field
-           ON field.id = field_value.field_id
-          AND field.archived_at IS NULL
-         WHERE group_link.group_id = ?
-           AND group_link.archived_at IS NULL
-         ORDER BY record_type.name, record.name, field.position, field.label
-         LIMIT 1_500`,
-      )
-      .all(groupId) as Array<{
-      id: string;
-      type_name: string;
-      name: string;
-      field_label: string | null;
-      value_json: string | null;
-    }>;
-    const records = new Map<string, DirectoryAnalysisRecord>();
-    for (const row of rows) {
-      if (!records.has(row.id)) {
-        if (records.size >= 30) continue;
-        records.set(row.id, {
-          id: row.id,
-          type: row.type_name,
-          name: row.name,
-          fields: [],
-        });
-      }
-      if (!row.field_label || row.value_json === null) continue;
-      const value = parseJson<unknown>(row.value_json, null);
-      if (
-        value !== null &&
-        typeof value !== "string" &&
-        typeof value !== "number" &&
-        typeof value !== "boolean" &&
-        !(
-          Array.isArray(value) &&
-          value.every((item): item is string => typeof item === "string")
-        )
-      ) {
-        continue;
-      }
-      const record = records.get(row.id);
-      if (record && record.fields.length < 50) {
-        record.fields.push({ label: row.field_label, value });
-      }
-    }
-    return [...records.values()];
-  }
-
   private buildTriageAnalysisInput(
     candidates: TriageCandidate[],
   ): TriageAnalysisInput {
@@ -6504,7 +6064,6 @@ export class SupportStore {
       accountType: first.client.kind,
       groupName: first.group.subject,
       knownEcommerces,
-      directoryContext: this.getDirectoryAnalysisContext(first.group.id),
       categoryCatalog: this.getAnalysisCategoryCatalog(),
       candidateMessageIds: candidates.map((candidate) => candidate.id),
       messages: this.buildTriageAnalysisMessages(candidates),
@@ -9091,10 +8650,6 @@ export class SupportStore {
         : ticket.client_kind,
       groupName: ticket.group_name,
       knownEcommerces: stores.map((store) => store.name),
-      directoryContext: this.getDirectoryAnalysisContext(
-        ticket.group_id,
-        ticketId,
-      ),
       categoryCatalog: this.getAnalysisCategoryCatalog(),
       conversationState: this.getSupportConversationState(ticketId),
       messages: limitSupportPromptMessages(messages),
@@ -10181,7 +9736,6 @@ export class SupportStore {
       ...this.mapTicketSummary(row),
       requesterOverrideId: row.requester_override_id,
       requesterCandidates: this.getTicketRequesterCandidates(ticketId),
-      directoryContext: this.getTicketDirectoryContext(ticketId),
       productForwarding: this.getTicketProductForwarding(ticketId),
       timeline: this.getTimeline(ticketId),
       suggestions: this.getSuggestions(ticketId),
@@ -10373,20 +9927,6 @@ export class SupportStore {
          WHERE c.ignored_at IS NULL${createdRangeSql}`,
       )
       .get(...createdRangeParameters) as { count: number };
-    const recordTotal = this.database
-      .prepare(
-        `SELECT COUNT(DISTINCT directory_record.id) AS count
-         FROM tickets t
-         JOIN clients c ON c.id = t.client_id
-         JOIN directory_group_links directory_link
-           ON directory_link.group_id = t.group_id
-          AND directory_link.archived_at IS NULL
-         JOIN directory_records directory_record
-           ON directory_record.id = directory_link.record_id
-          AND directory_record.archived_at IS NULL
-         WHERE c.ignored_at IS NULL${createdRangeSql}`,
-      )
-      .get(...createdRangeParameters) as { count: number };
     const orphanTotal = this.database
       .prepare(
         `SELECT COUNT(DISTINCT m.group_id) AS count
@@ -10501,136 +10041,6 @@ export class SupportStore {
       group_subject: string;
       count: number;
     }>;
-    const directoryRecordRows = this.database
-      .prepare(
-        `SELECT record.id AS record_id,
-                record.name AS record_name,
-                record_type.id AS record_type_id,
-                record_type.name AS record_type_name,
-                COUNT(DISTINCT t.id) AS count
-         FROM tickets t
-         JOIN clients c ON c.id = t.client_id
-         JOIN directory_group_links directory_link
-           ON directory_link.group_id = t.group_id
-          AND directory_link.archived_at IS NULL
-         JOIN directory_records record
-           ON record.id = directory_link.record_id
-          AND record.archived_at IS NULL
-         JOIN directory_record_types record_type
-           ON record_type.id = record.record_type_id
-          AND record_type.archived_at IS NULL
-         WHERE c.ignored_at IS NULL${createdRangeSql}
-         GROUP BY record.id, record_type.id
-         ORDER BY count DESC, record.name, record.id`,
-      )
-      .all(...createdRangeParameters) as Array<{
-      record_id: string;
-      record_name: string;
-      record_type_id: string;
-      record_type_name: string;
-      count: number;
-    }>;
-    const recordBreakdownMap = new Map<
-      string,
-      {
-        recordTypeId: string;
-        recordTypeName: string;
-        items: Array<{ recordId: string; recordName: string; count: number }>;
-      }
-    >();
-    for (const row of directoryRecordRows) {
-      const breakdown = recordBreakdownMap.get(row.record_type_id) ?? {
-        recordTypeId: row.record_type_id,
-        recordTypeName: row.record_type_name,
-        items: [],
-      };
-      if (breakdown.items.length < 8) {
-        breakdown.items.push({
-          recordId: row.record_id,
-          recordName: row.record_name,
-          count: row.count,
-        });
-      }
-      recordBreakdownMap.set(row.record_type_id, breakdown);
-    }
-    const directoryFieldRows = this.database
-      .prepare(
-        `SELECT field.id AS field_id,
-                field.label AS field_label,
-                record_type.id AS record_type_id,
-                record_type.name AS record_type_name,
-                CAST(option_value.value AS TEXT) AS option_value,
-                field.field_type,
-                COUNT(DISTINCT t.id) AS count
-         FROM tickets t
-         JOIN clients c ON c.id = t.client_id
-         JOIN directory_group_links directory_link
-           ON directory_link.group_id = t.group_id
-          AND directory_link.archived_at IS NULL
-         JOIN directory_records record
-           ON record.id = directory_link.record_id
-          AND record.archived_at IS NULL
-         JOIN directory_record_types record_type
-           ON record_type.id = record.record_type_id
-          AND record_type.archived_at IS NULL
-         JOIN directory_field_values field_value
-           ON field_value.record_id = record.id
-         JOIN directory_field_definitions field
-           ON field.id = field_value.field_id
-          AND field.archived_at IS NULL
-          AND field.field_type IN ('select', 'multi_select', 'boolean')
-         JOIN json_each(
-           CASE
-             WHEN field.field_type = 'multi_select' THEN field_value.value_json
-             ELSE json_array(json_extract(field_value.value_json, '$'))
-           END
-         ) option_value
-         WHERE c.ignored_at IS NULL${createdRangeSql}
-           AND option_value.value IS NOT NULL
-         GROUP BY field.id, CAST(option_value.value AS TEXT)
-         ORDER BY field.label, count DESC, option_value.value`,
-      )
-      .all(...createdRangeParameters) as Array<{
-      field_id: string;
-      field_label: string;
-      record_type_id: string;
-      record_type_name: string;
-      option_value: string;
-      field_type: "select" | "multi_select" | "boolean";
-      count: number;
-    }>;
-    const fieldBreakdownMap = new Map<
-      string,
-      {
-        fieldId: string;
-        fieldLabel: string;
-        recordTypeId: string;
-        recordTypeName: string;
-        items: Array<{ value: string; count: number }>;
-      }
-    >();
-    for (const row of directoryFieldRows) {
-      const breakdown = fieldBreakdownMap.get(row.field_id) ?? {
-        fieldId: row.field_id,
-        fieldLabel: row.field_label,
-        recordTypeId: row.record_type_id,
-        recordTypeName: row.record_type_name,
-        items: [],
-      };
-      if (breakdown.items.length < 8) {
-        breakdown.items.push({
-          value:
-            row.field_type === "boolean"
-              ? row.option_value === "1"
-                ? "Sim"
-                : "Não"
-              : row.option_value,
-          count: row.count,
-        });
-      }
-      fieldBreakdownMap.set(row.field_id, breakdown);
-    }
-
     return {
       period,
       totals: {
@@ -10641,7 +10051,6 @@ export class SupportStore {
         orphanDemands: orphanTotal.count,
         clients: clientTotal.count,
         groups: groupTotal.count,
-        records: recordTotal.count,
       },
       statusCounts: TICKET_STATUSES.map((status) => ({
         status,
@@ -10657,15 +10066,6 @@ export class SupportStore {
         groupSubject: row.group_subject,
         count: row.count,
       })),
-      topRecords: directoryRecordRows.slice(0, 8).map((row) => ({
-        recordId: row.record_id,
-        recordName: row.record_name,
-        recordTypeId: row.record_type_id,
-        recordTypeName: row.record_type_name,
-        count: row.count,
-      })),
-      recordBreakdowns: [...recordBreakdownMap.values()],
-      fieldBreakdowns: [...fieldBreakdownMap.values()],
       topClients: topClients.map((row) => ({
         clientId: row.client_id,
         clientName: row.client_name,

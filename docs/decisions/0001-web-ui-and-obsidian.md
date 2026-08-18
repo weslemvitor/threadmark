@@ -6,7 +6,7 @@ Aceita em 2026-07-16 e generalizada para a edição comunitária em 2026-07-18.
 
 ## Contexto
 
-O sistema precisa exibir timeline de mensagens, anexos, tickets simultâneos, grupos, pessoas, registros personalizados, evidências, sugestões, auditoria e gráficos. Um vault Markdown é útil para conhecimento curado, mas não representa bem eventos de alto volume nem deve receber o histórico bruto de conversas.
+O sistema precisa exibir timeline de mensagens, anexos, tickets simultâneos, grupos, pessoas, evidências, sugestões, auditoria e gráficos. Um vault Markdown é útil para conhecimento curado, mas não representa bem eventos de alto volume nem deve receber o histórico bruto de conversas.
 
 ## Decisão
 

@@ -219,7 +219,6 @@ test("dashboard interpreta o intervalo inclusivo em America/Sao_Paulo", () => {
     orphanDemands: 1,
     clients: 2,
     groups: 2,
-    records: 0,
   });
   assert.deepEqual(dashboard.ticketsByDay, [
     { date: "2026-07-01", created: 2, resolved: 2 },

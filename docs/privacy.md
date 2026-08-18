@@ -14,7 +14,7 @@ Dependendo da configuração e das mensagens recebidas, a instalação pode guar
 - texto, horário, autoria, respostas citadas e reações;
 - imagens, PDFs, documentos, áudios e metadados de anexos;
 - transcrições de áudio, confiança, estado da fila e falhas de processamento;
-- tipos, campos, registros e segmentos do Diretório, tickets, categorias e status;
+- tickets, categorias, responsáveis, prioridades e status;
 - prompts operacionais, resultados de IA, evidências e sugestões;
 - usuários locais, sessões, configurações e trilha de auditoria;
 - logs técnicos necessários para diagnóstico.
@@ -40,7 +40,7 @@ O projeto não oferece um backend hospedado central. Entretanto, ao configurar u
 
 ## Retenção e exclusão
 
-Excluir ou arquivar um registro do Diretório pode ser uma remoção operacional, preservando mensagens e auditoria. Arquivar um ticket também não apaga o conteúdo. Antes de atender uma solicitação de eliminação, confirme quais identidades, grupos, registros, mensagens, anexos, backups e logs precisam ser removidos e quais dados devem ser mantidos por obrigação legal.
+Arquivar um ticket não apaga o conteúdo. Antes de atender uma solicitação de eliminação, confirme quais identidades, grupos, mensagens, tickets, anexos, backups e logs precisam ser removidos e quais dados devem ser mantidos por obrigação legal.
 
 Não apague diretamente arquivos do SQLite enquanto o serviço estiver ativo. Faça backup, pare o daemon e valide a integridade após qualquer manutenção de retenção.
 

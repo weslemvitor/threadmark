@@ -540,15 +540,11 @@ test("notificações exigem opt-in e a timeline mostra a operação executada", 
   assert.doesNotMatch(detail, /O ticket recebeu uma atualização interna/);
 });
 
-test("ticket usa registros agnósticos, notas internas e preserva o histórico", async () => {
-  const [app, detail, editor, directory, api] = await Promise.all([
+test("ticket preserva notas internas sem recursos de registros personalizados", async () => {
+  const [app, detail, directory, api] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../app/features/tickets/components/ticket-context-editor.tsx", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -558,28 +554,14 @@ test("ticket usa registros agnósticos, notas internas e preserva o histórico",
     readFile(new URL("../app/lib/api.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(app, /updateTicketDirectoryContext\(ticketId, input\)/);
   assert.match(app, /addTicketInternalNote\(ticketId, body, clientNoteId\)/);
-  assert.match(app, /archiveDirectoryRecord\(id\)/);
-  assert.match(app, /Registro arquivado\. Grupos, tickets e histórico foram preservados\./);
-  assert.match(app, /onArchiveRecord=\{handleArchiveDirectoryRecord\}/);
-  assert.match(detail, /<TicketContextEditor/);
-  assert.match(detail, /ticket\.directoryContext\.records\.map/);
-  assert.match(detail, /Campos personalizados do Diretório/);
   assert.match(detail, /Adicionar nota interna/);
   assert.match(detail, /nunca é enviada ao WhatsApp/);
   assert.doesNotMatch(detail, /Ecommerce afetado|Cliente não identificado/);
-  assert.match(editor, /Vincular registros do Diretório/);
-  assert.match(editor, /explicitRecordIds/);
-  assert.match(editor, /Somente organização interna/);
-  assert.match(editor, /sem\s+alterar ou enviar qualquer mensagem do WhatsApp/);
-  assert.doesNotMatch(editor, /Associar cliente e ecommerce|rememberForConversation/);
-  assert.match(directory, /Mostrar arquivados/);
-  assert.match(directory, /Arquivar “\$\{record\.name\}”\? Conversas e tickets serão preservados\./);
-  assert.match(directory, /onArchive\(record\.id\)/);
-  assert.match(api, /export async function archiveDirectoryRecord/);
-  assert.match(api, /\/api\/directory\/records\/\$\{encodeURIComponent\(id\)\}/);
-  assert.match(api, /\/api\/tickets\/\$\{encodeURIComponent\(id\)\}\/directory-context/);
+  assert.doesNotMatch(detail, /Registros vinculados|Campos personalizados do Diretório/);
+  assert.doesNotMatch(directory, /Registros|Segmentos/);
+  assert.doesNotMatch(app, /DirectoryRecord|DirectorySegment|RecordConnector/);
+  assert.doesNotMatch(api, /directory-context|directory\/records|record-connectors/);
   assert.match(api, /\/api\/tickets\/\$\{encodeURIComponent\(id\)\}\/notes/);
   assert.match(api, /method: "PATCH"/);
   assert.match(api, /method: "DELETE"/);
@@ -971,7 +953,10 @@ test("ticket oferece edição persistente de título, descrição, prioridade e 
   assert.match(app, /await updateTicketMetadata\(ticketId, input\)/);
   assert.match(app, /Dados do ticket atualizados no SQLite\./);
   assert.match(editor, /<DialogContent/);
-  assert.match(editor, /max-h-\[calc\(100dvh-2rem\)\] max-w-2xl/);
+  assert.match(editor, /max-h-\[calc\(100dvh-1rem\)\]/);
+  assert.match(editor, /w-\[calc\(100%-1rem\)\] max-w-2xl/);
+  assert.match(editor, /grid-cols-1 gap-4 sm:grid-cols-3/);
+  assert.match(editor, /grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto/);
 });
 
 test("encaminhamento de bug persiste no ticket e pode finalizar o atendimento", async () => {

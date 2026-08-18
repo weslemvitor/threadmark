@@ -271,27 +271,6 @@ function truncateText(value: string, maxCharacters: number): string {
   }`;
 }
 
-function boundDirectoryContext(
-  records: SupportAnalysisInput["directoryContext"],
-): NonNullable<SupportAnalysisInput["directoryContext"]> {
-  return (records ?? []).slice(0, 30).map((record) => ({
-    id: truncateText(record.id, 200),
-    type: truncateText(record.type, 200),
-    name: truncateText(record.name, 500),
-    fields: record.fields.slice(0, 50).map((field) => ({
-      label: truncateText(field.label, 200),
-      value:
-        typeof field.value === "string"
-          ? truncateText(field.value, 4_000)
-          : Array.isArray(field.value)
-            ? field.value
-                .slice(0, 100)
-                .map((value) => truncateText(value, 500))
-            : field.value,
-    })),
-  }));
-}
-
 function boundConversationState(
   state: SupportAnalysisInput["conversationState"],
 ): SupportAnalysisInput["conversationState"] {
@@ -414,7 +393,6 @@ function boundSupportInput(
     knownEcommerces: input.knownEcommerces
       .slice(0, 250)
       .map((name) => truncateText(name, 500)),
-    directoryContext: boundDirectoryContext(input.directoryContext),
     conversationState: boundConversationState(input.conversationState),
     messages,
     sentResponses,
@@ -526,7 +504,6 @@ function boundTriageInput(input: TriageAnalysisInput): TriageAnalysisInput {
     knownEcommerces: input.knownEcommerces
       .slice(0, 250)
       .map((name) => truncateText(name, 500)),
-    directoryContext: boundDirectoryContext(input.directoryContext),
     candidateMessageIds: [...input.candidateMessageIds],
     messages,
     openTickets: input.openTickets.slice(0, 30).map((ticket) => ({

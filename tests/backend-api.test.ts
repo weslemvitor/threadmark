@@ -7,7 +7,7 @@ import test, { afterEach } from "node:test";
 
 import { createDatabase, type SupportDatabase } from "../server/db/index.js";
 import { InvestigationExecutionRegistry } from "../server/agent/investigation-execution-registry.js";
-import { DirectoryStore, SupportStore } from "../server/domain/index.js";
+import { SupportStore } from "../server/domain/index.js";
 import { createTestApiApp } from "../server/index.js";
 import { loadConfig } from "../server/runtime/config.js";
 import { offlineRuntimeState } from "../server/runtime/runtime-state.js";
@@ -983,57 +983,6 @@ test("API cancela turno running de forma idempotente e aborta o job específico"
     1,
   );
   execution.release();
-});
-
-test("API atualiza contexto agnóstico do ticket com schema estrito", async () => {
-  const { app, store, groupId, ticketId } = apiFixture();
-  const directory = new DirectoryStore(store.database);
-  const type = directory
-    .getSnapshot()
-    .recordTypes.find((recordType) => recordType.slug === "organizacao");
-  assert.ok(type);
-  const record = directory.createRecord(
-    {
-      typeId: type.id,
-      name: "Conta estratégica",
-      groupIds: [groupId],
-    },
-    "Pessoa administradora",
-  );
-
-  const response = await app.request(
-    `/api/tickets/${ticketId}/directory-context`,
-    {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ recordIds: [record.id] }),
-    },
-  );
-  assert.equal(response.status, 200);
-  const updated = (await response.json()) as TicketDetailDto;
-  assert.deepEqual(updated.directoryContext.explicitRecordIds, [record.id]);
-  assert.deepEqual(updated.directoryContext.records[0]?.sources, [
-    "ticket",
-    "group",
-  ]);
-  assert.equal(updated.latestInvestigation, null);
-  assert.ok(
-    updated.timeline.some(
-      (item) =>
-        item.type === "event" &&
-        item.eventType === "ticket_directory_context_changed",
-    ),
-  );
-
-  const invalid = await app.request(
-    `/api/tickets/${ticketId}/directory-context`,
-    {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ recordIds: [record.id], actor: "Navegador" }),
-    },
-  );
-  assert.equal(invalid.status, 400);
 });
 
 test("API salva nota interna idempotente sem aceitar ator público", async () => {

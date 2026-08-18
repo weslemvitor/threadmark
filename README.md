@@ -1,6 +1,6 @@
 # Threadmark
 
-Threadmark é uma central de suporte local-first que organiza conversas recebidas pelo WhatsApp em tickets e contexto operacional. Grupos e pessoas permanecem entidades nativas, enquanto o Diretório permite modelar organizações, projetos, produtos ou qualquer outro contexto por meio de registros personalizados. A captura é estritamente de entrada: o produto não possui composer, endpoint de envio nem automação de respostas no WhatsApp.
+Threadmark é uma central de suporte local-first que organiza conversas recebidas pelo WhatsApp em tickets e contexto operacional. Grupos e pessoas permanecem entidades nativas no Diretório. A captura é estritamente de entrada: o produto não possui composer, endpoint de envio nem automação de respostas no WhatsApp.
 
 A persistência operacional de mensagens, anexos, configurações e investigações fica na máquina do operador. Quando um provedor remoto de IA é configurado, o recorte sanitizado necessário à tarefa é enviado a esse provedor. Uma sugestão de resposta só pode ser copiada e enviada manualmente pela equipe no aplicativo oficial.
 
@@ -14,7 +14,7 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Conversas completas no estilo WhatsApp, sem transformar automaticamente cada mensagem em ticket.
 - Triagem supervisionada com janela de silêncio configurável, agrupamento semântico, espera por contexto e atualização de sugestões existentes.
 - Seleção manual de mensagens para criar um ticket, anexar a um caso existente, guardar como contexto ou restaurar itens revisados.
-- Diretório agnóstico com grupos, pessoas, tipos de registro, campos personalizados, relações e segmentos salvos.
+- Diretório local com grupos e pessoas sincronizados do WhatsApp.
 - Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período e exportação.
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
 - Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.
@@ -105,17 +105,15 @@ Com a lista de grupos monitorados vazia, o sistema opera em modo descoberta: sal
 
 Mensagens privadas novas só entram na triagem quando o remetente está vinculado a pelo menos um grupo conhecido. Histórico privado antigo e contatos sem vínculo permanecem armazenados apenas como contexto.
 
-## Diretório personalizável
+## Diretório
 
-O Diretório separa as identidades capturadas do modelo operacional criado por cada instalação:
+O Diretório apresenta as identidades capturadas pelo WhatsApp:
 
-- **grupos e pessoas** vêm do WhatsApp e preservam seus identificadores técnicos;
-- **tipos de registro** definem o que a equipe deseja organizar, como organização, projeto, produto ou contrato;
-- **campos personalizados** podem armazenar texto, número, booleano, data, URL, seleção, múltipla seleção ou relação;
-- **registros** conectam grupos, pessoas e outros registros sem alterar o histórico original;
-- **segmentos** salvam filtros combinados para localizar conjuntos de registros.
+- **grupos** exibem monitoramento, participantes, tickets e atividade recente;
+- **pessoas** preservam nome, telefone, participação nos grupos e identificação da equipe;
+- aliases de telefone e LID são consolidados para evitar participantes duplicados.
 
-Exemplo: uma equipe pode criar o tipo `Organização`, adicionar os campos `Plano`, `Região` e `Responsável`, vincular dois grupos e três pessoas ao mesmo registro e salvar um segmento para organizações prioritárias. Outra instalação pode usar tipos completamente diferentes. Nenhuma taxonomia comercial é obrigatória.
+O Diretório não cria uma taxonomia comercial adicional. A organização operacional das demandas acontece nos tickets, categorias, responsáveis e prioridades.
 
 ## IA e investigação
 
@@ -133,7 +131,7 @@ O botão **Testar conexão** faz uma leitura real, mínima e readonly no recurso
 
 A triagem recebe apenas as mensagens candidatas, sugestões ainda abertas, anexos suportados e o contexto necessário da conversa. Ela pode separar assuntos, aguardar novas informações ou propor criar/anexar um ticket, mas não recebe precedentes resolvidos nem ferramentas técnicas. Áudios candidatos aguardam a transcrição local antes dessa avaliação.
 
-Na sala profunda, o operador conversa com o agente a partir do contexto do ticket. Esse fluxo recebe o recorte da conversa, os registros vinculados do Diretório e precedentes resolvidos compatíveis. Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos.
+Na sala profunda, o operador conversa com o agente a partir do contexto do ticket. Esse fluxo recebe o recorte da conversa e precedentes resolvidos compatíveis. Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos.
 
 Ferramentas disponíveis nesta versão:
 

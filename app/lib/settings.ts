@@ -10,8 +10,6 @@ import {
   type LocalToolTestResult,
   type LocalToolType,
   type LocalToolWriteInput,
-  type RecordConnectorDto,
-  type RecordConnectorWriteInput,
   type AudioTranscriptionSettingsDto,
   type LocalTranscriptionModelDto,
 } from "../../shared/contracts";
@@ -22,8 +20,6 @@ export type {
   LocalToolTestResult,
   LocalToolType,
   LocalToolWriteInput,
-  RecordConnectorDto,
-  RecordConnectorWriteInput,
   AudioTranscriptionSettingsDto,
   LocalTranscriptionModelDto,
 };
@@ -452,10 +448,6 @@ function normalizeLocalTool(value: unknown): LocalToolDto {
   };
 }
 
-function normalizeRecordConnector(value: unknown): RecordConnectorDto {
-  return asObject(value) as unknown as RecordConnectorDto;
-}
-
 function normalizeStorageComponent(value: unknown): LocalStorageComponentUsage {
   const object = asObject(value ?? {});
   return {
@@ -746,50 +738,6 @@ export async function queueAudioTranscription(
 export async function getLocalTools(): Promise<LocalToolDto[]> {
   const payload = asObject(await settingsRequest<unknown>("/api/tools"));
   return Array.isArray(payload.items) ? payload.items.map(normalizeLocalTool) : [];
-}
-
-export async function getRecordConnectors(): Promise<RecordConnectorDto[]> {
-  const payload = asObject(
-    await settingsRequest<unknown>("/api/settings/record-connectors"),
-  );
-  return Array.isArray(payload.items)
-    ? payload.items.map(normalizeRecordConnector)
-    : [];
-}
-
-export async function createRecordConnector(
-  input: RecordConnectorWriteInput,
-): Promise<RecordConnectorDto> {
-  return normalizeRecordConnector(
-    await settingsRequest<unknown>("/api/settings/record-connectors", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  );
-}
-
-export async function updateRecordConnector(
-  connectorId: string,
-  input: RecordConnectorWriteInput,
-): Promise<RecordConnectorDto> {
-  return normalizeRecordConnector(
-    await settingsRequest<unknown>(
-      `/api/settings/record-connectors/${encodeURIComponent(connectorId)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(input),
-      },
-    ),
-  );
-}
-
-export async function archiveRecordConnector(
-  connectorId: string,
-): Promise<void> {
-  await settingsRequest<{ ok: true }>(
-    `/api/settings/record-connectors/${encodeURIComponent(connectorId)}`,
-    { method: "DELETE" },
-  );
 }
 
 export async function createLocalTool(

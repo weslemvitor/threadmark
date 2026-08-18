@@ -30,13 +30,9 @@ import type {
   TicketStatus,
 } from "@/app/lib/types";
 import {
-  type DirectorySnapshotDto,
-  type ExecuteRecordConnectorInput,
-  type UpdateTicketDirectoryContextInput,
   type UpdateTicketMetadataInput,
 } from "@/shared/contracts.js";
 import { PriorityPill, StatusPill } from "@/app/components/shared/status-pill";
-import { TicketContextEditor } from "./ticket-context-editor";
 import { TicketDeleteDialog } from "./ticket-delete-dialog";
 import { TicketMetadataEditor } from "./ticket-metadata-editor";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
@@ -52,7 +48,6 @@ import { ContextPanel } from "./ticket-context-panel";
 import { ProductForwardingPanel } from "./ticket-product-panel";
 import { InvestigationRoomLauncher } from "./investigation-room-launcher";
 import { TicketResolutionSummary } from "./ticket-resolution-summary";
-import { TicketRecordConnectorDialog } from "./ticket-record-connector-dialog";
 import { TicketAssignmentPanel } from "./ticket-assignment-panel";
 
 const mutableStatuses: TicketStatus[] = [
@@ -66,10 +61,8 @@ const mutableStatuses: TicketStatus[] = [
 
 type TicketDetailProps = {
   ticket: TicketDetailType | null;
-  directorySnapshot: DirectorySnapshotDto | null;
   loading: boolean;
   updatingStatus: boolean;
-  updatingContext: boolean;
   updatingMetadata: boolean;
   updatingAssignee: boolean;
   addingNote: boolean;
@@ -107,16 +100,8 @@ type TicketDetailProps = {
   categoryCatalog: TicketCategoryCatalog[];
   categoryMutationTicketId: string | null;
   canManageCategories: boolean;
-  canCreateWithConnector: boolean;
-  executingRecordConnector: boolean;
   onOpenCategoryCatalog: () => void;
-  onOpenDirectory: () => void;
-  onOpenConnectors: () => void;
   onOpenProductForwarding: () => void;
-  onUpdateDirectoryContext: (
-    ticketId: string,
-    input: UpdateTicketDirectoryContextInput,
-  ) => Promise<boolean>;
   onUpdateMetadata: (
     ticketId: string,
     input: UpdateTicketMetadataInput,
@@ -125,19 +110,12 @@ type TicketDetailProps = {
     ticketId: string,
     assigneeId: string | null,
   ) => Promise<boolean>;
-  onExecuteRecordConnector: (
-    ticketId: string,
-    connectorId: string,
-    input: ExecuteRecordConnectorInput,
-  ) => Promise<boolean>;
 };
 
 export function TicketDetail({
   ticket,
-  directorySnapshot,
   loading,
   updatingStatus,
-  updatingContext,
   updatingMetadata,
   updatingAssignee,
   addingNote,
@@ -157,9 +135,7 @@ export function TicketDetail({
   onUpdateNote,
   onDeleteNote,
   onDetachMessage,
-  onOpenDirectory,
   onOpenProductForwarding,
-  onUpdateDirectoryContext,
   onUpdateMetadata,
   onUpdateAssignee,
   onAttachCategory,
@@ -168,18 +144,11 @@ export function TicketDetail({
   categoryCatalog,
   categoryMutationTicketId,
   canManageCategories,
-  canCreateWithConnector,
-  executingRecordConnector,
   onOpenCategoryCatalog,
-  onOpenConnectors,
-  onExecuteRecordConnector,
 }: TicketDetailProps) {
-  const [contextEditorOpen, setContextEditorOpen] = useState(false);
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [recordConnectorDialogOpen, setRecordConnectorDialogOpen] =
-    useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const conversationScrollRef = useRef<HTMLDivElement>(null);
   const categorySectionRef = useRef<HTMLElement>(null);
@@ -556,12 +525,7 @@ export function TicketDetail({
             ticket={ticket}
             updating={updatingAssignee}
           />
-          <ContextPanel
-            canCreateWithConnector={canCreateWithConnector}
-            onEditContext={() => setContextEditorOpen(true)}
-            onCreateWithConnector={() => setRecordConnectorDialogOpen(true)}
-            ticket={ticket}
-          />
+          <ContextPanel ticket={ticket} />
           <CategoryPanel
             categoryCatalog={categoryCatalog}
             categoryMutationInProgress={categoryMutationTicketId === ticket.id}
@@ -583,24 +547,6 @@ export function TicketDetail({
           />
         </aside>
       </div>
-      {contextEditorOpen ? (
-        <TicketContextEditor
-          key={ticket.id}
-          onCancel={() => setContextEditorOpen(false)}
-          onOpenDirectory={() => {
-            setContextEditorOpen(false);
-            onOpenDirectory();
-          }}
-          onSave={(input) =>
-            void onUpdateDirectoryContext(ticket.id, input).then((saved) => {
-              if (saved) setContextEditorOpen(false);
-            })
-          }
-          saving={updatingContext}
-          snapshot={directorySnapshot}
-          ticket={ticket}
-        />
-      ) : null}
       {metadataEditorOpen ? (
         <TicketMetadataEditor
           key={ticket.id}
@@ -624,18 +570,6 @@ export function TicketDetail({
             if (deleted) setDeleteDialogOpen(false);
             return deleted;
           }}
-          ticket={ticket}
-        />
-      ) : null}
-      {recordConnectorDialogOpen ? (
-        <TicketRecordConnectorDialog
-          directory={directorySnapshot}
-          executing={executingRecordConnector}
-          onClose={() => setRecordConnectorDialogOpen(false)}
-          onExecute={(connectorId, input) =>
-            onExecuteRecordConnector(ticket.id, connectorId, input)
-          }
-          onOpenConnectors={onOpenConnectors}
           ticket={ticket}
         />
       ) : null}

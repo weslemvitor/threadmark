@@ -17,16 +17,6 @@ export interface AnalysisMessage {
   quotedMessageId: string | null;
 }
 
-export interface DirectoryAnalysisRecord {
-  id: string;
-  type: string;
-  name: string;
-  fields: Array<{
-    label: string;
-    value: string | number | boolean | string[] | null;
-  }>;
-}
-
 export interface SupportConversationState {
   lastExternalMessageAt: string | null;
   lastSentResponseAt: string | null;
@@ -75,8 +65,6 @@ export interface SupportAnalysisInput {
   accountType: "agency" | "ecommerce" | "unknown";
   groupName: string;
   knownEcommerces: string[];
-  /** Optional, user-defined context linked to the native WhatsApp group. */
-  directoryContext?: DirectoryAnalysisRecord[];
   /** Closed catalog available to the AI for this installation. */
   categoryCatalog?: AnalysisCategoryCatalog;
   /** Explicit temporal state used to distinguish history from unanswered demand. */
@@ -99,8 +87,6 @@ export interface TriageAnalysisInput {
   accountType: "agency" | "ecommerce" | "unknown";
   groupName: string;
   knownEcommerces: string[];
-  /** Optional, user-defined context linked to the native WhatsApp group. */
-  directoryContext?: DirectoryAnalysisRecord[];
   /** Closed catalog available to the AI for this installation. */
   categoryCatalog?: AnalysisCategoryCatalog;
   candidateMessageIds: string[];

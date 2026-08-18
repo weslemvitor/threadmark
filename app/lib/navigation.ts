@@ -13,7 +13,6 @@ export const SETTINGS_ROUTE_TABS = [
   "staff",
   "whatsapp",
   "ai",
-  "connectors",
   "tools",
   "data",
   "security",

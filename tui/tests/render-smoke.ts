@@ -83,10 +83,6 @@ const ticket: TicketDetailDto = {
   resolvedAt: null,
   messageCount: 2,
   latestSuggestion: { id: "suggestion", confidence: 0.88, status: "candidate" },
-  directoryContext: {
-    records: [],
-    explicitRecordIds: [],
-  },
   timeline: [],
   suggestions: [
     {
@@ -116,15 +112,11 @@ const dashboard: DashboardResponse = {
     orphanDemands: 1,
     clients: 18,
     groups: 18,
-    records: 0,
   },
   statusCounts: [],
   ticketsByDay: [],
   topCategories: [],
   topGroups: [],
-  topRecords: [],
-  recordBreakdowns: [],
-  fieldBreakdowns: [],
   topClients: [],
   recentTickets: [ticket],
 };

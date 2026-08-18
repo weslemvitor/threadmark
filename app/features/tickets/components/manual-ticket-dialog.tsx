@@ -109,7 +109,7 @@ export function ManualTicketDialog({
             <FilePlus2 size={16} />
             <span className="flex flex-col">
               <strong className="text-xs">Sem mensagem de origem</strong>
-              <small className="mt-1 text-xs text-primary/70">Depois você pode adicionar notas, categorias e registros vinculados.</small>
+              <small className="mt-1 text-xs text-primary/70">Depois você pode adicionar notas e categorias.</small>
             </span>
           </div>
 

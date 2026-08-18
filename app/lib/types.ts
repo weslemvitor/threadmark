@@ -5,14 +5,6 @@ import type {
   CategoryFacet,
   ClientSummaryDto,
   DashboardResponse,
-  DirectoryFieldDefinitionDto,
-  DirectoryFieldDefinitionInput,
-  DirectoryRecordDto,
-  DirectoryRecordInput,
-  DirectoryRecordTypeDto,
-  DirectoryRecordTypeInput,
-  DirectorySegmentDto,
-  DirectorySegmentInput,
   DirectorySnapshotDto,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
@@ -39,14 +31,6 @@ export type {
   CategoryDto,
   ClientSummaryDto,
   DashboardResponse,
-  DirectoryFieldDefinitionDto,
-  DirectoryFieldDefinitionInput,
-  DirectoryRecordDto,
-  DirectoryRecordInput,
-  DirectoryRecordTypeDto,
-  DirectoryRecordTypeInput,
-  DirectorySegmentDto,
-  DirectorySegmentInput,
   DirectorySnapshotDto,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
@@ -72,10 +56,6 @@ export type {
 export type RuntimeState = RuntimeStatusDto;
 export type ClientSummary = ClientSummaryDto;
 export type DirectorySnapshot = DirectorySnapshotDto;
-export type DirectoryRecordType = DirectoryRecordTypeDto;
-export type DirectoryFieldDefinition = DirectoryFieldDefinitionDto;
-export type DirectoryRecord = DirectoryRecordDto;
-export type DirectorySegment = DirectorySegmentDto;
 export type DashboardData = DashboardResponse;
 export type TicketSummary = TicketSummaryDto;
 export type TicketDetail = TicketDetailDto;

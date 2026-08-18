@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   CircleStop,
   FileSearch,
-  Link2,
   LoaderCircle,
   MessageSquareText,
   ShieldCheck,
@@ -103,7 +102,6 @@ export function InvestigationRoom({
   const active = isInvestigationTurnActive(turnState);
   const latestTurn = thread?.turns.at(-1) ?? null;
   const requester = getRequesterPresentation(ticket.requester);
-  const directoryRecords = ticket.directoryContext?.records ?? [];
   const currentSuggestedResponse = getSuggestedResponse(ticket);
 
   useEffect(() => {
@@ -244,35 +242,6 @@ export function InvestigationRoom({
                   <strong className="block truncate text-foreground">{requester?.name ?? "Ainda não identificado"}</strong>
                 </span>
               </div>
-              {directoryRecords.length ? (
-                directoryRecords.map((record) => {
-                  const fieldSummary = record.fields
-                    .map((field) => `${field.label}: ${field.displayValue}`)
-                    .join(" · ");
-                  return (
-                    <div className="flex min-w-0 items-start gap-2 text-xs" key={record.id}>
-                      <Link2 size={14} />
-                      <span className="min-w-0">
-                        <small className="block text-xs text-muted-foreground">{record.type.name}</small>
-                        <strong className="block truncate text-foreground" title={record.name}>{record.name}</strong>
-                        {fieldSummary ? (
-                          <small className="block truncate text-xs text-muted-foreground" title={fieldSummary}>{fieldSummary}</small>
-                        ) : record.description ? (
-                          <small className="block truncate text-xs text-muted-foreground" title={record.description}>{record.description}</small>
-                        ) : null}
-                      </span>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="flex min-w-0 items-start gap-2 text-xs">
-                  <Link2 size={14} />
-                  <span className="min-w-0">
-                    <small className="block text-xs text-muted-foreground">Diretório</small>
-                    <strong className="block text-foreground">Nenhum registro vinculado</strong>
-                  </span>
-                </div>
-              )}
             </div>
             <div className="min-h-0 overflow-y-auto">
               <TicketConversation ticket={ticket} />

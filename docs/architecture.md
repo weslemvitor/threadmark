@@ -8,7 +8,7 @@ WhatsApp / Baileys (inbound-only)
   -> SQLite + anexos no filesystem
        -> fila opcional de transcrição local de áudios
        -> conversas permanentes
-       -> Diretório: grupos, pessoas e registros personalizados
+       -> Diretório: grupos e pessoas
        -> triagem semântica idempotente
        -> revisão humana do bloco
        -> ticket como recorte explícito de mensagens
@@ -33,7 +33,7 @@ Todos os listeners usam loopback por padrão. Expor a API em outra interface mud
 
 ## Persistência
 
-SQLite é a fonte de verdade para contas, participantes, grupos, mensagens, Diretório, tickets, categorias, conhecimento, jobs, salas de investigação, auditoria e configuração operacional. Anexos são arquivos locais referenciados pelo banco.
+SQLite é a fonte de verdade para contas, participantes, grupos, mensagens, tickets, categorias, jobs, salas de investigação, auditoria e configuração operacional. Anexos são arquivos locais referenciados pelo banco.
 
 Áudios OGG/Opus podem ser transcritos por um worker local opcional. Configuração, download dos modelos, progresso, tentativas e resultados ficam persistidos no SQLite; o cache do modelo fica dentro do diretório privado de dados. O áudio original não é substituído. Novos áudios só retornam à triagem depois de uma transcrição concluída, enquanto áudios históricos entram exclusivamente numa fila manual limitada e não reabrem a triagem.
 
@@ -41,16 +41,14 @@ Mensagens nunca são movidas para dentro de um ticket. `ticket_messages` registr
 
 O banco, WAL/SHM, anexos, autenticação do WhatsApp, segredos e logs ficam sob `SUPPORT_DATA_DIR` e não devem ser versionados.
 
-## Diretório agnóstico
+## Diretório
 
-O Diretório mantém duas camadas separadas:
+O Diretório apresenta duas entidades nativas sincronizadas do WhatsApp:
 
-1. **Entidades nativas:** grupos e pessoas sincronizados do WhatsApp. Seus JIDs, LIDs e vínculos preservam identidade e autoria do histórico.
-2. **Modelo operacional:** tipos de registro, campos personalizados, registros, relações e segmentos definidos por cada instalação.
+1. **Grupos:** preservam JID, participantes, monitoramento, atividade e tickets relacionados.
+2. **Pessoas:** preservam autoria, telefone, aliases PN/LID, participação em grupos e identificação da equipe.
 
-Um registro pode se relacionar com grupos, pessoas e outros registros sem alterar as mensagens originais. Tipos de registro não pressupõem um setor: podem representar organizações, projetos, produtos, contratos ou outra entidade. Segmentos avaliam filtros sobre campos e retornam os registros correspondentes.
-
-Compatibilidade com estruturas antigas pode existir no domínio, mas a API `/api/directory` e seus contratos são a superfície principal para novas integrações.
+A API `/api/directory` é somente leitura e retorna essas entidades com seus totais. Categorias, prioridade e responsável organizam os tickets sem alterar as mensagens originais.
 
 ## Fronteira inbound-only
 

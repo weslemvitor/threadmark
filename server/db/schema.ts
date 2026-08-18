@@ -2278,4 +2278,24 @@ export const migrations: Migration[] = [
         ON tickets(assignee_user_id, status, updated_at DESC);
     `,
   },
+  {
+    version: 39,
+    name: "remove_directory_records_and_segments",
+    sql: `
+      DELETE FROM ticket_events
+      WHERE event_type = 'ticket_directory_context_changed';
+
+      DROP TABLE IF EXISTS record_connector_executions;
+      DROP TABLE IF EXISTS record_connectors;
+      DROP TABLE IF EXISTS ticket_record_links;
+      DROP TABLE IF EXISTS directory_record_links;
+      DROP TABLE IF EXISTS directory_field_values;
+      DROP TABLE IF EXISTS directory_group_links;
+      DROP TABLE IF EXISTS directory_person_links;
+      DROP TABLE IF EXISTS directory_segments;
+      DROP TABLE IF EXISTS directory_field_definitions;
+      DROP TABLE IF EXISTS directory_records;
+      DROP TABLE IF EXISTS directory_record_types;
+    `,
+  },
 ];

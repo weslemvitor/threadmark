@@ -1,10 +1,6 @@
 import type {
   ClientSummary,
   DashboardData,
-  DirectoryFieldDefinitionInput,
-  DirectoryRecordInput,
-  DirectoryRecordTypeInput,
-  DirectorySegmentInput,
   DirectorySnapshot,
   RuntimeState,
   TicketDetail,
@@ -19,9 +15,6 @@ import type {
   DeleteClientResponse,
   DeleteTicketResponse,
   InvestigationThreadDto,
-  ExecuteRecordConnectorInput,
-  ExecuteRecordConnectorResponse,
-  RecordConnectorSummaryDto,
   TicketListResponse,
   CreateCategoryInput,
   TicketCategoryAttachInput,
@@ -31,7 +24,6 @@ import type {
   UpsertTicketProductForwardingInput,
   UpdateTriageAiSettingsInput,
   UpdateClientProfileInput,
-  UpdateTicketDirectoryContextInput,
   UpdateTicketInternalNoteInput,
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
@@ -524,94 +516,6 @@ export async function getDirectory(): Promise<DirectorySnapshot> {
   return request<DirectorySnapshot>("/api/directory");
 }
 
-export async function createDirectoryRecordType(
-  input: DirectoryRecordTypeInput,
-): Promise<void> {
-  await request("/api/directory/types", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateDirectoryRecordType(
-  id: string,
-  input: DirectoryRecordTypeInput,
-): Promise<void> {
-  await request(`/api/directory/types/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function createDirectoryField(
-  input: DirectoryFieldDefinitionInput,
-): Promise<void> {
-  await request("/api/directory/fields", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateDirectoryField(
-  id: string,
-  input: DirectoryFieldDefinitionInput,
-): Promise<void> {
-  await request(`/api/directory/fields/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function createDirectoryRecord(
-  input: DirectoryRecordInput,
-): Promise<void> {
-  await request("/api/directory/records", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateDirectoryRecord(
-  id: string,
-  input: DirectoryRecordInput,
-): Promise<void> {
-  await request(`/api/directory/records/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function archiveDirectoryRecord(id: string): Promise<void> {
-  await request(`/api/directory/records/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-}
-
-export async function createDirectorySegment(
-  input: DirectorySegmentInput,
-): Promise<void> {
-  await request("/api/directory/segments", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateDirectorySegment(
-  id: string,
-  input: DirectorySegmentInput,
-): Promise<void> {
-  await request(`/api/directory/segments/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function deleteDirectorySegment(id: string): Promise<void> {
-  await request(`/api/directory/segments/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-}
-
 export async function updateClientProfile(
   id: string,
   input: UpdateClientProfileInput,
@@ -639,19 +543,6 @@ export async function updateTicketContext(
     method: "PATCH",
     body: JSON.stringify(input),
   });
-}
-
-export async function updateTicketDirectoryContext(
-  id: string,
-  input: UpdateTicketDirectoryContextInput,
-): Promise<TicketDetail> {
-  return request<TicketDetail>(
-    `/api/tickets/${encodeURIComponent(id)}/directory-context`,
-    {
-      method: "PATCH",
-      body: JSON.stringify(input),
-    },
-  );
 }
 
 export async function addTicketInternalNote(
@@ -697,29 +588,6 @@ export async function upsertTicketProductForwarding(
     `/api/tickets/${encodeURIComponent(id)}/product-forwarding`,
     {
       method: "PUT",
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export async function getRecordConnectorCatalog(): Promise<
-  RecordConnectorSummaryDto[]
-> {
-  const result = await request<{ items: RecordConnectorSummaryDto[] }>(
-    "/api/record-connectors",
-  );
-  return result.items;
-}
-
-export async function executeRecordConnector(
-  ticketId: string,
-  connectorId: string,
-  input: ExecuteRecordConnectorInput,
-): Promise<ExecuteRecordConnectorResponse> {
-  return request<ExecuteRecordConnectorResponse>(
-    `/api/tickets/${encodeURIComponent(ticketId)}/record-connectors/${encodeURIComponent(connectorId)}/execute`,
-    {
-      method: "POST",
       body: JSON.stringify(input),
     },
   );

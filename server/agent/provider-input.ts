@@ -38,7 +38,6 @@ export function boundProviderSupportInput(
     knownEcommerces: input.knownEcommerces
       .slice(0, 250)
       .map((name) => truncate(name, 500)),
-    directoryContext: boundDirectoryContext(input.directoryContext),
     categoryCatalog: boundCategoryCatalog(input.categoryCatalog),
     conversationState: boundConversationState(input.conversationState),
     messages,
@@ -103,7 +102,6 @@ export function boundProviderTriageInput(
     knownEcommerces: input.knownEcommerces
       .slice(0, 250)
       .map((name) => truncate(name, 500)),
-    directoryContext: boundDirectoryContext(input.directoryContext),
     categoryCatalog: boundCategoryCatalog(input.categoryCatalog),
     messages,
     openTickets: input.openTickets.slice(0, 30).map((ticket) => ({
@@ -137,25 +135,6 @@ function boundCategoryCatalog(
     platform: labels(catalog.platform),
     symptom: labels(catalog.symptom),
   };
-}
-
-function boundDirectoryContext(
-  records: SupportAnalysisInput["directoryContext"],
-): NonNullable<SupportAnalysisInput["directoryContext"]> {
-  return (records ?? []).slice(0, 30).map((record) => ({
-    id: truncate(record.id, 200),
-    type: truncate(record.type, 200),
-    name: truncate(record.name, 500),
-    fields: record.fields.slice(0, 50).map((field) => ({
-      label: truncate(field.label, 200),
-      value:
-        typeof field.value === "string"
-          ? truncate(field.value, 4_000)
-          : Array.isArray(field.value)
-            ? field.value.slice(0, 100).map((value) => truncate(value, 500))
-            : field.value,
-    })),
-  }));
 }
 
 function boundConversationState(

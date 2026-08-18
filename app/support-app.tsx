@@ -9,21 +9,14 @@ import {
   addTicketInternalNote,
   attachCategoryToTicket,
   createCategory,
-  archiveDirectoryRecord,
   detachCategoryFromTicket,
   getCategories,
   bulkUpdateTicketStatus,
   cancelInvestigationThread,
-  createDirectoryField,
   createManualTicket,
-  createDirectoryRecord,
-  createDirectoryRecordType,
-  createDirectorySegment,
-  deleteDirectorySegment,
   deleteTicket,
   deleteTicketInternalNote,
   detachTicketMessage,
-  executeRecordConnector,
   getClients,
   getConversations,
   getDashboard,
@@ -35,11 +28,6 @@ import {
   getTickets,
   openInvestigationThread,
   upsertTicketProductForwarding,
-  updateDirectoryField,
-  updateDirectoryRecord,
-  updateDirectoryRecordType,
-  updateDirectorySegment,
-  updateTicketDirectoryContext,
   updateTicketInternalNote,
   updateTicketMetadata,
   updateTicketAssignee,
@@ -61,10 +49,6 @@ import type {
   DashboardData,
   CategoryFacetType,
   TicketCategoryCatalog,
-  DirectoryFieldDefinitionInput,
-  DirectoryRecordInput,
-  DirectoryRecordTypeInput,
-  DirectorySegmentInput,
   DirectorySnapshot,
   InvestigationThreadDto,
   RuntimeState,
@@ -74,9 +58,7 @@ import type {
   TicketSummary,
 } from "./lib/types";
 import {
-  type ExecuteRecordConnectorInput,
   type UpsertTicketProductForwardingInput,
-  type UpdateTicketDirectoryContextInput,
   type UpdateTicketMetadataInput,
 } from "@/shared/contracts";
 import { activeStatuses, configureSupportTimeZone } from "./lib/format";
@@ -178,7 +160,7 @@ const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
   },
   clients: {
     title: "Diretório",
-    subtitle: "Grupos e pessoas nativos, com registros personalizados opcionais",
+    subtitle: "Grupos e pessoas sincronizados do WhatsApp",
   },
   categories: {
     title: "Categorias de atendimento",
@@ -243,8 +225,6 @@ export function SupportApp({
   const [refreshing, setRefreshing] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
-  const [savingDirectory, setSavingDirectory] = useState(false);
-  const [updatingContext, setUpdatingContext] = useState(false);
   const [updatingTicketMetadata, setUpdatingTicketMetadata] = useState(false);
   const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
   const [addingTicketNote, setAddingTicketNote] = useState(false);
@@ -270,8 +250,6 @@ export function SupportApp({
   const [productForwardingTarget, setProductForwardingTarget] =
     useState<ProductForwardingDraft | null>(null);
   const [savingProductForwarding, setSavingProductForwarding] = useState(false);
-  const [executingRecordConnector, setExecutingRecordConnector] =
-    useState(false);
   const [investigationRoomTarget, setInvestigationRoomTarget] = useState<string | null>(null);
   const [investigationThread, setInvestigationThread] =
     useState<InvestigationThreadDto | null>(null);
@@ -1236,31 +1214,6 @@ export function SupportApp({
     setDirectorySnapshot(snapshot);
   }, []);
 
-  const runDirectoryMutation = useCallback(
-    async (operation: () => Promise<void>, successMessage: string) => {
-      setSavingDirectory(true);
-      try {
-        await operation();
-        await reloadDirectory();
-        void getDashboard().then(setDashboard).catch(() => undefined);
-        showToast({ tone: "success", message: successMessage });
-        return true;
-      } catch (error) {
-        showToast({
-          tone: "warning",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Não foi possível atualizar o Diretório.",
-        });
-        return false;
-      } finally {
-        setSavingDirectory(false);
-      }
-    },
-    [reloadDirectory, showToast],
-  );
-
   const handleCreateCategory = useCallback(
     async (input: {
       facet: CategoryFacetType;
@@ -1364,175 +1317,6 @@ export function SupportApp({
       }
     },
     [commitTicketSnapshot, invalidateTicketSnapshot, refreshCategoryCatalog, showToast],
-  );
-
-  const handleExecuteRecordConnector = useCallback(
-    async (
-      ticketId: string,
-      connectorId: string,
-      input: ExecuteRecordConnectorInput,
-    ) => {
-      setExecutingRecordConnector(true);
-      invalidateTicketSnapshot(ticketId);
-      try {
-        const result = await executeRecordConnector(
-          ticketId,
-          connectorId,
-          input,
-        );
-        invalidateTicketSnapshot(ticketId);
-        commitTicketSnapshot(result.ticket);
-        await reloadDirectory();
-        showToast({
-          tone: "success",
-          message: `Registro “${result.record.name}” criado e vinculado.`,
-        });
-        return true;
-      } catch (error) {
-        showToast({
-          tone: "warning",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Não foi possível criar o registro pelo conector.",
-        });
-        return false;
-      } finally {
-        setExecutingRecordConnector(false);
-      }
-    },
-    [
-      commitTicketSnapshot,
-      invalidateTicketSnapshot,
-      reloadDirectory,
-      showToast,
-    ],
-  );
-
-  const handleCreateDirectoryRecordType = useCallback(
-    (input: DirectoryRecordTypeInput) =>
-      runDirectoryMutation(
-        () => createDirectoryRecordType(input),
-        "Tipo de registro criado no SQLite.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleUpdateDirectoryRecordType = useCallback(
-    (id: string, input: DirectoryRecordTypeInput) =>
-      runDirectoryMutation(
-        () => updateDirectoryRecordType(id, input),
-        "Tipo de registro atualizado.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleCreateDirectoryField = useCallback(
-    (input: DirectoryFieldDefinitionInput) =>
-      runDirectoryMutation(
-        () => createDirectoryField(input),
-        "Campo personalizado criado.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleUpdateDirectoryField = useCallback(
-    (id: string, input: DirectoryFieldDefinitionInput) =>
-      runDirectoryMutation(
-        () => updateDirectoryField(id, input),
-        "Campo personalizado atualizado.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleCreateDirectoryRecord = useCallback(
-    (input: DirectoryRecordInput) =>
-      runDirectoryMutation(
-        () => createDirectoryRecord(input),
-        "Registro criado e vinculado ao Diretório.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleUpdateDirectoryRecord = useCallback(
-    (id: string, input: DirectoryRecordInput) =>
-      runDirectoryMutation(
-        () => updateDirectoryRecord(id, input),
-        "Registro atualizado no SQLite.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleArchiveDirectoryRecord = useCallback(
-    (id: string) =>
-      runDirectoryMutation(
-        () => archiveDirectoryRecord(id),
-        "Registro arquivado. Grupos, tickets e histórico foram preservados.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleCreateDirectorySegment = useCallback(
-    (input: DirectorySegmentInput) =>
-      runDirectoryMutation(
-        () => createDirectorySegment(input),
-        "Segmento salvo no SQLite.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleUpdateDirectorySegment = useCallback(
-    (id: string, input: DirectorySegmentInput) =>
-      runDirectoryMutation(
-        () => updateDirectorySegment(id, input),
-        "Segmento atualizado.",
-      ),
-    [runDirectoryMutation],
-  );
-  const handleDeleteDirectorySegment = useCallback(
-    (id: string) =>
-      runDirectoryMutation(
-        () => deleteDirectorySegment(id),
-        "Segmento removido.",
-      ),
-    [runDirectoryMutation],
-  );
-
-  const handleUpdateTicketDirectoryContext = useCallback(
-    async (ticketId: string, input: UpdateTicketDirectoryContextInput) => {
-      setUpdatingContext(true);
-      invalidateTicketSnapshot(ticketId);
-      try {
-        const updated = await updateTicketDirectoryContext(ticketId, input);
-        invalidateTicketSnapshot(ticketId);
-        commitTicketSnapshot(updated);
-
-        const [ticketsResult, dashboardResult] = await Promise.allSettled([
-          requestTicketListSnapshot(),
-          getDashboard(),
-        ]);
-        if (ticketsResult.status === "fulfilled") {
-          commitTicketListSnapshot(ticketsResult.value);
-        }
-        if (dashboardResult.status === "fulfilled") setDashboard(dashboardResult.value);
-
-        showToast({
-          tone: "success",
-          message: "Registros do Diretório vinculados ao ticket.",
-        });
-        return true;
-      } catch (error) {
-        showToast({
-          tone: "warning",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Não foi possível atualizar os registros do ticket.",
-        });
-        return false;
-      } finally {
-        setUpdatingContext(false);
-      }
-    },
-    [
-      commitTicketListSnapshot,
-      commitTicketSnapshot,
-      invalidateTicketSnapshot,
-      requestTicketListSnapshot,
-      showToast,
-    ],
   );
 
   const handleUpdateTicketMetadata = useCallback(
@@ -1885,7 +1669,6 @@ export function SupportApp({
               currentUserId={access?.user.id ?? null}
               deleting={deletingTicketId === selectedTicket?.id}
               detachingMessageId={detachingTicketMessageId}
-              directorySnapshot={directorySnapshot}
               key={selectedTicket?.id ?? "empty-ticket"}
               loading={detailLoading}
               onAddNote={handleAddTicketNote}
@@ -1893,16 +1676,12 @@ export function SupportApp({
               onDelete={handleDeleteTicket}
               onDetachMessage={handleDetachTicketMessage}
               onDeleteNote={handleDeleteTicketNote}
-              onOpenDirectory={() => {
-                navigateToView("clients");
-              }}
               onOpenInvestigationRoom={openInvestigationRoom}
               onOpenCategoryCatalog={() => navigateToView("categories")}
               onOpenProductForwarding={openProductForwarding}
               onRefresh={refreshTicket}
               onStatusChange={handleStatusChange}
               onUpdateNote={handleUpdateTicketNote}
-              onUpdateDirectoryContext={handleUpdateTicketDirectoryContext}
               onUpdateMetadata={handleUpdateTicketMetadata}
               onUpdateAssignee={handleUpdateTicketAssignee}
               onAttachCategory={handleAttachCategory}
@@ -1911,13 +1690,8 @@ export function SupportApp({
               categoryCatalog={categoryCatalog}
               categoryMutationTicketId={categoryMutationTicketId}
               canManageCategories={Boolean(access && access.user.role !== "viewer")}
-              canCreateWithConnector={Boolean(access && access.user.role !== "viewer")}
-              executingRecordConnector={executingRecordConnector}
-              onExecuteRecordConnector={handleExecuteRecordConnector}
-              onOpenConnectors={() => openSettingsTab("connectors")}
               ticket={selectedTicket}
               ticketNoteMutation={ticketNoteMutation}
-              updatingContext={updatingContext}
               updatingMetadata={updatingTicketMetadata}
               updatingAssignee={assigningTicketId === selectedTicket?.id}
               updatingStatus={updatingStatus}
@@ -1945,18 +1719,7 @@ export function SupportApp({
         return (
           <DirectoryView
             loading={loading}
-            onArchiveRecord={handleArchiveDirectoryRecord}
-            onCreateField={handleCreateDirectoryField}
-            onCreateRecord={handleCreateDirectoryRecord}
-            onCreateRecordType={handleCreateDirectoryRecordType}
-            onCreateSegment={handleCreateDirectorySegment}
-            onDeleteSegment={handleDeleteDirectorySegment}
             onReload={reloadDirectory}
-            onUpdateField={handleUpdateDirectoryField}
-            onUpdateRecord={handleUpdateDirectoryRecord}
-            onUpdateRecordType={handleUpdateDirectoryRecordType}
-            onUpdateSegment={handleUpdateDirectorySegment}
-            saving={savingDirectory}
             snapshot={directorySnapshot}
           />
         );
@@ -2007,31 +1770,18 @@ export function SupportApp({
     deletingTicketId,
     detachingTicketMessageId,
     detailLoading,
-    executingRecordConnector,
-    handleArchiveDirectoryRecord,
     handleAddTicketNote,
     handleBulkTicketStatusChange,
     handleCreateCategory,
-    handleCreateDirectoryField,
-    handleCreateDirectoryRecord,
-    handleCreateDirectoryRecordType,
-    handleCreateDirectorySegment,
     handleDeleteTicket,
     handleDetachTicketMessage,
     handleAttachCategory,
     handleDetachCategory,
-    handleExecuteRecordConnector,
     handleDeleteTicketNote,
-    handleDeleteDirectorySegment,
     handleStatusChange,
-    handleUpdateTicketDirectoryContext,
     handleUpdateTicketMetadata,
     handleUpdateTicketAssignee,
     handleUpdateTicketNote,
-    handleUpdateDirectoryField,
-    handleUpdateDirectoryRecord,
-    handleUpdateDirectoryRecordType,
-    handleUpdateDirectorySegment,
     loading,
     navigateToView,
     openTicket,
@@ -2046,12 +1796,10 @@ export function SupportApp({
     selectedTicket,
     ticketAssignees,
     assigningTicketId,
-    savingDirectory,
     settingsInitialTab,
     showToast,
     tickets,
     ticketNoteMutation,
-    updatingContext,
     updatingTicketMetadata,
     updatingStatus,
     workspaceTimeZone,

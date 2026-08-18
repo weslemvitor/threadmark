@@ -1,12 +1,12 @@
 "use client";
 
-import { Bot, Database, HardDrive, LoaderCircle, Menu, PlugZap, QrCode, RefreshCw, Settings2, ShieldCheck, UserRound, UsersRound, Wrench, type LucideIcon } from "lucide-react";
+import { Bot, Database, HardDrive, LoaderCircle, Menu, QrCode, RefreshCw, Settings2, ShieldCheck, UserRound, UsersRound, Wrench, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { getAiConnections, getAiTaskProfiles, getLocalTools, getRecordConnectors, getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type AiConnection, type AiTaskProfile, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings, type LocalToolDto, type RecordConnectorDto } from "@/app/lib/settings";
-import { getDirectory, getTriageAiSettings } from "@/app/lib/api";
+import { getAiConnections, getAiTaskProfiles, getLocalTools, getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type AiConnection, type AiTaskProfile, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings, type LocalToolDto } from "@/app/lib/settings";
+import { getTriageAiSettings } from "@/app/lib/api";
 import type { RuntimeState } from "@/app/lib/types";
 import type { SettingsRouteTab } from "@/app/lib/navigation";
-import type { DirectorySnapshotDto, TriageAiSettingsDto } from "@/shared/contracts";
+import type { TriageAiSettingsDto } from "@/shared/contracts";
 import { ToolsSettingsSection } from "./tools-settings-section";
 import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
@@ -18,7 +18,6 @@ import { WhatsappSection } from "./sections/whatsapp-section";
 import { AiSection } from "./sections/ai-section";
 import { DataSection } from "./sections/data-section";
 import { SecuritySection } from "./sections/security-section";
-import { RecordConnectorsSection } from "./record-connectors-section";
 import {
   EMPTY_STAFF,
   Notice,
@@ -48,7 +47,6 @@ const TABS: TabDefinition[] = [
   { id: "staff", label: "Equipe WhatsApp", icon: UserRound },
   { id: "whatsapp", label: "WhatsApp", icon: QrCode },
   { id: "ai", label: "IA", icon: Bot },
-  { id: "connectors", label: "Conectores", icon: PlugZap },
   { id: "tools", label: "Ferramentas", icon: Wrench },
   { id: "data", label: "Dados", icon: Database },
   { id: "security", label: "Segurança", icon: ShieldCheck },
@@ -76,8 +74,6 @@ export function SettingsView({
   const [triageAiSettings, setTriageAiSettings] =
     useState<TriageAiSettingsDto | null>(null);
   const [tools, setTools] = useState<LocalToolDto[]>([]);
-  const [recordConnectors, setRecordConnectors] = useState<RecordConnectorDto[]>([]);
-  const [directory, setDirectory] = useState<DirectorySnapshotDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -102,8 +98,6 @@ export function SettingsView({
             getAiConnections(),
             getAiTaskProfiles(),
             getLocalTools(),
-            getRecordConnectors(),
-            getDirectory(),
           ]
         : [
             Promise.resolve([] as SettingsUser[]),
@@ -111,8 +105,6 @@ export function SettingsView({
             Promise.resolve([] as AiConnection[]),
             Promise.resolve([] as AiTaskProfile[]),
             Promise.resolve([] as LocalToolDto[]),
-            Promise.resolve([] as RecordConnectorDto[]),
-            Promise.resolve(null as DirectorySnapshotDto | null),
           ];
 
       const results = await Promise.allSettled([
@@ -122,7 +114,7 @@ export function SettingsView({
         ...privilegedRequests,
       ]);
 
-      const [workspaceResult, runtimeResult, triageSettingsResult, usersResult, staffResult, connectionsResult, profilesResult, toolsResult, recordConnectorsResult, directoryResult] =
+      const [workspaceResult, runtimeResult, triageSettingsResult, usersResult, staffResult, connectionsResult, profilesResult, toolsResult] =
         results;
       if (workspaceResult.status === "fulfilled") setWorkspace(workspaceResult.value);
       if (runtimeResult.status === "fulfilled") setRuntime(runtimeResult.value);
@@ -139,12 +131,6 @@ export function SettingsView({
       }
       if (toolsResult.status === "fulfilled") {
         setTools(toolsResult.value as LocalToolDto[]);
-      }
-      if (recordConnectorsResult.status === "fulfilled") {
-        setRecordConnectors(recordConnectorsResult.value as RecordConnectorDto[]);
-      }
-      if (directoryResult.status === "fulfilled") {
-        setDirectory(directoryResult.value as DirectorySnapshotDto | null);
       }
 
       const failure = results.find(
@@ -384,15 +370,6 @@ export function SettingsView({
               onChange={setTools}
               onFeedback={showFeedback}
               tools={tools}
-            />
-          ) : null}
-          {activeTab === "connectors" ? (
-            <RecordConnectorsSection
-              canManage={canManage}
-              connectors={recordConnectors}
-              directory={directory}
-              onChange={setRecordConnectors}
-              onFeedback={showFeedback}
             />
           ) : null}
           {activeTab === "data" ? (
