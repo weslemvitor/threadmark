@@ -75,6 +75,8 @@ test("prompt conversacional mantém WhatsApp inbound e fontes técnicas readonly
   assert.match(prompt, /Consulte banco e logs/);
   assert.match(prompt, /FERRAMENTAS_AUTORIZADAS/);
   assert.match(prompt, /pelo menos uma evidence auditavel/i);
+  assert.match(prompt, /Siga esta ordem em todo turno/i);
+  assert.match(prompt, /Nao transforme correlacao em causa/i);
 });
 
 test("schema do turno exige conteúdo completo e bloqueia resposta durante análise", () => {

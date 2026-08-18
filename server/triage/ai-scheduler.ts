@@ -2,7 +2,7 @@ import type { SupportStore, TriageCandidate } from "../domain/index.js";
 import { classifyTriageCandidate } from "./classifier.js";
 import { TriageWorker } from "./triage-worker.js";
 
-export const TRIAGE_PROMPT_VERSION = "conversation-triage-v1";
+export const TRIAGE_PROMPT_VERSION = "conversation-triage-v2";
 
 export interface TriageAiSchedulerOptions {
   quietPeriodMs?: number;

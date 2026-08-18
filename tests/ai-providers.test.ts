@@ -556,7 +556,7 @@ test("investigação profunda remota só cita precedentes recebidos no ticket", 
   await assert.rejects(agent.investigateThread(input), /ticketId exato/i);
 });
 
-test("investigação profunda remota só cita mensagens recebidas no ticket", async () => {
+test("investigação profunda descarta citação de conversa inválida sem perder a sala", async () => {
   const client: StructuredJsonClient = {
     async generateJson() {
       return {
@@ -575,10 +575,12 @@ test("investigação profunda remota só cita mensagens recebidas no ticket", as
     client,
   });
 
-  await assert.rejects(
-    agent.investigateThread(threadInput()),
-    /id exato de uma mensagem/i,
-  );
+  const result = await agent.investigateThread(threadInput());
+  assert.equal(result.phase, "analysis");
+  assert.deepEqual(result.evidence, []);
+  assert.equal(result.suggestedResponse, null);
+  assert.equal(result.confidence, 0.5);
+  assert.match(result.nextAction ?? "", /ID exato de uma mensagem/i);
 });
 
 test("investigação profunda audita leitura knowledge por ferramenta", async () => {

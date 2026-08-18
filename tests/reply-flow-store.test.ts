@@ -1702,7 +1702,7 @@ test("sugestões persistem o modelo realmente executado em cada fluxo", () => {
         suggestion.body === "Minuta criada pelo modelo automático real.",
   );
   assert.equal(automaticSuggestion?.model, "gpt-5-mini");
-  assert.equal(automaticSuggestion?.promptVersion, "support-analysis-v2");
+  assert.equal(automaticSuggestion?.promptVersion, "support-analysis-v3");
 
   const deepTicket = current.ticket({
     id: "reply-flow-real-deep-model-ticket",
@@ -1734,7 +1734,7 @@ test("sugestões persistem o modelo realmente executado em cada fluxo", () => {
         suggestion.body === "Minuta criada pelo modelo profundo real.",
     );
   assert.equal(deepSuggestion?.model, "claude-sonnet-4");
-  assert.equal(deepSuggestion?.promptVersion, "investigation-thread-v1");
+  assert.equal(deepSuggestion?.promptVersion, "investigation-thread-v2");
 });
 
 test("sala profunda preserva a conclusão mas não republica resposta já enviada", () => {

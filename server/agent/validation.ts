@@ -138,7 +138,7 @@ export function parseSupportAnalysis(
   const allowedPrecedents = new Set(
     input.resolvedPrecedents.map((precedent) => precedent.ticketId),
   );
-  return supportAnalysisSchema
+  const analysis = supportAnalysisSchema
     .superRefine((analysis, context) => {
       if (
         analysis.outcome === "already_answered" &&
@@ -191,6 +191,51 @@ export function parseSupportAnalysis(
       }
     })
     .parse(value) as SupportAnalysis;
+  return normalizeExplicitSupportRelation(analysis, input);
+}
+
+const explicitNewTopicSignal = /\b(outro problema|outra duvida|outra coisa|novo problema|nova duvida|novo assunto|separadamente|alem disso|mudando de assunto|aproveitando)\b/i;
+const explicitContinuationSignal = /\b(continua|continuando|complementando|complemento|mesmo problema|sobre isso|sobre esse|sobre essa)\b/i;
+
+function normalizeExplicitSupportRelation(
+  analysis: SupportAnalysis,
+  input: Pick<SupportAnalysisInput, "conversationState" | "messages">,
+): SupportAnalysis {
+  if (!input.conversationState.hasUnansweredExternalMessages) return analysis;
+
+  const pendingIds = new Set(
+    input.conversationState.unansweredExternalMessageIds,
+  );
+  const pendingText = normalizeRelationText(
+    input.messages
+      .filter(
+        (message) =>
+          message.role === "external" && pendingIds.has(message.id),
+      )
+      .map((message) => message.text)
+      .filter((text): text is string => Boolean(text?.trim()))
+      .join("\n"),
+  );
+  if (!pendingText) return analysis;
+
+  const explicitRelation = explicitNewTopicSignal.test(pendingText)
+    ? "new"
+    : explicitContinuationSignal.test(pendingText)
+      ? "continuation"
+      : null;
+  if (!explicitRelation || analysis.relation === explicitRelation) {
+    return analysis;
+  }
+  return { ...analysis, relation: explicitRelation };
+}
+
+function normalizeRelationText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function hasCoherentSentResponse(
@@ -352,20 +397,40 @@ export function parseInvestigationTurnResult(
   const allowedPrecedents = new Set(
     input.ticket.resolvedPrecedents.map((precedent) => precedent.ticketId),
   );
+
+  const parsed = investigationTurnResultSchema.parse(
+    value,
+  ) as InvestigationTurnResult;
+  const evidence = parsed.evidence.filter(
+    (item) =>
+      item.source !== "conversation" ||
+      Boolean(item.reference && allowedMessages.has(item.reference)),
+  );
+  const discardedConversationEvidence =
+    evidence.length !== parsed.evidence.length;
+  const lostAllEvidence =
+    discardedConversationEvidence && evidence.length === 0;
+  const normalized = discardedConversationEvidence
+    ? {
+        ...parsed,
+        phase:
+          lostAllEvidence && parsed.phase === "conclusion"
+            ? "analysis" as const
+            : parsed.phase,
+        evidence,
+        suggestedResponse: lostAllEvidence ? null : parsed.suggestedResponse,
+        nextAction: lostAllEvidence
+          ? "Continue a investigação e cite o ID exato de uma mensagem fornecida antes de concluir."
+          : parsed.nextAction,
+        confidence: lostAllEvidence
+          ? Math.min(parsed.confidence, 0.5)
+          : parsed.confidence,
+      }
+    : parsed;
+
   return investigationTurnResultSchema
     .superRefine((result, context) => {
       for (const [index, evidence] of result.evidence.entries()) {
-        if (
-          evidence.source === "conversation" &&
-          (!evidence.reference || !allowedMessages.has(evidence.reference))
-        ) {
-          context.addIssue({
-            code: "custom",
-            path: ["evidence", index, "reference"],
-            message:
-              "conversation exige o id exato de uma mensagem fornecida",
-          });
-        }
         if (
           evidence.source === "knowledge" &&
           (!evidence.reference || !allowedKnowledge.has(evidence.reference))
@@ -390,7 +455,7 @@ export function parseInvestigationTurnResult(
         }
       }
     })
-    .parse(value) as InvestigationTurnResult;
+    .parse(normalized) as InvestigationTurnResult;
 }
 
 export const triageAnalysisSchema = z.object({

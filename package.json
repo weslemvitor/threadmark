@@ -58,6 +58,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "test": "npm run test:unit && npm run build",
     "test:unit": "node --import tsx --test tests/*.test.ts",
+    "eval:prompts": "tsx server/evals/prompt-eval.ts",
     "test:tui": "bun tui/tests/render-smoke.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "seed": "tsx server/seed.ts",

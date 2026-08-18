@@ -1171,8 +1171,8 @@ const SUPPORT_PROMPT_ATTACHMENT_TEXT_LIMIT = 8_000;
 const SUPPORT_PROMPT_SENT_RESPONSE_LIMIT = 8;
 const SUPPORT_PROMPT_RESOLVED_PRECEDENT_LIMIT = 5;
 const SENT_RESPONSE_DEDUPLICATION_LIMIT = 50;
-const AUTOMATIC_INVESTIGATION_PROMPT_VERSION = "support-analysis-v2";
-const DEEP_INVESTIGATION_PROMPT_VERSION = "investigation-thread-v1";
+const AUTOMATIC_INVESTIGATION_PROMPT_VERSION = "support-analysis-v3";
+const DEEP_INVESTIGATION_PROMPT_VERSION = "investigation-thread-v2";
 
 function truncatePromptText(value: string, limit: number): string {
   if (limit <= 0) return "";
