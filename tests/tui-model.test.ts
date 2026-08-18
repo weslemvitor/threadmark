@@ -39,6 +39,7 @@ function ticket(
       displayName: "Pessoa Fictícia Gama",
       phoneE164: "+5547999999999",
     },
+    assignee: null,
     client: {
       id: "client",
       name: "Cliente",

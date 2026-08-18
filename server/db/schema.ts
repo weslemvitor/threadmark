@@ -2266,4 +2266,16 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS knowledge_candidates;
     `,
   },
+  {
+    version: 38,
+    name: "ticket_team_assignment",
+    sql: `
+      ALTER TABLE tickets
+        ADD COLUMN assignee_user_id TEXT
+          REFERENCES local_users(id) ON DELETE SET NULL;
+
+      CREATE INDEX tickets_assignee_status_updated_idx
+        ON tickets(assignee_user_id, status, updated_at DESC);
+    `,
+  },
 ];

@@ -9,11 +9,12 @@ import {
   RefreshCw,
   Search,
   TicketPlus,
+  UserRoundCheck,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getArchivedTickets, getResolvedTickets } from "@/app/lib/api";
-import type { TicketStatus, TicketSummary } from "@/app/lib/types";
+import type { TicketAssignee, TicketStatus, TicketSummary } from "@/app/lib/types";
 import { matchesTicketSearch } from "@/app/lib/ticket-search";
 import {
   KANBAN_BULK_SELECTION_LIMIT,
@@ -24,6 +25,13 @@ import { getNextKanbanTab, type KanbanTab } from "@/app/lib/kanban-tabs";
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
 import { cn } from "@/app/lib/utils";
 import { KanbanCard } from "./kanban-card";
@@ -118,6 +126,11 @@ export function KanbanView({
   canCreateTicket,
   onMoveTicket,
   onBulkStatusChange,
+  assignees,
+  currentUserId,
+  canAssignTicket,
+  assigningTicketId,
+  onAssignTicket,
 }: {
   tickets: TicketSummary[];
   loading: boolean;
@@ -129,9 +142,18 @@ export function KanbanView({
     ticketIds: string[],
     status: "archived" | "resolved",
   ) => Promise<TicketSummary[] | null>;
+  assignees: TicketAssignee[];
+  currentUserId: string | null;
+  canAssignTicket: boolean;
+  assigningTicketId: string | null;
+  onAssignTicket: (
+    ticketId: string,
+    assigneeId: string | null,
+  ) => Promise<boolean>;
 }) {
   const [mode, setMode] = useState<KanbanMode>("active");
   const [query, setQuery] = useState("");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -172,26 +194,44 @@ export function KanbanView({
     ),
     [tickets],
   );
+  const matchesAssignee = useCallback(
+    (ticket: TicketSummary) => {
+      if (assigneeFilter === "all") return true;
+      if (assigneeFilter === "mine") {
+        return Boolean(currentUserId && ticket.assignee?.id === currentUserId);
+      }
+      if (assigneeFilter === "unassigned") return !ticket.assignee;
+      return ticket.assignee?.id === assigneeFilter.replace(/^user:/u, "");
+    },
+    [assigneeFilter, currentUserId],
+  );
+  const hasActiveFilters = Boolean(query.trim()) || assigneeFilter !== "all";
   const filteredActiveTickets = useMemo(
-    () => activeTickets.filter((ticket) => matchesTicketSearch(ticket, query)),
-    [activeTickets, query],
+    () => activeTickets.filter(
+      (ticket) => matchesTicketSearch(ticket, query) && matchesAssignee(ticket),
+    ),
+    [activeTickets, matchesAssignee, query],
   );
   const filteredResolvedTickets = useMemo(
-    () => query.trim()
+    () => hasActiveFilters
       ? sortTickets(
           tickets.filter(
             (ticket) =>
-              ticket.status === "resolved" && matchesTicketSearch(ticket, query),
+              ticket.status === "resolved" &&
+              matchesTicketSearch(ticket, query) &&
+              matchesAssignee(ticket),
           ),
           "active",
           "done",
         )
-      : resolvedTickets,
-    [query, resolvedTickets, tickets],
+      : resolvedTickets.filter(matchesAssignee),
+    [hasActiveFilters, matchesAssignee, query, resolvedTickets, tickets],
   );
   const filteredArchivedTickets = useMemo(
-    () => archivedTickets.filter((ticket) => matchesTicketSearch(ticket, query)),
-    [archivedTickets, query],
+    () => archivedTickets.filter(
+      (ticket) => matchesTicketSearch(ticket, query) && matchesAssignee(ticket),
+    ),
+    [archivedTickets, matchesAssignee, query],
   );
   const sortedArchivedTickets = useMemo(
     () => sortTickets(filteredArchivedTickets, "archived"),
@@ -334,6 +374,13 @@ export function KanbanView({
     setSelectionNotice(null);
   }
 
+  function updateAssigneeFilter(value: string) {
+    setAssigneeFilter(value);
+    setColumnLimits(initialColumnLimits);
+    setArchivedVisibleCount(KANBAN_PAGE_SIZE);
+    setSelectedIds(new Set());
+  }
+
   function switchMode(nextMode: KanbanMode) {
     setMode(nextMode);
     setColumnLimits(initialColumnLimits);
@@ -342,6 +389,7 @@ export function KanbanView({
     setSelectedIds(new Set());
     setBulkError(null);
     setSelectionNotice(null);
+    if (nextMode === "archived") setAssigneeFilter("all");
     if (nextMode === "archived" && !archivedLoaded) void loadArchived(true);
   }
 
@@ -441,8 +489,8 @@ export function KanbanView({
 
   return (
     <div className="min-h-full w-full overflow-x-hidden px-4 py-4 sm:px-5 sm:py-5">
-      <Card className="mb-4 flex min-h-15 flex-col gap-3 rounded-xl border border-border bg-card p-3 shadow-sm xl:flex-row xl:items-center" variant="unstyled">
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <Card className="mb-4 grid gap-3 rounded-xl border border-border bg-card p-3 shadow-sm" variant="unstyled">
+        <div className="flex min-w-0 items-center gap-2.5">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
             <Columns3 size={18} />
           </span>
@@ -455,7 +503,7 @@ export function KanbanView({
           {canCreateTicket ? (
             <Button
               aria-label="Criar ticket manualmente"
-              className="h-9 text-xs"
+              className="h-9 w-full text-xs sm:w-auto"
               onClick={onCreateManualTicket}
               size="default"
               type="button"
@@ -467,7 +515,7 @@ export function KanbanView({
           ) : null}
           <div
             aria-label="Pesquisar cards por título, grupo ou solicitante"
-            className="flex h-9 min-w-48 flex-1 items-center gap-2 rounded-lg border border-input bg-background px-2.5 text-muted-foreground transition-shadow focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 xl:w-[clamp(190px,18vw,260px)] xl:flex-none"
+            className="flex h-9 w-full min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-2.5 text-muted-foreground transition-shadow focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 sm:min-w-72 sm:flex-1"
             role="search"
           >
             <Search aria-hidden="true" className="shrink-0" size={15} />
@@ -492,16 +540,35 @@ export function KanbanView({
               </Button>
             ) : null}
           </div>
+          {mode === "active" ? <Select onValueChange={updateAssigneeFilter} value={assigneeFilter}>
+            <SelectTrigger
+              aria-label="Filtrar tickets por responsável"
+              className="h-9 w-full min-w-0 bg-background sm:w-56"
+            >
+              <UserRoundCheck size={14} />
+              <SelectValue placeholder="Responsável" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os responsáveis</SelectItem>
+              {currentUserId ? <SelectItem value="mine">Meus tickets</SelectItem> : null}
+              <SelectItem value="unassigned">Não atribuídos</SelectItem>
+              {assignees.map((assignee) => (
+                <SelectItem key={assignee.id} value={`user:${assignee.id}`}>
+                  {assignee.displayName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select> : null}
           <div
             aria-label="Visão do Kanban"
-            className="inline-flex h-9 items-center gap-1 rounded-lg border border-border bg-muted p-1"
+            className="inline-flex h-9 w-full min-w-0 items-center gap-1 rounded-lg border border-border bg-muted p-1 sm:w-auto"
             role="tablist"
           >
             <Button
               aria-controls="kanban-active-panel"
               aria-selected={mode === "active"}
               className={cn(
-                "h-7 gap-1.5 px-2.5 text-xs",
+                "h-7 min-w-0 flex-1 gap-1.5 px-2.5 text-xs sm:flex-none",
                 mode === "active" && "bg-background text-primary shadow-sm hover:bg-background",
               )}
               id="kanban-active-tab"
@@ -522,7 +589,7 @@ export function KanbanView({
               aria-controls="kanban-archived-panel"
               aria-selected={mode === "archived"}
               className={cn(
-                "h-7 gap-1.5 px-2.5 text-xs",
+                "h-7 min-w-0 flex-1 gap-1.5 px-2.5 text-xs sm:flex-none",
                 mode === "archived" && "bg-background text-primary shadow-sm hover:bg-background",
               )}
               id="kanban-archived-tab"
@@ -544,7 +611,7 @@ export function KanbanView({
           </div>
           <Button
             aria-pressed={selectionMode}
-            className="h-9 text-xs"
+            className="h-9 w-full text-xs sm:w-auto"
             disabled={
               bulkBusy ||
               (mode === "active"
@@ -649,11 +716,11 @@ export function KanbanView({
               visibleColumnTickets.length < columnTickets.length;
             const hasRemoteResolvedTickets =
               column.id === "done" &&
-              !query.trim() &&
+              !hasActiveFilters &&
               resolvedLoaded &&
               resolvedTickets.length < resolvedTotal;
             const columnTotal =
-              column.id === "done" && !query.trim()
+              column.id === "done" && !hasActiveFilters
                 ? resolvedTotal
                 : columnTickets.length;
             return (
@@ -682,7 +749,7 @@ export function KanbanView({
                     <span className={cn("size-2 rounded-full", columnAccentClasses[column.accent])} />
                     <h2 className="text-sm font-semibold text-foreground">{column.label}</h2>
                     <b className="ml-auto grid min-w-5 place-items-center rounded-full border border-border bg-background px-1.5 py-0.5 text-xs font-semibold text-muted-foreground">
-                      {column.id === "done" && !query.trim() ? resolvedTotal : columnTickets.length}
+                      {column.id === "done" && !hasActiveFilters ? resolvedTotal : columnTickets.length}
                     </b>
                   </div>
                   <p className="mt-1.5 ml-4 text-xs text-muted-foreground">{column.description}</p>
@@ -690,8 +757,12 @@ export function KanbanView({
                 <div className="grid min-h-40 gap-2 p-2">
                   {visibleColumnTickets.map((ticket) => (
                     <KanbanCard
+                      assignees={assignees}
+                      assigning={assigningTicketId === ticket.id}
                       busy={bulkBusy || (selectionMode && column.id === "done" && resolvedLoading)}
+                      canAssign={canAssignTicket}
                       columnId={column.id}
+                      currentUserId={currentUserId}
                       key={ticket.id}
                       mode="active"
                       onDragEnd={() => setDropTarget(null)}
@@ -700,6 +771,11 @@ export function KanbanView({
                         event.dataTransfer.setData("text/support-ticket", ticket.id);
                       }}
                       onOpen={() => onOpenTicket(ticket.id)}
+                      onAssign={async (assigneeId) => {
+                        const updated = await onAssignTicket(ticket.id, assigneeId);
+                        if (updated && column.id === "done") void loadResolved(true);
+                        return updated;
+                      }}
                       onToggle={() => toggleTicket(ticket.id)}
                       selectable={selectionMode && column.id === "done"}
                       selected={selectedIds.has(ticket.id)}
@@ -793,10 +869,19 @@ export function KanbanView({
             <div className="grid grid-cols-[repeat(auto-fill,minmax(245px,1fr))] gap-3">
               {visibleArchivedTickets.map((ticket) => (
                 <KanbanCard
+                  assignees={assignees}
+                  assigning={assigningTicketId === ticket.id}
                   busy={bulkBusy || (selectionMode && archivedLoading)}
+                  canAssign={canAssignTicket}
+                  currentUserId={currentUserId}
                   key={ticket.id}
                   mode="archived"
                   onOpen={() => onOpenTicket(ticket.id)}
+                  onAssign={async (assigneeId) => {
+                    const updated = await onAssignTicket(ticket.id, assigneeId);
+                    if (updated) void loadArchived(true);
+                    return updated;
+                  }}
                   onToggle={() => toggleTicket(ticket.id)}
                   selectable={selectionMode}
                   selected={selectedIds.has(ticket.id)}

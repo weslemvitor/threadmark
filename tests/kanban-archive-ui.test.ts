@@ -57,8 +57,8 @@ test("Kanban pesquisa cards por título, grupo ou solicitante em cada visão", a
   assert.match(view, /Nenhum card encontrado/);
   assert.match(search, /ticket\.title/);
   assert.match(search, /ticket\.client\.name/);
-  assert.match(view, /min-w-48 flex-1/);
-  assert.match(view, /xl:w-\[clamp\(190px,18vw,260px\)\]/);
+  assert.match(view, /w-full min-w-0 items-center/);
+  assert.match(view, /sm:min-w-72 sm:flex-1/);
   assert.doesNotMatch(css, /\.kanban-search/);
 });
 

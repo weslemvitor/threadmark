@@ -31,6 +31,7 @@ import {
   getInvestigationThread,
   getRuntime,
   getTicket,
+  getTicketAssignees,
   getTickets,
   openInvestigationThread,
   upsertTicketProductForwarding,
@@ -41,6 +42,7 @@ import {
   updateTicketDirectoryContext,
   updateTicketInternalNote,
   updateTicketMetadata,
+  updateTicketAssignee,
   updateTicketStatus,
 } from "./lib/api";
 import {
@@ -67,6 +69,7 @@ import type {
   InvestigationThreadDto,
   RuntimeState,
   TicketDetail,
+  TicketAssignee,
   TicketStatus,
   TicketSummary,
 } from "./lib/types";
@@ -222,6 +225,7 @@ export function SupportApp({
   configureSupportTimeZone(workspaceTimeZone);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
+  const [ticketAssignees, setTicketAssignees] = useState<TicketAssignee[]>([]);
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [categoryCatalog, setCategoryCatalog] = useState<TicketCategoryCatalog[]>([]);
   const [directorySnapshot, setDirectorySnapshot] =
@@ -242,6 +246,7 @@ export function SupportApp({
   const [savingDirectory, setSavingDirectory] = useState(false);
   const [updatingContext, setUpdatingContext] = useState(false);
   const [updatingTicketMetadata, setUpdatingTicketMetadata] = useState(false);
+  const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
   const [addingTicketNote, setAddingTicketNote] = useState(false);
   const [ticketNoteMutation, setTicketNoteMutation] = useState<{
     noteId: string;
@@ -450,6 +455,7 @@ export function SupportApp({
       directoryResult,
       categoriesResult,
       pendingConversationsResult,
+      ticketAssigneesResult,
     ] =
       await Promise.allSettled([
         getRuntime(),
@@ -459,6 +465,7 @@ export function SupportApp({
         getDirectory(),
         getCategories(),
         getConversations({ attention: "pending", limit: 1 }),
+        getTicketAssignees(),
       ]);
 
     const failures = [
@@ -469,6 +476,7 @@ export function SupportApp({
       directoryResult,
       categoriesResult,
       pendingConversationsResult,
+      ticketAssigneesResult,
     ].filter((result) => result.status === "rejected") as PromiseRejectedResult[];
 
     if (runtimeResult.status === "fulfilled") setRuntime(runtimeResult.value);
@@ -485,6 +493,9 @@ export function SupportApp({
     }
     if (pendingConversationsResult.status === "fulfilled") {
       setPendingConversations(pendingConversationsResult.value.total);
+    }
+    if (ticketAssigneesResult.status === "fulfilled") {
+      setTicketAssignees(ticketAssigneesResult.value);
     }
 
     setApiError(failures.length ? failures[0].reason?.message ?? "Falha ao consultar a API local." : null);
@@ -508,6 +519,22 @@ export function SupportApp({
       return false;
     }
   }, [showToast]);
+
+  useEffect(() => {
+    if (!access || (activeView !== "kanban" && activeView !== "inbox")) return;
+    let cancelled = false;
+    void getTicketAssignees()
+      .then((users) => {
+        if (!cancelled) setTicketAssignees(users);
+      })
+      .catch(() => {
+        // A carga principal já apresenta erros da API. Esta atualização só
+        // mantém a equipe recém-editada sincronizada ao voltar para o fluxo.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [access, activeView]);
 
   useEffect(() => {
     ticketDetailsRef.current = ticketDetails;
@@ -1554,6 +1581,45 @@ export function SupportApp({
     ],
   );
 
+  const handleUpdateTicketAssignee = useCallback(
+    async (ticketId: string, assigneeId: string | null) => {
+      setAssigningTicketId(ticketId);
+      invalidateTicketSnapshot(ticketId);
+      try {
+        const updated = await updateTicketAssignee(ticketId, { assigneeId });
+        invalidateTicketSnapshot(ticketId);
+        commitTicketSnapshot(updated);
+        const assignee = assigneeId
+          ? ticketAssignees.find((candidate) => candidate.id === assigneeId)
+          : null;
+        showToast({
+          tone: "success",
+          message: assignee
+            ? `Ticket atribuído a ${assignee.displayName}.`
+            : "Ticket deixado sem responsável.",
+        });
+        return true;
+      } catch (error) {
+        showToast({
+          tone: "warning",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Não foi possível atualizar o responsável do ticket.",
+        });
+        return false;
+      } finally {
+        setAssigningTicketId(null);
+      }
+    },
+    [
+      commitTicketSnapshot,
+      invalidateTicketSnapshot,
+      showToast,
+      ticketAssignees,
+    ],
+  );
+
   const handleAddTicketNote = useCallback(
     async (ticketId: string, body: string, clientNoteId: string) => {
       setAddingTicketNote(true);
@@ -1811,10 +1877,12 @@ export function SupportApp({
           <div className="h-full min-h-0 bg-card">
             <TicketDetailPanel
               addingNote={addingTicketNote}
+              assignees={ticketAssignees}
               canManageNotes={Boolean(
                 access && access.user.role !== "viewer",
               )}
               canEditTicket={Boolean(access && access.user.role !== "viewer")}
+              currentUserId={access?.user.id ?? null}
               deleting={deletingTicketId === selectedTicket?.id}
               detachingMessageId={detachingTicketMessageId}
               directorySnapshot={directorySnapshot}
@@ -1836,6 +1904,7 @@ export function SupportApp({
               onUpdateNote={handleUpdateTicketNote}
               onUpdateDirectoryContext={handleUpdateTicketDirectoryContext}
               onUpdateMetadata={handleUpdateTicketMetadata}
+              onUpdateAssignee={handleUpdateTicketAssignee}
               onAttachCategory={handleAttachCategory}
               onDetachCategory={handleDetachCategory}
               onCreateCategory={handleCreateCategory}
@@ -1850,6 +1919,7 @@ export function SupportApp({
               ticketNoteMutation={ticketNoteMutation}
               updatingContext={updatingContext}
               updatingMetadata={updatingTicketMetadata}
+              updatingAssignee={assigningTicketId === selectedTicket?.id}
               updatingStatus={updatingStatus}
             />
           </div>
@@ -1857,12 +1927,17 @@ export function SupportApp({
       case "kanban":
         return (
           <KanbanView
+            assignees={ticketAssignees}
+            assigningTicketId={assigningTicketId}
+            canAssignTicket={Boolean(access && access.user.role !== "viewer")}
             canCreateTicket={Boolean(access && access.user.role !== "viewer")}
+            currentUserId={access?.user.id ?? null}
             loading={loading}
             onBulkStatusChange={handleBulkTicketStatusChange}
             onCreateManualTicket={openManualTicketDialog}
             onMoveTicket={requestStatusChange}
             onOpenTicket={openTicket}
+            onAssignTicket={handleUpdateTicketAssignee}
             tickets={tickets}
           />
         );
@@ -1951,6 +2026,7 @@ export function SupportApp({
     handleStatusChange,
     handleUpdateTicketDirectoryContext,
     handleUpdateTicketMetadata,
+    handleUpdateTicketAssignee,
     handleUpdateTicketNote,
     handleUpdateDirectoryField,
     handleUpdateDirectoryRecord,
@@ -1968,6 +2044,8 @@ export function SupportApp({
     reloadDirectory,
     refreshTicketCollections,
     selectedTicket,
+    ticketAssignees,
+    assigningTicketId,
     savingDirectory,
     settingsInitialTab,
     showToast,

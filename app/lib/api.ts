@@ -25,6 +25,7 @@ import type {
   TicketListResponse,
   CreateCategoryInput,
   TicketCategoryAttachInput,
+  TicketAssigneeDto,
   TriageAiSettingsDto,
   TriggerConversationAnalysisResponse,
   UpsertTicketProductForwardingInput,
@@ -34,6 +35,7 @@ import type {
   UpdateTicketInternalNoteInput,
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
+  UpdateTicketAssigneeInput,
 } from "@/shared/contracts";
 import type {
   ConversationActionResponse,
@@ -476,6 +478,23 @@ export async function updateTicketMetadata(
     method: "PATCH",
     body: JSON.stringify(input),
   });
+}
+
+export async function getTicketAssignees(): Promise<TicketAssigneeDto[]> {
+  return request<TicketAssigneeDto[]>("/api/ticket-assignees");
+}
+
+export async function updateTicketAssignee(
+  id: string,
+  input: UpdateTicketAssigneeInput,
+): Promise<TicketDetail> {
+  return request<TicketDetail>(
+    `/api/tickets/${encodeURIComponent(id)}/assignee`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function detachTicketMessage(

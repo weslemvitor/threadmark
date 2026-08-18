@@ -65,6 +65,7 @@ function apiFixture() {
   });
   return {
     app: createTestApiApp(store),
+    database,
     store,
     clientId: client.id,
     groupId: group.id,
@@ -72,6 +73,37 @@ function apiFixture() {
     ticketId: ticket.id,
     messageId: message.id,
   };
+}
+
+function insertLocalUser(
+  database: SupportDatabase,
+  input: {
+    id: string;
+    displayName: string;
+    role: "owner" | "admin" | "operator" | "viewer";
+    active?: boolean;
+  },
+) {
+  const timestamp = "2026-08-18T12:00:00.000Z";
+  database
+    .prepare(
+      `INSERT INTO local_users (
+         id, username, display_name, role, password_hash, active,
+         failed_login_attempts, locked_until, last_login_at,
+         password_changed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)`,
+    )
+    .run(
+      input.id,
+      input.id,
+      input.displayName,
+      input.role,
+      "test-password-hash",
+      input.active === false ? 0 : 1,
+      timestamp,
+      timestamp,
+      timestamp,
+    );
 }
 
 test("API cria ticket manual sem mensagem e preserva idempotência", async () => {
@@ -110,6 +142,78 @@ test("API cria ticket manual sem mensagem e preserva idempotência", async () =>
     body: JSON.stringify({ ...payload, title: "" }),
   });
   assert.equal(invalid.status, 400);
+});
+
+test("API lista responsáveis ativos e audita atribuição e remoção do ticket", async () => {
+  const { app, database, ticketId } = apiFixture();
+  insertLocalUser(database, {
+    id: "operator-two",
+    displayName: "Agente Dois",
+    role: "operator",
+  });
+  insertLocalUser(database, {
+    id: "viewer-readonly",
+    displayName: "Pessoa somente leitura",
+    role: "viewer",
+  });
+  insertLocalUser(database, {
+    id: "inactive-operator",
+    displayName: "Pessoa inativa",
+    role: "operator",
+    active: false,
+  });
+
+  const list = await app.request("/api/ticket-assignees");
+  assert.equal(list.status, 200);
+  assert.deepEqual(await list.json(), [
+    {
+      id: "operator-two",
+      displayName: "Agente Dois",
+      role: "operator",
+    },
+  ]);
+
+  const assignedResponse = await app.request(`/api/tickets/${ticketId}/assignee`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ assigneeId: "operator-two" }),
+  });
+  assert.equal(assignedResponse.status, 200);
+  const assigned = (await assignedResponse.json()) as TicketDetailDto;
+  assert.deepEqual(assigned.assignee, {
+    id: "operator-two",
+    displayName: "Agente Dois",
+    role: "operator",
+  });
+  assert.ok(
+    assigned.timeline.some(
+      (item) =>
+        item.type === "event" &&
+        item.eventType === "ticket_assigned" &&
+        item.description.includes("Agente Dois"),
+    ),
+  );
+
+  const invalid = await app.request(`/api/tickets/${ticketId}/assignee`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ assigneeId: "viewer-readonly" }),
+  });
+  assert.equal(invalid.status, 400);
+
+  const unassignedResponse = await app.request(`/api/tickets/${ticketId}/assignee`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ assigneeId: null }),
+  });
+  assert.equal(unassignedResponse.status, 200);
+  const unassigned = (await unassignedResponse.json()) as TicketDetailDto;
+  assert.equal(unassigned.assignee, null);
+  assert.ok(
+    unassigned.timeline.some(
+      (item) => item.type === "event" && item.eventType === "ticket_unassigned",
+    ),
+  );
 });
 
 test("API edita título, descrição, prioridade e solicitante do ticket", async () => {

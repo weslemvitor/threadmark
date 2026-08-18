@@ -25,6 +25,7 @@ import {
 import type {
   TicketCategoryCatalog,
   CategoryFacetType,
+  TicketAssignee,
   TicketDetail as TicketDetailType,
   TicketStatus,
 } from "@/app/lib/types";
@@ -52,6 +53,7 @@ import { ProductForwardingPanel } from "./ticket-product-panel";
 import { InvestigationRoomLauncher } from "./investigation-room-launcher";
 import { TicketResolutionSummary } from "./ticket-resolution-summary";
 import { TicketRecordConnectorDialog } from "./ticket-record-connector-dialog";
+import { TicketAssignmentPanel } from "./ticket-assignment-panel";
 
 const mutableStatuses: TicketStatus[] = [
   "new",
@@ -69,11 +71,14 @@ type TicketDetailProps = {
   updatingStatus: boolean;
   updatingContext: boolean;
   updatingMetadata: boolean;
+  updatingAssignee: boolean;
   addingNote: boolean;
   ticketNoteMutation: TicketNoteMutation | null;
   detachingMessageId: string | null;
   canManageNotes: boolean;
   canEditTicket: boolean;
+  assignees: TicketAssignee[];
+  currentUserId: string | null;
   deleting: boolean;
   onStatusChange: (status: TicketStatus) => void;
   onOpenInvestigationRoom: () => void;
@@ -116,6 +121,10 @@ type TicketDetailProps = {
     ticketId: string,
     input: UpdateTicketMetadataInput,
   ) => Promise<boolean>;
+  onUpdateAssignee: (
+    ticketId: string,
+    assigneeId: string | null,
+  ) => Promise<boolean>;
   onExecuteRecordConnector: (
     ticketId: string,
     connectorId: string,
@@ -130,11 +139,14 @@ export function TicketDetail({
   updatingStatus,
   updatingContext,
   updatingMetadata,
+  updatingAssignee,
   addingNote,
   ticketNoteMutation,
   detachingMessageId,
   canManageNotes,
   canEditTicket,
+  assignees,
+  currentUserId,
   deleting,
   onStatusChange,
   onOpenInvestigationRoom,
@@ -149,6 +161,7 @@ export function TicketDetail({
   onOpenProductForwarding,
   onUpdateDirectoryContext,
   onUpdateMetadata,
+  onUpdateAssignee,
   onAttachCategory,
   onDetachCategory,
   onCreateCategory,
@@ -535,6 +548,14 @@ export function TicketDetail({
           className="min-h-0 overflow-y-auto border-l border-border bg-muted/30 overscroll-contain max-[1050px]:overflow-visible max-[1050px]:border-t max-[1050px]:border-l-0"
           data-ticket-side-panel
         >
+          <TicketAssignmentPanel
+            assignees={assignees}
+            canManage={canEditTicket}
+            currentUserId={currentUserId}
+            onChange={(assigneeId) => onUpdateAssignee(ticket.id, assigneeId)}
+            ticket={ticket}
+            updating={updatingAssignee}
+          />
           <ContextPanel
             canCreateWithConnector={canCreateWithConnector}
             onEditContext={() => setContextEditorOpen(true)}

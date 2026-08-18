@@ -151,6 +151,18 @@ export interface TicketRequesterDto {
   phoneE164: string | null;
 }
 
+/** Minimal local user projection exposed to the support workflow. */
+export interface TicketAssigneeDto {
+  id: string;
+  displayName: string;
+  role: AuthRole;
+}
+
+export interface UpdateTicketAssigneeInput {
+  /** Null leaves the ticket explicitly unassigned. */
+  assigneeId: string | null;
+}
+
 export interface TicketSummaryDto {
   id: string;
   number: number;
@@ -181,6 +193,7 @@ export interface TicketSummaryDto {
     externalJid: string;
   };
   requester: TicketRequesterDto | null;
+  assignee: TicketAssigneeDto | null;
   affectedStore: AffectedStoreDto | null;
   productForwarding: TicketProductForwardingSummaryDto | null;
   categories: CategoryDto[];

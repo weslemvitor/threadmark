@@ -4,6 +4,7 @@ import type {
   AddTicketInternalNoteInput,
   AddInvestigationThreadMessageInput,
   AttachmentDto,
+  AuthRole,
   AttachConversationMessagesInput,
   CategoryDto,
   CategoryCatalogDto,
@@ -60,6 +61,7 @@ import type {
   TicketProductForwardingDto,
   ProductForwardingKind,
   TicketProductForwardingSummaryDto,
+  TicketAssigneeDto,
   TicketRequesterDto,
   TicketStatus,
   TicketSummaryDto,
@@ -581,6 +583,10 @@ function describeTicketEvent(input: {
       return "Categoria vinculada ao ticket.";
     case "ticket_category_removed":
       return "Categoria removida do ticket.";
+    case "ticket_assigned":
+      return `Ticket atribuído por ${input.actor}.`;
+    case "ticket_unassigned":
+      return `Atribuição removida por ${input.actor}.`;
     default:
       return `Atualização interna registrada por ${input.actor}.`;
   }
@@ -614,6 +620,9 @@ interface TicketSummaryRow {
   requester_display_name: string | null;
   requester_phone_e164: string | null;
   requester_override_id: string | null;
+  assignee_user_id: string | null;
+  assignee_display_name: string | null;
+  assignee_role: AuthRole | null;
   store_id: string | null;
   store_name: string | null;
   store_business_id: string | null;
@@ -636,10 +645,23 @@ interface CategoryCatalogRow extends CategoryRow {
   ticket_count: number;
 }
 
-function ticketSelect(requesterOverrideAvailable: boolean): string {
+function ticketSelect(
+  requesterOverrideAvailable: boolean,
+  assigneeColumnAvailable: boolean,
+): string {
   const requesterOverride = requesterOverrideAvailable
     ? "t.requester_id"
     : "NULL";
+  const assigneeSelect = assigneeColumnAvailable
+    ? `assignee.id AS assignee_user_id,
+    assignee.display_name AS assignee_display_name,
+    assignee.role AS assignee_role,`
+    : `NULL AS assignee_user_id,
+    NULL AS assignee_display_name,
+    NULL AS assignee_role,`;
+  const assigneeJoin = assigneeColumnAvailable
+    ? "LEFT JOIN local_users assignee ON assignee.id = t.assignee_user_id"
+    : "";
   return `
   SELECT
     t.id,
@@ -669,6 +691,7 @@ function ticketSelect(requesterOverrideAvailable: boolean): string {
     requester.id AS requester_id,
     requester.display_name AS requester_display_name,
     requester.phone_e164 AS requester_phone_e164,
+    ${assigneeSelect}
     s.id AS store_id,
     s.name AS store_name,
     s.business_id AS store_business_id,
@@ -695,6 +718,7 @@ function ticketSelect(requesterOverrideAvailable: boolean): string {
       LIMIT 1
     ))
   LEFT JOIN client_stores s ON s.id = t.affected_store_id
+  ${assigneeJoin}
   LEFT JOIN suggestions latest_suggestion
     ON latest_suggestion.id = (
       SELECT suggestion.id
@@ -1262,6 +1286,7 @@ export class SupportStore {
   private triageContextWaitSchemaAvailable = false;
 
   private readonly requesterOverrideAvailable: boolean;
+  private readonly assigneeColumnAvailable: boolean;
 
   constructor(readonly database: SupportDatabase) {
     this.requesterOverrideAvailable = Boolean(
@@ -1274,10 +1299,23 @@ export class SupportStore {
         )
         .get(),
     );
+    this.assigneeColumnAvailable = Boolean(
+      this.database
+        .prepare(
+          `SELECT 1
+           FROM pragma_table_info('tickets')
+           WHERE name = 'assignee_user_id'
+           LIMIT 1`,
+        )
+        .get(),
+    );
   }
 
   private ticketSelect(): string {
-    return ticketSelect(this.requesterOverrideAvailable);
+    return ticketSelect(
+      this.requesterOverrideAvailable,
+      this.assigneeColumnAvailable,
+    );
   }
 
   upsertAccount(input: UpsertAccountInput): EntityRecord {
@@ -1879,6 +1917,109 @@ export class SupportStore {
           description: `${responsible} atualizou ${changedFields
             .map((field) => fieldLabels[field])
             .join(", ")} do ticket.`,
+        },
+        occurredAt: timestamp,
+      });
+
+      return this.getTicketDetail(ticketId);
+    })();
+  }
+
+  listTicketAssignees(): TicketAssigneeDto[] {
+    return (
+      this.database
+        .prepare(
+          `SELECT id, display_name, role
+           FROM local_users
+           WHERE active = 1
+             AND role IN ('owner', 'admin', 'operator')
+           ORDER BY display_name COLLATE NOCASE, id`,
+        )
+        .all() as Array<{
+        id: string;
+        display_name: string;
+        role: AuthRole;
+      }>
+    ).map((user) => ({
+      id: user.id,
+      displayName: user.display_name,
+      role: user.role,
+    }));
+  }
+
+  updateTicketAssignee(
+    ticketId: string,
+    assigneeId: string | null,
+    actor = "Operador local",
+  ): TicketDetailDto {
+    const normalizedAssigneeId = normalizedNullableText(assigneeId);
+    const responsible = normalizedBoundedText(actor, "Responsável", 200);
+
+    return this.database.transaction(() => {
+      const current = this.database
+        .prepare(
+          `SELECT t.id, t.assignee_user_id,
+                  current_assignee.display_name AS assignee_display_name
+           FROM tickets t
+           LEFT JOIN local_users current_assignee
+             ON current_assignee.id = t.assignee_user_id
+           WHERE t.id = ?`,
+        )
+        .get(ticketId) as
+        | {
+            id: string;
+            assignee_user_id: string | null;
+            assignee_display_name: string | null;
+          }
+        | undefined;
+      if (!current) throw new NotFoundError("Ticket", ticketId);
+
+      const nextAssignee = normalizedAssigneeId
+        ? (this.database
+            .prepare(
+              `SELECT id, display_name, role
+               FROM local_users
+               WHERE id = ? AND active = 1
+                 AND role IN ('owner', 'admin', 'operator')`,
+            )
+            .get(normalizedAssigneeId) as
+            | { id: string; display_name: string; role: AuthRole }
+            | undefined)
+        : null;
+      if (normalizedAssigneeId && !nextAssignee) {
+        throw new ValidationError(
+          "O responsável deve ser um usuário ativo da equipe de suporte",
+          { ticketId, assigneeId: normalizedAssigneeId },
+        );
+      }
+      if (current.assignee_user_id === normalizedAssigneeId) {
+        return this.getTicketDetail(ticketId);
+      }
+
+      const timestamp = nowUtc();
+      this.database
+        .prepare(
+          `UPDATE tickets
+           SET assignee_user_id = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(normalizedAssigneeId, timestamp, ticketId);
+
+      const nextName = nextAssignee?.display_name ?? null;
+      this.insertTicketEvent({
+        ticketId,
+        eventType: nextAssignee ? "ticket_assigned" : "ticket_unassigned",
+        actor: responsible,
+        fromStatus: null,
+        toStatus: null,
+        data: {
+          previousAssigneeId: current.assignee_user_id,
+          previousAssigneeName: current.assignee_display_name,
+          assigneeId: nextAssignee?.id ?? null,
+          assigneeName: nextName,
+          description: nextAssignee
+            ? `${responsible} atribuiu o ticket a ${nextName}.`
+            : `${responsible} deixou o ticket sem responsável.`,
         },
         occurredAt: timestamp,
       });
@@ -11550,6 +11691,14 @@ export class SupportStore {
               id: row.requester_id,
               displayName: row.requester_display_name,
               phoneE164: row.requester_phone_e164,
+            }
+          : null,
+      assignee:
+        row.assignee_user_id && row.assignee_display_name && row.assignee_role
+          ? {
+              id: row.assignee_user_id,
+              displayName: row.assignee_display_name,
+              role: row.assignee_role,
             }
           : null,
       affectedStore: row.store_id

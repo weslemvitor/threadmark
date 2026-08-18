@@ -21,6 +21,7 @@ import type {
   RuntimeStatusDto,
   SuggestionDto,
   TicketDetailDto,
+  TicketAssigneeDto,
   TicketPriority,
   TicketStatus,
   TicketSummaryDto,
@@ -30,6 +31,7 @@ import type {
   UpdateClientProfileInput,
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
+  UpdateTicketAssigneeInput,
 } from "../../shared/contracts.js";
 
 export type {
@@ -54,6 +56,7 @@ export type {
   SuggestionDto,
   CategoryCatalogDto,
   TicketDetailDto,
+  TicketAssigneeDto,
   TicketPriority,
   TicketStatus,
   TicketSummaryDto,
@@ -63,6 +66,7 @@ export type {
   UpdateClientProfileInput,
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
+  UpdateTicketAssigneeInput,
 };
 
 export type RuntimeState = RuntimeStatusDto;
@@ -75,6 +79,7 @@ export type DirectorySegment = DirectorySegmentDto;
 export type DashboardData = DashboardResponse;
 export type TicketSummary = TicketSummaryDto;
 export type TicketDetail = TicketDetailDto;
+export type TicketAssignee = TicketAssigneeDto;
 export type TicketCategory = CategoryDto;
 export type TicketCategoryCatalog = CategoryCatalogDto;
 export type CategoryFacetType = CategoryFacet;

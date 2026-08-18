@@ -200,6 +200,12 @@ const ticketMetadataInputSchema = z
   })
   .strict();
 
+const ticketAssigneeInputSchema = z
+  .object({
+    assigneeId: z.union([z.string().trim().min(1).max(200), z.null()]),
+  })
+  .strict();
+
 const ticketDirectoryContextInputSchema = z
   .object({
     recordIds: z
@@ -2092,6 +2098,10 @@ function createApiAppInternal(
     return context.json(store.createCategory(input), 201);
   });
 
+  app.get("/api/ticket-assignees", (context) =>
+    context.json(store.listTicketAssignees()),
+  );
+
   app.get("/api/tickets", (context) => {
     const url = new URL(context.req.url);
     const limit = url.searchParams.get("limit");
@@ -2151,6 +2161,17 @@ function createApiAppInternal(
       store.updateTicketMetadata(
         context.req.param("id"),
         input,
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.patch("/api/tickets/:id/assignee", async (context) => {
+    const input = ticketAssigneeInputSchema.parse(await context.req.json());
+    return context.json(
+      store.updateTicketAssignee(
+        context.req.param("id"),
+        input.assigneeId,
         actorFor(context),
       ),
     );

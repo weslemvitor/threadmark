@@ -46,6 +46,7 @@ const ticket: TicketDetailDto = {
     displayName: "Pessoa Exemplo",
     phoneE164: "+5500000000001",
   },
+  assignee: null,
   requesterOverrideId: null,
   requesterCandidates: [
     {
