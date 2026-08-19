@@ -1,4 +1,4 @@
-export type AiTaskCapabilityKind = "triage" | "automatic" | "deep";
+export type AiTaskCapabilityKind = "triage" | "automatic" | "deep" | "documentation";
 
 export interface TaskCapableConnection {
   enabled: boolean;
@@ -15,7 +15,7 @@ export function connectionSupportsTask(
 ): boolean {
   if (!connection.enabled) return false;
   if (taskKind === "triage") return connection.capabilities.triage;
-  if (taskKind === "automatic") {
+  if (taskKind === "automatic" || taskKind === "documentation") {
     return connection.capabilities.automaticAnalysis;
   }
   return connection.capabilities.deepInvestigation;

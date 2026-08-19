@@ -23,27 +23,18 @@ import {
   getDirectory,
   getInvestigationThread,
   getRuntime,
+  getUnreadNotificationCount,
   getTicket,
   getTicketAssignees,
   getTickets,
   openInvestigationThread,
+  queueTicketDocumentation,
   upsertTicketProductForwarding,
   updateTicketInternalNote,
   updateTicketMetadata,
   updateTicketAssignee,
   updateTicketStatus,
 } from "./lib/api";
-import {
-  disableBrowserNotifications,
-  enableBrowserNotifications,
-  getBrowserNotificationState,
-  showBrowserNotification,
-  type BrowserNotificationState,
-} from "./lib/browser-notifications";
-import {
-  getInvestigationNotificationTitle,
-  isFinishedInvestigationState,
-} from "./lib/investigation-notifications";
 import type {
   ClientSummary,
   DashboardData,
@@ -144,6 +135,18 @@ const SettingsView = dynamic(
   () => import("./features/settings").then((module) => module.SettingsView),
   { loading: () => <FeatureLoading label="Carregando configurações…" /> },
 );
+const DocumentationView = dynamic(
+  () => import("./features/documentation").then((module) => module.DocumentationView),
+  { loading: () => <FeatureLoading label="Carregando documentações…" /> },
+);
+const AutomationsView = dynamic(
+  () => import("./features/automations").then((module) => module.AutomationsView),
+  { loading: () => <FeatureLoading label="Carregando automações…" /> },
+);
+const NotificationsView = dynamic(
+  () => import("./features/notifications").then((module) => module.NotificationsView),
+  { loading: () => <FeatureLoading label="Carregando notificações…" /> },
+);
 
 const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
   conversations: {
@@ -165,6 +168,18 @@ const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
   categories: {
     title: "Categorias de atendimento",
     subtitle: "Entenda motivos, produtos, sintomas e causas recorrentes",
+  },
+  documentation: {
+    title: "Documentações",
+    subtitle: "Rascunhos gerados a partir de tickets resolvidos e revisados por você",
+  },
+  automations: {
+    title: "Automações",
+    subtitle: "Crie fluxos internos e conecte apps com execução local auditável",
+  },
+  notifications: {
+    title: "Notificações",
+    subtitle: "Avisos internos das automações, investigações e do Threadmark",
   },
   dashboard: {
     title: "Visão do suporte",
@@ -238,6 +253,7 @@ export function SupportApp({
   const [categoryMutationTicketId, setCategoryMutationTicketId] = useState<
     string | null
   >(null);
+  const [generatingDocumentationTicketId, setGeneratingDocumentationTicketId] = useState<string | null>(null);
   const [deletingTicketId, setDeletingTicketId] = useState<string | null>(null);
   const [manualTicketRequestId, setManualTicketRequestId] = useState<string | null>(null);
   const [creatingManualTicket, setCreatingManualTicket] = useState(false);
@@ -258,8 +274,7 @@ export function SupportApp({
   const [investigationRoomStopping, setInvestigationRoomStopping] = useState(false);
   const [investigationRoomError, setInvestigationRoomError] = useState<string | null>(null);
   const [roomSearchOpen, setRoomSearchOpen] = useState(false);
-  const [notificationState, setNotificationState] =
-    useState<BrowserNotificationState>("unsupported");
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [conversationRefreshVersion, setConversationRefreshVersion] = useState(0);
   const [pendingConversations, setPendingConversations] = useState(0);
   const ticketDetailsRef = useRef(ticketDetails);
@@ -573,11 +588,22 @@ export function SupportApp({
   }, [loadData]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setNotificationState(getBrowserNotificationState());
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    if (!access) return;
+    let active = true;
+    const refreshUnread = () => {
+      void getUnreadNotificationCount()
+        .then((result) => {
+          if (active) setUnreadNotifications(result.unread);
+        })
+        .catch(() => undefined);
+    };
+    refreshUnread();
+    const timer = window.setInterval(refreshUnread, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [access]);
 
   useEffect(() => {
     if (activeView !== "inbox" || !currentSelectedId) return;
@@ -1146,68 +1172,9 @@ export function SupportApp({
       !isInvestigationTurnActive(currentState)
     ) {
       void loadSelectedTicket(investigationThread.ticketId, true, true);
-      const latestTurn = investigationThread.turns.at(-1);
-      if (
-        notificationState === "enabled" &&
-        latestTurn &&
-        isFinishedInvestigationState(latestTurn.state)
-      ) {
-        const ticket = ticketDetails.get(investigationThread.ticketId);
-        showBrowserNotification({
-          title: getInvestigationNotificationTitle("deep", latestTurn.state),
-          body: ticket
-            ? `#${ticket.number} · ${ticket.client.name}\n${ticket.title}`
-            : "O turno da sala de investigação foi finalizado.",
-          tag: `threadmark:deep:${latestTurn.id}:${latestTurn.state}`,
-          onClick: () => {
-            setSelectedId(investigationThread.ticketId);
-            setRouteTicketReference(null);
-            setActiveView("inbox");
-            setInvestigationRoomTarget(investigationThread.ticketId);
-            setSidebarOpen(false);
-            window.history.pushState(
-              {},
-              "",
-              buildThreadmarkPath({
-                view: "inbox",
-                ticketReference: ticket?.number ?? investigationThread.ticketId,
-              }),
-            );
-          },
-        });
-      }
     }
     previousRoomTurnStateRef.current = currentState;
-  }, [investigationThread, loadSelectedTicket, notificationState, ticketDetails]);
-
-  const toggleNotifications = useCallback(async () => {
-    if (notificationState === "enabled") {
-      setNotificationState(disableBrowserNotifications());
-      showToast({
-        tone: "success",
-        message: "Notificações da sala de investigação desativadas.",
-      });
-      return;
-    }
-
-    const nextState = await enableBrowserNotifications();
-    setNotificationState(nextState);
-    if (nextState === "enabled") {
-      showToast({
-        tone: "success",
-        message: "Notificações ativadas. Você será avisado quando o Codex terminar.",
-      });
-      return;
-    }
-
-    showToast({
-      tone: "warning",
-      message:
-        nextState === "blocked"
-          ? "As notificações estão bloqueadas. Libere o localhost nos ajustes do navegador."
-          : "Este navegador não disponibilizou notificações locais.",
-    });
-  }, [notificationState, showToast]);
+  }, [investigationThread, loadSelectedTicket]);
 
   const reloadDirectory = useCallback(async () => {
     const snapshot = await getDirectory();
@@ -1637,9 +1604,33 @@ export function SupportApp({
     }
   }, [ticketDetails, tickets]);
 
+  const handleGenerateDocumentation = useCallback(async (ticketId: string) => {
+    setGeneratingDocumentationTicketId(ticketId);
+    try {
+      await queueTicketDocumentation(ticketId);
+      showToast({ tone: "success", message: "Documentação adicionada à fila de geração." });
+      navigateToView("documentation");
+    } catch (error) {
+      showToast({
+        tone: "warning",
+        message: error instanceof Error ? error.message : "Não foi possível gerar a documentação.",
+      });
+    } finally {
+      setGeneratingDocumentationTicketId(null);
+    }
+  }, [navigateToView, showToast]);
+
   const openSettingsTab = useCallback((tab: SettingsTab) => {
     navigateToView("settings", { settingsTab: tab });
   }, [navigateToView]);
+
+  const openNotificationTarget = useCallback((targetUrl: string) => {
+    const target = new URL(targetUrl, window.location.origin);
+    if (target.origin !== window.location.origin) return;
+    const navigation = parseThreadmarkLocation(target.pathname, target.search);
+    window.history.pushState({}, "", `${target.pathname}${target.search}`);
+    applyLocationNavigation(navigation);
+  }, [applyLocationNavigation]);
 
   const currentPage = pageContent[activeView];
   const pageView = useMemo(() => {
@@ -1679,6 +1670,7 @@ export function SupportApp({
               onOpenInvestigationRoom={openInvestigationRoom}
               onOpenCategoryCatalog={() => navigateToView("categories")}
               onOpenProductForwarding={openProductForwarding}
+              onGenerateDocumentation={handleGenerateDocumentation}
               onRefresh={refreshTicket}
               onStatusChange={handleStatusChange}
               onUpdateNote={handleUpdateTicketNote}
@@ -1695,6 +1687,7 @@ export function SupportApp({
               updatingMetadata={updatingTicketMetadata}
               updatingAssignee={assigningTicketId === selectedTicket?.id}
               updatingStatus={updatingStatus}
+              generatingDocumentation={generatingDocumentationTicketId === selectedTicket?.id}
             />
           </div>
         );
@@ -1729,6 +1722,17 @@ export function SupportApp({
             categories={categoryCatalog}
             loading={loading}
             onCreate={handleCreateCategory}
+          />
+        );
+      case "documentation":
+        return <DocumentationView />;
+      case "automations":
+        return <AutomationsView />;
+      case "notifications":
+        return (
+          <NotificationsView
+            onOpenTarget={openNotificationTarget}
+            onUnreadChange={setUnreadNotifications}
           />
         );
       case "dashboard":
@@ -1777,6 +1781,7 @@ export function SupportApp({
     handleDetachTicketMessage,
     handleAttachCategory,
     handleDetachCategory,
+    handleGenerateDocumentation,
     handleDeleteTicketNote,
     handleStatusChange,
     handleUpdateTicketMetadata,
@@ -1789,6 +1794,7 @@ export function SupportApp({
     openProductForwarding,
     openInvestigationRoom,
     openManualTicketDialog,
+    openNotificationTarget,
     refreshTicket,
     requestStatusChange,
     reloadDirectory,
@@ -1802,6 +1808,7 @@ export function SupportApp({
     ticketNoteMutation,
     updatingTicketMetadata,
     updatingStatus,
+    generatingDocumentationTicketId,
     workspaceTimeZone,
   ]);
 
@@ -1816,6 +1823,7 @@ export function SupportApp({
         open={sidebarOpen}
         pendingConversations={pendingConversations}
         reviewTickets={reviewTickets}
+        unreadNotifications={unreadNotifications}
         runtime={runtime}
         operatorName={access?.user.displayName ?? "Operador local"}
         operatorRole={
@@ -1828,17 +1836,17 @@ export function SupportApp({
         }
         workspaceName={workspaceLabel}
       />
-      <main className="ml-[238px] flex h-dvh min-h-0 flex-col overflow-hidden transition-[margin] max-md:ml-0">
+      <main className="ml-0 flex h-dvh min-h-0 flex-col overflow-hidden transition-[margin] md:ml-[238px]">
         {activeView !== "settings" && activeView !== "inbox" ? (
           <PageHeader
-            notificationState={notificationState}
             onOpenMenu={() => setSidebarOpen(true)}
+            onOpenNotifications={() => navigateToView("notifications")}
             onRefresh={() => void refreshAll()}
-            onToggleNotifications={() => void toggleNotifications()}
             refreshing={refreshing}
             runtime={runtime}
             subtitle={currentPage.subtitle}
             title={currentPage.title}
+            unreadNotifications={unreadNotifications}
           />
         ) : null}
         {apiError ? <ApiErrorBanner message={apiError} onRetry={() => void refreshAll()} /> : null}

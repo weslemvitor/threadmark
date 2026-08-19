@@ -28,7 +28,14 @@ import type {
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
   UpdateTicketAssigneeInput,
+  DocumentationDraftDto,
+  DocumentationDraftListResponse,
+  DeleteDocumentationDraftResponse,
+  UpdateDocumentationDraftInput,
+  NotificationListResponse,
+  NotificationReadResponse,
 } from "@/shared/contracts";
+
 import type {
   ConversationActionResponse,
   ConversationAttachInput,
@@ -88,6 +95,106 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export { request as apiRequest };
+
+export async function getNotifications(options: {
+  unreadOnly?: boolean;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<NotificationListResponse> {
+  const params = new URLSearchParams();
+  if (options.unreadOnly) params.set("unread", "true");
+  params.set("limit", String(options.limit ?? 30));
+  params.set("offset", String(options.offset ?? 0));
+  return request(`/api/notifications?${params.toString()}`);
+}
+
+export async function getUnreadNotificationCount(): Promise<{ unread: number }> {
+  return request("/api/notifications/unread-count");
+}
+
+export async function updateNotificationRead(
+  id: string,
+  read: boolean,
+): Promise<NotificationReadResponse> {
+  return request(`/api/notifications/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ read }),
+  });
+}
+
+export async function markAllNotificationsRead(): Promise<NotificationReadResponse> {
+  return request("/api/notifications/read-all", { method: "POST" });
+}
+
+export async function getDocumentationDrafts(options: {
+  query?: string;
+  includeArchived?: boolean;
+} = {}): Promise<DocumentationDraftListResponse> {
+  const params = new URLSearchParams();
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  if (options.includeArchived) params.set("includeArchived", "true");
+  const query = params.toString();
+  return request(`/api/documentation${query ? `?${query}` : ""}`);
+}
+
+export async function queueTicketDocumentation(ticketId: string): Promise<DocumentationDraftDto> {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/documentation`, {
+    method: "POST",
+  });
+}
+
+export async function regenerateDocumentation(draftId: string): Promise<DocumentationDraftDto> {
+  return request(`/api/documentation/${encodeURIComponent(draftId)}/regenerate`, {
+    method: "POST",
+  });
+}
+
+export async function updateDocumentationDraft(
+  draftId: string,
+  input: UpdateDocumentationDraftInput,
+): Promise<DocumentationDraftDto> {
+  return request(`/api/documentation/${encodeURIComponent(draftId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteDocumentationDraft(
+  draftId: string,
+): Promise<DeleteDocumentationDraftResponse> {
+  return request(`/api/documentation/${encodeURIComponent(draftId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getDocumentationDocx(
+  draftId: string,
+): Promise<{ blob: Blob; fileName: string }> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_URL}/api/documentation/${encodeURIComponent(draftId)}/export.docx`,
+      {
+        headers: {
+          Accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+        credentials: "include",
+        cache: "no-store",
+      },
+    );
+  } catch {
+    throw new ApiError(
+      "Não foi possível alcançar o serviço local para exportar a documentação.",
+    );
+  }
+  if (!response.ok) throw await apiResponseError(response);
+  return {
+    blob: await response.blob(),
+    fileName:
+      contentDispositionFileName(response.headers.get("content-disposition")) ??
+      "documentacao.docx",
+  };
+}
 
 async function apiResponseError(response: Response): Promise<ApiError> {
   if (response.status === 401) notifySessionExpired();

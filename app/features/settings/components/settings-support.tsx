@@ -72,6 +72,11 @@ export const TASKS: Array<{
     label: "Investigação aprofundada",
     description: "Aprofunda o caso em uma sala persistente usando as capacidades da conexão selecionada.",
   },
+  {
+    id: "documentation",
+    label: "Documentações",
+    description: "Transforma tickets resolvidos em rascunhos revisáveis para a central de ajuda.",
+  },
 ];
 
 export const inputClass =

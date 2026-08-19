@@ -6,6 +6,8 @@ import type {
   ClientSummaryDto,
   DashboardResponse,
   DirectorySnapshotDto,
+  DocumentationDraftDto,
+  DocumentationDraftListResponse,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
   InvestigationThreadSummaryDto,
@@ -24,6 +26,7 @@ import type {
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
   UpdateTicketAssigneeInput,
+  UpdateDocumentationDraftInput,
 } from "../../shared/contracts.js";
 
 export type {
@@ -32,6 +35,8 @@ export type {
   ClientSummaryDto,
   DashboardResponse,
   DirectorySnapshotDto,
+  DocumentationDraftDto,
+  DocumentationDraftListResponse,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
   InvestigationThreadSummaryDto,
@@ -51,6 +56,7 @@ export type {
   UpdateTicketContextInput,
   UpdateTicketMetadataInput,
   UpdateTicketAssigneeInput,
+  UpdateDocumentationDraftInput,
 };
 
 export type RuntimeState = RuntimeStatusDto;
@@ -65,3 +71,4 @@ export type TicketCategoryCatalog = CategoryCatalogDto;
 export type CategoryFacetType = CategoryFacet;
 export type Attachment = AttachmentDto;
 export type AnswerSuggestion = SuggestionDto;
+export type DocumentationDraft = DocumentationDraftDto;

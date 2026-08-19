@@ -4,6 +4,9 @@ export type ViewId =
   | "kanban"
   | "clients"
   | "categories"
+  | "documentation"
+  | "automations"
+  | "notifications"
   | "dashboard"
   | "settings";
 
@@ -33,6 +36,9 @@ const VIEW_PATHS: Record<ViewId, string> = {
   kanban: "/kanban",
   clients: "/directory",
   categories: "/categories",
+  documentation: "/documentation",
+  automations: "/automations",
+  notifications: "/notifications",
   dashboard: "/dashboard",
   settings: "/settings",
 };

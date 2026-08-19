@@ -234,14 +234,19 @@ test("superfícies densas preservam a investigação e os gráficos responsivos"
   assert.match(charts, /activeItem\?\.value \?\? total/);
 });
 
-test("primitives não impõem layout legado nem duplicam o ícone dos selects", async () => {
-  const [button, nativeSelect, select, css] = await Promise.all([
+test("primitives não impõem layout legado nem deixam menus atrás de drawers", async () => {
+  const [button, nativeSelect, select, dropdownMenu, nodeConfigSheet, css] = await Promise.all([
     readFile(new URL("../app/components/ui/button.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/components/ui/native-select.tsx", import.meta.url),
       "utf8",
     ),
     readFile(new URL("../app/components/ui/select.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ui/dropdown-menu.tsx", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/features/automations/components/node-config-sheet.tsx", import.meta.url),
+      "utf8",
+    ),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
@@ -254,7 +259,12 @@ test("primitives não impõem layout legado nem duplicam o ícone dos selects", 
   assert.match(select, /Select as SelectPrimitive/);
   assert.match(select, /data-slot="select-trigger"/);
   assert.match(select, /data-slot="select-content"/);
+  assert.match(select, /relative z-100/);
   assert.match(select, /text-xs outline-none select-none/);
+  assert.match(dropdownMenu, /data-slot="dropdown-menu-content"[\s\S]*?z-100/);
+  assert.match(dropdownMenu, /data-slot="dropdown-menu-sub-content"[\s\S]*?z-100/);
+  assert.match(nodeConfigSheet, /<SheetContent className="bg-muted">/);
+  assert.doesNotMatch(nodeConfigSheet, /<SheetContent className="bg-muted\/20">/);
   assert.doesNotMatch(css, /\.support-app-shell select[\s\S]*?background-image:/);
 });
 

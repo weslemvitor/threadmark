@@ -1,5 +1,4 @@
-import { Bell, BellRing, Menu, RefreshCw } from "lucide-react";
-import type { BrowserNotificationState } from "@/app/lib/browser-notifications";
+import { Bell, Menu, RefreshCw } from "lucide-react";
 import type { RuntimeState } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
 import { cn } from "@/app/lib/utils";
@@ -11,8 +10,8 @@ type PageHeaderProps = {
   refreshing: boolean;
   onRefresh: () => void;
   onOpenMenu: () => void;
-  notificationState: BrowserNotificationState;
-  onToggleNotifications: () => void;
+  unreadNotifications: number;
+  onOpenNotifications: () => void;
 };
 
 export function PageHeader({
@@ -22,8 +21,8 @@ export function PageHeader({
   refreshing,
   onRefresh,
   onOpenMenu,
-  notificationState,
-  onToggleNotifications,
+  unreadNotifications,
+  onOpenNotifications,
 }: PageHeaderProps) {
   const online = runtime?.whatsappConnected === true;
   const localInvestigation =
@@ -42,14 +41,9 @@ export function PageHeader({
       : localInvestigation
         ? "Codex local ativo"
         : "Captura offline";
-  const notificationLabel =
-    notificationState === "enabled"
-      ? "Desativar notificações da sala de investigação"
-      : notificationState === "blocked"
-        ? "Notificações bloqueadas no navegador"
-        : notificationState === "unsupported"
-          ? "Notificações não disponíveis neste navegador"
-          : "Ativar notificações da sala de investigação";
+  const notificationLabel = unreadNotifications > 0
+    ? `Abrir notificações (${unreadNotifications} não lidas)`
+    : "Abrir notificações";
 
   return (
     <header className="flex min-h-[72px] shrink-0 items-center gap-3 border-b border-border bg-card px-5 py-3 max-[760px]:min-h-16 max-[760px]:px-3">
@@ -83,18 +77,19 @@ export function PageHeader({
         </div>
         <Button
           aria-label={notificationLabel}
-          className={cn(
-            notificationState === "enabled" && "border-primary/30 bg-primary/5 text-primary",
-            notificationState === "blocked" && "border-destructive/20 bg-destructive/5 text-destructive",
-          )}
-          disabled={notificationState === "unsupported"}
-          onClick={onToggleNotifications}
+          className="relative"
+          onClick={onOpenNotifications}
           title={notificationLabel}
           size="icon"
           type="button"
           variant="outline"
         >
-          {notificationState === "enabled" ? <BellRing size={17} /> : <Bell size={17} />}
+          <Bell size={17} />
+          {unreadNotifications > 0 ? (
+            <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold leading-4 text-primary-foreground">
+              {unreadNotifications > 99 ? "99+" : unreadNotifications}
+            </span>
+          ) : null}
         </Button>
         <Button
           aria-label="Atualizar dados"

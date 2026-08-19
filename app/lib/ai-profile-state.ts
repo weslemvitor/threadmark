@@ -1,4 +1,4 @@
-export type ComparableAiTaskKind = "triage" | "automatic" | "deep";
+export type ComparableAiTaskKind = "triage" | "automatic" | "deep" | "documentation";
 
 export interface ComparableAiTaskProfile {
   taskKind: ComparableAiTaskKind;

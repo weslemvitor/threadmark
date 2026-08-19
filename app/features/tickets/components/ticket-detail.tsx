@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  BookOpenText,
   Bug,
   CheckCircle2,
   LoaderCircle,
@@ -110,6 +111,8 @@ type TicketDetailProps = {
     ticketId: string,
     assigneeId: string | null,
   ) => Promise<boolean>;
+  generatingDocumentation?: boolean;
+  onGenerateDocumentation?: (ticketId: string) => void;
 };
 
 export function TicketDetail({
@@ -145,6 +148,8 @@ export function TicketDetail({
   categoryMutationTicketId,
   canManageCategories,
   onOpenCategoryCatalog,
+  generatingDocumentation,
+  onGenerateDocumentation,
 }: TicketDetailProps) {
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -500,6 +505,14 @@ export function TicketDetail({
               Contexto sincronizado até {formatMessageTime(ticket.lastMessageAt)}
             </div>
             {ticket.resolution ? <TicketResolutionSummary ticket={ticket} /> : null}
+            {ticket.resolution && onGenerateDocumentation ? (
+              <div className="mx-5 mt-3 flex justify-end">
+                <Button disabled={generatingDocumentation} onClick={() => onGenerateDocumentation(ticket.id)} size="sm" variant="outline">
+                  {generatingDocumentation ? <LoaderCircle className="animate-spin" size={14} /> : <BookOpenText size={14} />}
+                  Gerar documentação
+                </Button>
+              </div>
+            ) : null}
           </div>
           {canManageNotes ? (
             <TicketNoteComposer

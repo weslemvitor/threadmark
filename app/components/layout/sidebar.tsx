@@ -1,5 +1,7 @@
 import {
   BarChart3,
+  Bell,
+  BookOpenText,
   Boxes,
   ChevronLeft,
   CircleGauge,
@@ -9,6 +11,7 @@ import {
   Settings,
   Tags,
   UsersRound,
+  Workflow,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import type { RuntimeState } from "@/app/lib/types";
@@ -30,11 +33,14 @@ type NavItem = {
 const operationItems: NavItem[] = [
   { id: "conversations", label: "Conversas", icon: MessagesSquare },
   { id: "kanban", label: "Kanban", icon: LayoutDashboard },
+  { id: "automations", label: "Automações", icon: Workflow },
+  { id: "notifications", label: "Notificações", icon: Bell },
 ];
 
 const organizationItems: NavItem[] = [
   { id: "clients", label: "Diretório", icon: UsersRound },
   { id: "categories", label: "Categorias", icon: Tags },
+  { id: "documentation", label: "Documentações", icon: BookOpenText },
 ];
 
 const insightItems: NavItem[] = [
@@ -52,6 +58,7 @@ type SidebarProps = {
   open: boolean;
   pendingConversations: number;
   reviewTickets: number;
+  unreadNotifications: number;
   runtime: RuntimeState | null;
   operatorName: string;
   operatorRole: string;
@@ -126,6 +133,7 @@ function NavGroup({
   onNavigate,
   pendingConversations,
   reviewTickets,
+  unreadNotifications,
 }: {
   title: string;
   items: NavItem[];
@@ -133,6 +141,7 @@ function NavGroup({
   onNavigate: (view: ViewId) => void;
   pendingConversations: number;
   reviewTickets: number;
+  unreadNotifications: number;
 }) {
   return (
     <div className="mb-5">
@@ -145,6 +154,8 @@ function NavGroup({
               ? pendingConversations
               : item.id === "kanban"
                 ? reviewTickets
+                : item.id === "notifications"
+                  ? unreadNotifications
                 : null;
           return (
             <Button
@@ -195,8 +206,8 @@ export function Sidebar(props: SidebarProps) {
     <>
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[238px] flex-col bg-sidebar text-sidebar-foreground transition-transform duration-200 max-md:-translate-x-full",
-          props.open && "max-md:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex w-[238px] -translate-x-full flex-col bg-sidebar text-sidebar-foreground transition-transform duration-200 md:translate-x-0",
+          props.open && "translate-x-0",
         )}
       >
         <div className="flex h-[72px] shrink-0 items-center gap-3 border-b border-white/5 px-4">
@@ -209,7 +220,7 @@ export function Sidebar(props: SidebarProps) {
           </div>
           <Button
             aria-label="Fechar navegação"
-            className="hidden text-slate-400 hover:bg-card/10 hover:text-white max-md:inline-flex"
+            className="inline-flex text-slate-400 hover:bg-card/10 hover:text-white md:hidden"
             onClick={props.onClose}
             size="icon"
             type="button"
@@ -236,6 +247,7 @@ export function Sidebar(props: SidebarProps) {
             onNavigate={props.onNavigate}
             pendingConversations={props.pendingConversations}
             reviewTickets={props.reviewTickets}
+            unreadNotifications={props.unreadNotifications}
           />
           <NavGroup
             title="Organização"
@@ -244,6 +256,7 @@ export function Sidebar(props: SidebarProps) {
             onNavigate={props.onNavigate}
             pendingConversations={props.pendingConversations}
             reviewTickets={props.reviewTickets}
+            unreadNotifications={props.unreadNotifications}
           />
           <NavGroup
             title="Insights"
@@ -252,6 +265,7 @@ export function Sidebar(props: SidebarProps) {
             onNavigate={props.onNavigate}
             pendingConversations={props.pendingConversations}
             reviewTickets={props.reviewTickets}
+            unreadNotifications={props.unreadNotifications}
           />
           <NavGroup
             title="Sistema"
@@ -260,6 +274,7 @@ export function Sidebar(props: SidebarProps) {
             onNavigate={props.onNavigate}
             pendingConversations={props.pendingConversations}
             reviewTickets={props.reviewTickets}
+            unreadNotifications={props.unreadNotifications}
           />
         </div>
 
@@ -284,7 +299,7 @@ export function Sidebar(props: SidebarProps) {
       {props.open ? (
         <Button
           aria-label="Fechar navegação"
-          className="fixed inset-0 z-40 hidden h-auto w-auto rounded-none bg-black/45 p-0 max-md:block"
+          className="fixed inset-0 z-40 block h-auto w-auto rounded-none bg-black/45 p-0 md:hidden"
           onClick={props.onClose}
           type="button"
           variant="ghost"

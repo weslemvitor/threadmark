@@ -226,10 +226,10 @@ test("shell mantém sidebar curta e controles interativos visualmente consistent
   ]);
 
   assert.match(app, /h-dvh min-h-0 overflow-hidden/);
-  assert.match(app, /ml-\[238px\][\s\S]*max-md:ml-0/);
+  assert.match(app, /ml-0[\s\S]*md:ml-\[238px\]/);
   assert.match(sidebar, /fixed inset-y-0 left-0/);
   assert.match(sidebar, /w-\[238px\]/);
-  assert.match(sidebar, /max-md:-translate-x-full/);
+  assert.match(sidebar, /-translate-x-full[\s\S]*md:translate-x-0/);
   assert.match(sidebar, /min-h-0 flex-1 overflow-y-auto/);
   assert.match(nativeSelect, /appearance-none/);
   assert.match(nativeSelect, /<ChevronDownIcon/);
@@ -512,15 +512,15 @@ test("interface remove a investigação automática e preserva apenas a sala man
 });
 
 
-test("notificações exigem opt-in e a timeline mostra a operação executada", async () => {
-  const [app, header, browserNotifications, detail] = await Promise.all([
+test("notificações internas são acessíveis e a timeline mostra a operação executada", async () => {
+  const [app, header, notifications, detail] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/components/layout/page-header.tsx", import.meta.url),
       "utf8",
     ),
     readFile(
-      new URL("../app/lib/browser-notifications.ts", import.meta.url),
+      new URL("../app/features/notifications/components/notifications-view.tsx", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -529,13 +529,14 @@ test("notificações exigem opt-in e a timeline mostra a operação executada", 
     ),
   ]);
 
-  assert.match(header, /Ativar notificações da sala de investigação/);
-  assert.match(header, /onClick=\{onToggleNotifications\}/);
-  assert.match(browserNotifications, /Notification\.requestPermission\(\)/);
-  assert.match(browserNotifications, /SUPPORT_NOTIFICATION_PREFERENCE_KEY/);
+  assert.match(header, /Abrir notificações/);
+  assert.match(header, /onClick=\{onOpenNotifications\}/);
+  assert.match(notifications, /Central de notificações/);
+  assert.match(notifications, /markAllNotificationsRead/);
+  assert.doesNotMatch(app, /Notification\.requestPermission|serviceWorker|toggleNotifications/);
   assert.doesNotMatch(app, /getInvestigationJobs|shouldNotifyInvestigationTransition|threadmark:automatic:/);
   assert.match(app, /previousRoomTurnStateRef/);
-  assert.match(app, /threadmark:deep:\$\{latestTurn\.id\}:\$\{latestTurn\.state\}/);
+  assert.doesNotMatch(app, /new Notification\(/);
   assert.match(detail, /describeTimelineEvent\(item\)/);
   assert.doesNotMatch(detail, /O ticket recebeu uma atualização interna/);
 });
