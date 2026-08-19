@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "summary", "audience", "bodyMarkdown", "prerequisites", "sourceMessageIds", "imagePlacements", "warnings"],
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "audience": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "bodyMarkdown": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "prerequisites": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "sourceMessageIds": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "imagePlacements": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attachmentId", "afterHeading", "caption"],
+        "properties": {
+          "attachmentId": { "type": "string", "minLength": 1 },
+          "afterHeading": { "type": ["string", "null"], "maxLength": 200 },
+          "caption": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    }
+  }
+}

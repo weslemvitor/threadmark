@@ -28,6 +28,11 @@ import type {
   CreateConversationTicketInput,
   DashboardExportRowDto,
   DashboardPeriodInput,
+  DocumentationDraftDto,
+  DocumentationDraftListResponse,
+  DocumentationDraftStatus,
+  DeleteDocumentationDraftResponse,
+  UpdateDocumentationDraftInput,
   DashboardResponse,
   DeleteClientResponse,
   DeleteTicketInput,
@@ -94,6 +99,8 @@ import {
 import type { SupportDatabase } from "../db/index.js";
 import type {
   AnalysisCategoryCatalog,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   InvestigationThreadInput,
   InvestigationToolResult,
   InvestigationTurnResult,
@@ -102,6 +109,7 @@ import type {
   TriageAnalysis,
   TriageAnalysisInput,
 } from "../agent/types.js";
+import { DOCUMENTATION_PROMPT_VERSION } from "../agent/prompt.js";
 import type {
   QuotedTicketReference,
   TopicTicketCandidate,
@@ -459,6 +467,13 @@ export type ClaimedAgentJob =
       id: string;
       groupId: string;
       model: string;
+      attemptCount: number;
+    }
+  | {
+      kind: "documentation";
+      id: string;
+      draftId: string;
+      ticketId: string;
       attemptCount: number;
     };
 
@@ -1249,6 +1264,7 @@ export class SupportStore {
 
   private readonly requesterOverrideAvailable: boolean;
   private readonly assigneeColumnAvailable: boolean;
+  private readonly ticketEventSequenceAvailable: boolean;
 
   constructor(readonly database: SupportDatabase) {
     this.requesterOverrideAvailable = Boolean(
@@ -1267,6 +1283,20 @@ export class SupportStore {
           `SELECT 1
            FROM pragma_table_info('tickets')
            WHERE name = 'assignee_user_id'
+           LIMIT 1`,
+        )
+        .get(),
+    );
+    this.ticketEventSequenceAvailable = Boolean(
+      this.database
+        .prepare(
+          `SELECT 1
+           FROM pragma_table_info('ticket_events')
+           WHERE name = 'ingestion_sequence'
+             AND EXISTS (
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'ticket_event_sequence'
+             )
            LIMIT 1`,
         )
         .get(),
@@ -6247,7 +6277,7 @@ export class SupportStore {
       if (row.provider_message_id) references.set(row.provider_message_id, row.id);
     }
     const attachments = this.database.prepare(
-      `SELECT kind, file_name, mime_type, local_path, extracted_text
+      `SELECT id, kind, file_name, mime_type, local_path, extracted_text
        FROM attachments WHERE message_id = ? ORDER BY created_at, id`,
     );
     return rows.map((row) => ({
@@ -7714,13 +7744,23 @@ export class SupportStore {
                  job.state = 'queued'
                  OR (job.state = 'running' AND job.lease_expires_at IS NOT NULL AND job.lease_expires_at <= ?)
                )
+             UNION ALL
+             SELECT 'documentation' AS kind, job.id, job.state, job.requested_at,
+                    job.lease_expires_at, 1 AS queue_priority
+             FROM documentation_generation_jobs job
+             JOIN documentation_drafts draft ON draft.id = job.draft_id
+             JOIN tickets ticket ON ticket.id = draft.ticket_id
+             WHERE (
+                 job.state = 'queued'
+                 OR (job.state = 'running' AND job.lease_expires_at IS NOT NULL AND job.lease_expires_at <= ?)
+               )
            )
            ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,
                     queue_priority, requested_at, id
            LIMIT 1`,
         )
-        .get(claimedAt, claimedAt) as
-        | { kind: "thread_turn" | "triage"; id: string }
+        .get(claimedAt, claimedAt, claimedAt) as
+        | { kind: "thread_turn" | "triage" | "documentation"; id: string }
         | undefined;
       if (!candidate) return null;
 
@@ -7758,6 +7798,32 @@ export class SupportStore {
           id: row.id,
           groupId: row.group_id,
           model: row.model,
+          attemptCount: row.attempt_count,
+        };
+      }
+
+      if (candidate.kind === "documentation") {
+        const row = this.database
+          .prepare(
+            `UPDATE documentation_generation_jobs
+             SET state = 'running', started_at = COALESCE(started_at, ?),
+                 claimed_at = ?, lease_expires_at = ?,
+                 attempt_count = attempt_count + 1, error = NULL
+             WHERE id = ?
+               AND (state = 'queued'
+                 OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))
+             RETURNING id, draft_id, attempt_count,
+               (SELECT ticket_id FROM documentation_drafts WHERE id = draft_id) AS ticket_id`,
+          )
+          .get(claimedAt, claimedAt, leaseExpiresAt, candidate.id, claimedAt) as
+          | { id: string; draft_id: string; ticket_id: string; attempt_count: number }
+          | undefined;
+        if (!row) return null;
+        return {
+          kind: "documentation" as const,
+          id: row.id,
+          draftId: row.draft_id,
+          ticketId: row.ticket_id,
           attemptCount: row.attempt_count,
         };
       }
@@ -7838,7 +7904,15 @@ export class SupportStore {
         )
         .run().changes;
       const triage = this.recoverRunningTriageAiJobs();
-      return retiredAutomatic + conversational + triage;
+      const documentation = this.database
+        .prepare(
+          `UPDATE documentation_generation_jobs
+           SET state = 'queued', claimed_at = NULL, lease_expires_at = NULL,
+               error = 'Recuperado após reinício do worker'
+           WHERE state = 'running'`,
+        )
+        .run().changes;
+      return retiredAutomatic + conversational + triage + documentation;
     })();
   }
 
@@ -8531,6 +8605,277 @@ export class SupportStore {
     };
   }
 
+  queueDocumentationDraft(ticketId: string, actor = "Operador local"): DocumentationDraftDto {
+    const ticket = this.database
+      .prepare("SELECT id, status FROM tickets WHERE id = ?")
+      .get(ticketId) as { id: string; status: TicketStatus } | undefined;
+    if (!ticket) throw new NotFoundError("Ticket", ticketId);
+    if (ticket.status !== "resolved" && ticket.status !== "archived") {
+      throw new ConflictError("A documentação só pode ser gerada a partir de um ticket resolvido.");
+    }
+    const resolution = this.database
+      .prepare("SELECT 1 FROM resolutions WHERE ticket_id = ? LIMIT 1")
+      .get(ticketId);
+    if (!resolution) {
+      throw new ConflictError("O ticket precisa ter um resumo de resolução antes de gerar a documentação.");
+    }
+
+    return this.database.transaction(() => {
+      const now = nowUtc();
+      const existing = this.database
+        .prepare("SELECT id FROM documentation_drafts WHERE ticket_id = ?")
+        .get(ticketId) as { id: string } | undefined;
+      const draftId = existing?.id ?? randomUUID();
+      if (!existing) {
+        this.database
+          .prepare(
+            `INSERT INTO documentation_drafts (
+               id, ticket_id, status, created_by, updated_by, created_at, updated_at
+             ) VALUES (?, ?, 'draft', ?, ?, ?, ?)`,
+          )
+          .run(draftId, ticketId, actor, actor, now, now);
+      }
+      const activeJob = this.database
+        .prepare(
+          `SELECT id FROM documentation_generation_jobs
+           WHERE draft_id = ? AND state IN ('queued', 'running') LIMIT 1`,
+        )
+        .get(draftId);
+      if (!activeJob) {
+        this.database
+          .prepare(
+            `INSERT INTO documentation_generation_jobs (
+               id, draft_id, state, requested_by, requested_at
+             ) VALUES (?, ?, 'queued', ?, ?)`,
+          )
+          .run(randomUUID(), draftId, actor, now);
+      }
+      return this.getDocumentationDraft(draftId);
+    })();
+  }
+
+  listDocumentationDrafts(options: {
+    query?: string;
+    includeArchived?: boolean;
+  } = {}): DocumentationDraftListResponse {
+    const query = options.query?.trim() ?? "";
+    const where = [options.includeArchived ? "1 = 1" : "draft.status != 'archived'"];
+    const parameters: unknown[] = [];
+    if (query) {
+      where.push("(draft.title LIKE ? ESCAPE '\\' OR ticket.title LIKE ? ESCAPE '\\')");
+      const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+      parameters.push(pattern, pattern);
+    }
+    const rows = this.database
+      .prepare(
+        `SELECT draft.id
+         FROM documentation_drafts draft
+         JOIN tickets ticket ON ticket.id = draft.ticket_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY draft.updated_at DESC, draft.id DESC`,
+      )
+      .all(...parameters) as Array<{ id: string }>;
+    return { items: rows.map((row) => this.getDocumentationDraft(row.id)), total: rows.length };
+  }
+
+  getDocumentationDraft(draftId: string): DocumentationDraftDto {
+    const row = this.database
+      .prepare(
+        `SELECT draft.*, ticket.number AS ticket_number, ticket.title AS ticket_title,
+                job.state AS generation_state, job.error AS generation_error
+         FROM documentation_drafts draft
+         JOIN tickets ticket ON ticket.id = draft.ticket_id
+         LEFT JOIN documentation_generation_jobs job ON job.id = (
+           SELECT latest.id FROM documentation_generation_jobs latest
+           WHERE latest.draft_id = draft.id
+           ORDER BY latest.requested_at DESC, latest.rowid DESC LIMIT 1
+         )
+         WHERE draft.id = ?`,
+      )
+      .get(draftId) as Record<string, unknown> | undefined;
+    if (!row) throw new NotFoundError("Documentação", draftId);
+    const placements = parseJson<Array<{
+      attachmentId: string;
+      afterHeading: string | null;
+      caption: string;
+    }>>(String(row.image_placements_json), []);
+    const attachment = this.database.prepare(
+      `SELECT id, message_id, file_name, mime_type
+       FROM attachments WHERE id = ? AND kind = 'image' AND available = 1`,
+    );
+    const images = placements.flatMap((placement) => {
+      const source = attachment.get(placement.attachmentId) as
+        | { id: string; message_id: string; file_name: string | null; mime_type: string }
+        | undefined;
+      return source ? [{
+        attachmentId: source.id,
+        messageId: source.message_id,
+        fileName: source.file_name,
+        mimeType: source.mime_type,
+        url: `/api/attachments/${encodeURIComponent(source.id)}`,
+        caption: placement.caption,
+        afterHeading: placement.afterHeading,
+      }] : [];
+    });
+    return {
+      id: String(row.id),
+      ticketId: String(row.ticket_id),
+      ticketNumber: Number(row.ticket_number),
+      ticketTitle: String(row.ticket_title),
+      status: row.status as DocumentationDraftStatus,
+      generationState: (row.generation_state as DocumentationDraftDto["generationState"]) ?? null,
+      generationError: row.generation_error ? String(row.generation_error) : null,
+      title: String(row.title),
+      summary: String(row.summary),
+      audience: String(row.audience),
+      bodyMarkdown: String(row.body_markdown),
+      prerequisites: parseJson<string[]>(String(row.prerequisites_json), []),
+      warnings: parseJson<string[]>(String(row.warnings_json), []),
+      sourceMessageIds: parseJson<string[]>(String(row.source_message_ids_json), []),
+      images,
+      aiProviderId: row.ai_provider_id ? String(row.ai_provider_id) : null,
+      aiModel: row.ai_model ? String(row.ai_model) : null,
+      generatedAt: row.generated_at ? String(row.generated_at) : null,
+      reviewedAt: row.reviewed_at ? String(row.reviewed_at) : null,
+      reviewedBy: row.reviewed_by ? String(row.reviewed_by) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  updateDocumentationDraft(
+    draftId: string,
+    input: UpdateDocumentationDraftInput & { actor?: string },
+  ): DocumentationDraftDto {
+    this.getDocumentationDraft(draftId);
+    const now = nowUtc();
+    const actor = input.actor?.trim() || "Operador local";
+    this.database
+      .prepare(
+        `UPDATE documentation_drafts
+         SET title = ?, summary = ?, audience = ?, body_markdown = ?,
+             prerequisites_json = ?, status = ?,
+             reviewed_at = ?, reviewed_by = ?, updated_by = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.title.trim(), input.summary.trim(), input.audience.trim(),
+        input.bodyMarkdown.trim(), JSON.stringify(input.prerequisites.map((item) => item.trim()).filter(Boolean)),
+        input.status, now, actor, actor, now, draftId,
+      );
+    return this.getDocumentationDraft(draftId);
+  }
+
+  deleteDocumentationDraft(draftId: string): DeleteDocumentationDraftResponse {
+    return this.database.transaction(() => {
+      const draft = this.database
+        .prepare("SELECT id, ticket_id FROM documentation_drafts WHERE id = ?")
+        .get(draftId) as { id: string; ticket_id: string } | undefined;
+      if (!draft) throw new NotFoundError("Documentação", draftId);
+
+      this.database
+        .prepare("DELETE FROM documentation_drafts WHERE id = ?")
+        .run(draftId);
+
+      return {
+        id: draft.id,
+        ticketId: draft.ticket_id,
+        deleted: true as const,
+      };
+    })();
+  }
+
+  getDocumentationJobInput(jobId: string): DocumentationDraftInput {
+    const job = this.database
+      .prepare(
+        `SELECT job.draft_id, draft.ticket_id
+         FROM documentation_generation_jobs job
+         JOIN documentation_drafts draft ON draft.id = job.draft_id
+         WHERE job.id = ?`,
+      )
+      .get(jobId) as { draft_id: string; ticket_id: string } | undefined;
+    if (!job) throw new NotFoundError("Geração de documentação", jobId);
+    const ticket = this.getTicketDetail(job.ticket_id);
+    if (!ticket.resolution) throw new ConflictError("O ticket não possui resolução registrada.");
+    const context = this.getInvestigationContext(job.ticket_id, 100);
+    const availableImages = context.messages.flatMap((message) =>
+      message.attachments.flatMap((item) =>
+        item.kind === "image" && item.id
+          ? [{ attachmentId: item.id, messageId: message.id, fileName: item.fileName, mimeType: item.mimeType ?? "image/jpeg" }]
+          : [],
+      ),
+    );
+    return {
+      draftId: job.draft_id,
+      ticketId: ticket.id,
+      ticketNumber: ticket.number,
+      title: ticket.title,
+      summary: ticket.summary,
+      resolution: ticket.resolution.summary,
+      categories: ticket.categories.map((category) => category.label),
+      messages: context.messages,
+      availableImages,
+    };
+  }
+
+  completeDocumentationJob(jobId: string, result: DocumentationDraftResult): DocumentationDraftDto {
+    return this.database.transaction(() => {
+      const job = this.database
+        .prepare("SELECT draft_id FROM documentation_generation_jobs WHERE id = ? AND state = 'running'")
+        .get(jobId) as { draft_id: string } | undefined;
+      if (!job) throw new ConflictError("A geração de documentação não está em execução.");
+      const now = nowUtc();
+      this.database
+        .prepare(
+          `UPDATE documentation_drafts
+           SET status = 'draft', title = ?, summary = ?, audience = ?, body_markdown = ?,
+               prerequisites_json = ?, warnings_json = ?, source_message_ids_json = ?,
+               image_placements_json = ?, ai_provider_id = (
+                 SELECT ai_provider_id FROM documentation_generation_jobs WHERE id = ?
+               ), ai_connection_id = (
+                 SELECT ai_connection_id FROM documentation_generation_jobs WHERE id = ?
+               ), ai_model = (
+                 SELECT ai_model FROM documentation_generation_jobs WHERE id = ?
+               ), prompt_version = ?, generated_at = ?, updated_by = 'Agente de IA', updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          result.title, result.summary, result.audience, result.bodyMarkdown,
+          JSON.stringify(result.prerequisites), JSON.stringify(result.warnings),
+          JSON.stringify(result.sourceMessageIds), JSON.stringify(result.imagePlacements),
+          jobId, jobId, jobId, DOCUMENTATION_PROMPT_VERSION, now, now, job.draft_id,
+        );
+      this.database
+        .prepare(
+          `UPDATE documentation_generation_jobs
+           SET state = 'completed', finished_at = ?, claimed_at = NULL,
+               lease_expires_at = NULL, error = NULL WHERE id = ?`,
+        )
+        .run(now, jobId);
+      return this.getDocumentationDraft(job.draft_id);
+    })();
+  }
+
+  requeueDocumentationJob(jobId: string, error: string): void {
+    this.database
+      .prepare(
+        `UPDATE documentation_generation_jobs
+         SET state = 'queued', error = ?, claimed_at = NULL, lease_expires_at = NULL
+         WHERE id = ? AND state = 'running'`,
+      )
+      .run(error.slice(0, 4_000), jobId);
+  }
+
+  failDocumentationJob(jobId: string, error: string): void {
+    this.database
+      .prepare(
+        `UPDATE documentation_generation_jobs
+         SET state = 'failed', error = ?, finished_at = ?, claimed_at = NULL,
+             lease_expires_at = NULL WHERE id = ? AND state = 'running'`,
+      )
+      .run(error.slice(0, 4_000), nowUtc(), jobId);
+  }
+
   getInvestigationContext(
     ticketId: string,
     messageLimit?: number,
@@ -8624,12 +8969,14 @@ export class SupportStore {
       timestampUtc: message.occurred_at,
       text: message.text,
       attachments: (attachmentStatement.all(message.id) as Array<{
+        id: string;
         kind: AttachmentDto["kind"];
         file_name: string | null;
         mime_type: string;
         local_path: string;
         extracted_text: string | null;
       }>).map((attachment) => ({
+        id: attachment.id,
         kind:
           attachment.kind === "pdf" || attachment.kind === "document"
             ? "document" as const
@@ -11043,11 +11390,40 @@ export class SupportStore {
         ? input.data.description.trim()
         : describeTicketEvent(input);
     const insertVerb = input.id ? "INSERT OR IGNORE" : "INSERT";
+    if (!this.ticketEventSequenceAvailable) {
+      const result = this.database
+        .prepare(
+          `${insertVerb} INTO ticket_events
+            (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.id ?? randomUUID(),
+          input.ticketId,
+          input.eventType,
+          input.actor,
+          input.fromStatus,
+          input.toStatus,
+          JSON.stringify({ ...input.data, description }),
+          input.occurredAt,
+        );
+      return result.changes > 0;
+    }
+    const sequence = this.database.prepare(`
+      UPDATE ticket_event_sequence
+      SET last_value = last_value + 1
+      WHERE singleton = 1
+      RETURNING last_value
+    `).get() as { last_value: number } | undefined;
+    if (!sequence) {
+      throw new Error("Sequência de eventos do ticket não foi inicializada");
+    }
     const result = this.database
       .prepare(
         `${insertVerb} INTO ticket_events
-          (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, ticket_id, event_type, actor, from_status, to_status, data_json,
+           occurred_at, ingestion_sequence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id ?? randomUUID(),
@@ -11058,6 +11434,7 @@ export class SupportStore {
         input.toStatus,
         JSON.stringify({ ...input.data, description }),
         input.occurredAt,
+        sequence.last_value,
       );
     return result.changes > 0;
   }

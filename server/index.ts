@@ -22,6 +22,7 @@ import {
   TICKET_SUMMARY_MAX_LENGTH,
   TICKET_STATUSES,
   TICKET_TITLE_MAX_LENGTH,
+  DOCUMENTATION_DRAFT_STATUSES,
   type ApiErrorResponse,
   type DashboardExportRowDto,
   type DashboardPeriodInput,
@@ -84,6 +85,19 @@ import { DeepToolExecutor } from "./tools/deep-tool-executor.js";
 import { TRIAGE_PROMPT_VERSION } from "./triage/index.js";
 import { LegacyLocalToolImportService } from "./tools/legacy-tool-import.js";
 import { AudioTranscriptionService } from "./transcription/index.js";
+import { AutomationRuntime } from "./automation-runtime/index.js";
+import {
+  AutomationApiError,
+  AutomationApiService,
+} from "./automation-runtime/api-service.js";
+import { AutomationValidationError } from "./automations/index.js";
+import { ConnectedAppSettingsError } from "./integrations/index.js";
+import { NotificationService } from "./notifications/index.js";
+import {
+  buildDocumentationDocx,
+  documentationDocxFileName,
+  type DocumentationDocxImage,
+} from "./documentation/docx-export.js";
 
 interface RuntimeStateReader {
   read(): Promise<RuntimeState>;
@@ -121,6 +135,8 @@ export interface StartApiServerOptions {
   requestShutdown?: (reason: string) => void | Promise<void>;
   whatsappQrController?: WhatsappQrController;
   audioTranscription?: AudioTranscriptionService;
+  automationRuntime?: AutomationRuntime;
+  notifications?: NotificationService;
 }
 
 type RequestIdentity =
@@ -156,6 +172,8 @@ interface ApiServices {
   requestShutdown?: (reason: string) => void | Promise<void>;
   whatsappQrController?: WhatsappQrController;
   audioTranscription?: AudioTranscriptionService;
+  automations?: AutomationApiService;
+  notifications?: NotificationService;
 }
 
 const SESSION_COOKIE = "threadmark_session";
@@ -197,6 +215,16 @@ const ticketAssigneeInputSchema = z
     assigneeId: z.union([z.string().trim().min(1).max(200), z.null()]),
   })
   .strict();
+
+const notificationListQuerySchema = z.object({
+  unread: z.enum(["true", "false"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  offset: z.coerce.number().int().min(0).default(0),
+}).strict();
+
+const notificationReadSchema = z.object({
+  read: z.boolean(),
+}).strict();
 
 const ticketInternalNoteInputSchema = z
   .object({
@@ -396,6 +424,15 @@ const setupInputSchema = z
     }
   });
 
+const documentationDraftInputSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(600),
+  audience: z.string().trim().min(1).max(200),
+  bodyMarkdown: z.string().trim().min(1).max(30_000),
+  prerequisites: z.array(z.string().trim().min(1).max(500)).max(20),
+  status: z.enum(DOCUMENTATION_DRAFT_STATUSES),
+});
+
 const loginInputSchema = z
   .object({
     username: z.string().trim().min(1).max(64).optional(),
@@ -481,7 +518,7 @@ const aiTaskProfilesInputSchema = z
       .array(
         z
           .object({
-            taskKind: z.enum(["triage", "automatic", "deep"]),
+            taskKind: z.enum(["triage", "automatic", "deep", "documentation"]),
             connectionId: z.union([z.string().trim().min(1).max(200), z.null()]),
             model: z.string().trim().min(1).max(200),
             enabled: z.boolean(),
@@ -577,6 +614,16 @@ function apiError(code: string, message: string, details?: unknown): ApiErrorRes
       ...(details === undefined ? {} : { details }),
     },
   };
+}
+
+function documentationImageType(
+  mimeType: string | undefined,
+): DocumentationDocxImage["type"] | null {
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/gif") return "gif";
+  if (mimeType === "image/bmp") return "bmp";
+  return null;
 }
 
 function parseTicketStatuses(values: string[]): TicketStatus[] | undefined {
@@ -821,6 +868,36 @@ function requireStorageUsage(services: ApiServices): LocalStorageUsageReader {
     );
   }
   return services.storageUsage;
+}
+
+function requireAutomations(services: ApiServices): AutomationApiService {
+  if (!services.automations) {
+    throw new DomainError(
+      "Automações indisponíveis nesta instalação",
+      "service_unavailable",
+      503,
+    );
+  }
+  return services.automations;
+}
+
+function requireNotifications(services: ApiServices): NotificationService {
+  if (!services.notifications) {
+    throw new DomainError(
+      "Central de notificações indisponível nesta instalação",
+      "service_unavailable",
+      503,
+    );
+  }
+  return services.notifications;
+}
+
+function notificationUserId(context: Context<ApiEnvironment>): string {
+  const identity = context.get("identity");
+  if (!identity) {
+    throw new AuthError("authentication_required", "Entre para continuar.");
+  }
+  return identity.user.id;
 }
 
 function requireUserIdentity(context: Context<ApiEnvironment>): Extract<RequestIdentity, { kind: "user" }> {
@@ -1652,6 +1729,213 @@ function createApiAppInternal(
     }
   });
 
+  app.get("/api/automations", (context) =>
+    context.json(requireAutomations(services).listAutomations()),
+  );
+
+  app.get("/api/notifications", (context) => {
+    const userId = notificationUserId(context);
+    const url = new URL(context.req.url);
+    const query = notificationListQuerySchema.parse({
+      unread: url.searchParams.get("unread") ?? undefined,
+      limit: url.searchParams.get("limit") ?? undefined,
+      offset: url.searchParams.get("offset") ?? undefined,
+    });
+    return context.json(requireNotifications(services).listForUser(userId, {
+      unreadOnly: query.unread === "true",
+      limit: query.limit,
+      offset: query.offset,
+    }));
+  });
+
+  app.get("/api/notifications/unread-count", (context) => {
+    const userId = notificationUserId(context);
+    return context.json({ unread: requireNotifications(services).unreadCount(userId) });
+  });
+
+  app.patch("/api/notifications/:id", async (context) => {
+    const userId = notificationUserId(context);
+    const input = notificationReadSchema.parse(await context.req.json());
+    const updated = requireNotifications(services).markRead(
+      userId,
+      context.req.param("id"),
+      input.read,
+    );
+    if (!updated) throw new DomainError("Notificação não encontrada", "not_found", 404);
+    return context.json({
+      updated: true,
+      unread: requireNotifications(services).unreadCount(userId),
+    });
+  });
+
+  app.post("/api/notifications/read-all", (context) => {
+    const userId = notificationUserId(context);
+    return context.json({
+      updated: requireNotifications(services).markAllRead(userId),
+      unread: 0,
+    });
+  });
+
+  app.post("/api/automations", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).createAutomation(
+        await context.req.json(),
+        actorFor(context),
+      ),
+      201,
+    );
+  });
+
+  app.get("/api/automations/:id", (context) =>
+    context.json(requireAutomations(services).getAutomation(context.req.param("id"))),
+  );
+
+  app.put("/api/automations/:id", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).updateAutomation(
+        context.req.param("id"),
+        await context.req.json(),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.patch("/api/automations/:id/layout", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).updateAutomationLayout(
+        context.req.param("id"),
+        await context.req.json(),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.patch("/api/automations/:id/metadata", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).updateAutomationMetadata(
+        context.req.param("id"),
+        await context.req.json(),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.delete("/api/automations/:id", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).deleteAutomation(
+        context.req.param("id"),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.post("/api/automations/:id/activate", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).activateAutomation(
+        context.req.param("id"),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.post("/api/automations/:id/pause", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).pauseAutomation(
+        context.req.param("id"),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.post("/api/automations/:id/test", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireAutomations(services).testAutomation(
+        context.req.param("id"),
+      ),
+    );
+  });
+
+  app.post("/api/automation-runs/:id/decision", async (context) => {
+    requireRole(context, ["owner", "admin", "operator"]);
+    return context.json(
+      requireAutomations(services).decideExecution(
+        context.req.param("id"),
+        await context.req.json(),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.post("/api/automation-runs/:id/pause", (context) => {
+    requireRole(context, ["owner", "admin", "operator"]);
+    return context.json(
+      requireAutomations(services).pauseExecution(context.req.param("id")),
+    );
+  });
+
+  app.post("/api/automation-runs/:id/resume", (context) => {
+    requireRole(context, ["owner", "admin", "operator"]);
+    return context.json(
+      requireAutomations(services).resumeExecution(context.req.param("id")),
+    );
+  });
+
+  app.post("/api/automation-runs/:id/cancel", (context) => {
+    requireRole(context, ["owner", "admin", "operator"]);
+    return context.json(
+      requireAutomations(services).cancelExecution(context.req.param("id")),
+    );
+  });
+
+  app.get("/api/automation-apps", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(requireAutomations(services).listConnectedApps());
+  });
+
+  app.post("/api/automation-apps", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      await requireAutomations(services).createConnectedApp(
+        await context.req.json(),
+        actorFor(context),
+      ),
+      201,
+    );
+  });
+
+  app.patch("/api/automation-apps/:id", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      await requireAutomations(services).updateConnectedApp(
+        context.req.param("id"),
+        await context.req.json(),
+        actorFor(context),
+      ),
+    );
+  });
+
+  app.delete("/api/automation-apps/:id", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      await requireAutomations(services).deleteConnectedApp(context.req.param("id")),
+    );
+  });
+
+  app.post("/api/automation-apps/:id/test", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      await requireAutomations(services).testConnectedApp(context.req.param("id")),
+    );
+  });
+
   app.get("/api/dashboard", (context) => {
     const period = dashboardPeriodFromUrl(new URL(context.req.url));
     return context.json(store.getDashboard(period));
@@ -1941,6 +2225,103 @@ function createApiAppInternal(
   app.get("/api/tickets/:id", (context) =>
     context.json(store.getTicketDetail(context.req.param("id"))),
   );
+
+  app.post("/api/tickets/:id/documentation", (context) =>
+    {
+      services.aiSettings?.assertTaskReady("documentation");
+      return context.json(
+        store.queueDocumentationDraft(
+          context.req.param("id"),
+          actorFor(context),
+        ),
+        202,
+      );
+    },
+  );
+
+  app.get("/api/documentation", (context) => {
+    const url = new URL(context.req.url);
+    return context.json(store.listDocumentationDrafts({
+      query: url.searchParams.get("q") || undefined,
+      includeArchived: url.searchParams.get("includeArchived") === "true",
+    }));
+  });
+
+  app.get("/api/documentation/:id/export.docx", async (context) => {
+    const draft = store.getDocumentationDraft(context.req.param("id"));
+    const images: DocumentationDocxImage[] = [];
+    for (const placement of draft.images) {
+      const attachment = store.database
+        .prepare(
+          `SELECT local_path, mime_type, file_name, available
+           FROM attachments WHERE id = ?`,
+        )
+        .get(placement.attachmentId) as
+        | { local_path: string; mime_type: string; file_name: string | null; available: number }
+        | undefined;
+      const type = documentationImageType(attachment?.mime_type);
+      if (!attachment?.available || !type) continue;
+
+      try {
+        const [trustedRoot, filePath] = await Promise.all([
+          realpath(config.attachmentsDir),
+          realpath(attachment.local_path),
+        ]);
+        const pathWithinRoot = relative(trustedRoot, filePath);
+        if (pathWithinRoot.startsWith("..") || isAbsolute(pathWithinRoot)) continue;
+        images.push({
+          data: new Uint8Array(await readFile(filePath)),
+          type,
+          caption: placement.caption,
+          afterHeading: placement.afterHeading,
+          fileName: attachment.file_name,
+        });
+      } catch {
+        // Uma imagem indisponível não deve impedir a exportação do texto revisado.
+      }
+    }
+
+    const bytes = await buildDocumentationDocx(draft, images);
+    const body = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(body).set(bytes);
+    const fileName = documentationDocxFileName(draft.title || draft.ticketTitle);
+    return new Response(body, {
+      headers: {
+        "Cache-Control": "private, no-store, max-age=0",
+        "Content-Disposition": `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  });
+
+  app.get("/api/documentation/:id", (context) =>
+    context.json(store.getDocumentationDraft(context.req.param("id"))),
+  );
+
+  app.patch("/api/documentation/:id", async (context) => {
+    const input = documentationDraftInputSchema.parse(await context.req.json());
+    return context.json(store.updateDocumentationDraft(context.req.param("id"), {
+      ...input,
+      actor: actorFor(context),
+    }));
+  });
+
+  app.delete("/api/documentation/:id", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      store.deleteDocumentationDraft(context.req.param("id")),
+    );
+  });
+
+  app.post("/api/documentation/:id/regenerate", (context) => {
+    services.aiSettings?.assertTaskReady("documentation");
+    const draft = store.getDocumentationDraft(context.req.param("id"));
+    return context.json(
+      store.queueDocumentationDraft(draft.ticketId, actorFor(context)),
+      202,
+    );
+  });
 
   app.patch("/api/tickets/:id", async (context) => {
     const input = ticketMetadataInputSchema.parse(await context.req.json());
@@ -2235,6 +2616,29 @@ function createApiAppInternal(
         status,
       );
     }
+    if (error instanceof AutomationApiError) {
+      const status = {
+        invalid: 400,
+        not_found: 404,
+        conflict: 409,
+      }[error.kind] as 400 | 404 | 409;
+      return context.json(apiError(`automation_${error.kind}`, error.message), status);
+    }
+    if (error instanceof AutomationValidationError) {
+      return context.json(
+        apiError("automation_invalid", error.message, error.issues),
+        400,
+      );
+    }
+    if (error instanceof ConnectedAppSettingsError) {
+      const status = {
+        invalid: 400,
+        not_found: 404,
+        conflict: 409,
+        unavailable: 503,
+      }[error.kind] as 400 | 404 | 409 | 503;
+      return context.json(apiError(`automation_app_${error.kind}`, error.message), status);
+    }
     if (error instanceof z.ZodError) {
       return context.json(
         apiError("validation_error", "Entrada inválida", error.issues),
@@ -2288,11 +2692,15 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
     options.authService ?? new LocalAuthService(operationalDatabase);
   const setupChallenges =
     options.setupChallenges ?? new SetupChallengeService(operationalDatabase);
+  const secretVault = new LocalSecretVault(pathForSecrets(config.dataDir));
+  const notifications =
+    options.notifications ??
+    new NotificationService(operationalDatabase);
   const tools =
     options.tools ??
     new LocalToolService(
       operationalDatabase,
-      new LocalSecretVault(pathForSecrets(config.dataDir)),
+      secretVault,
     );
   const legacyTools =
     options.legacyTools ??
@@ -2300,6 +2708,15 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
       codeRoots: config.legacyCodeRoots,
       vaultDirectory: config.legacyVaultDirectory,
     });
+  const automationRuntime =
+    options.automationRuntime ??
+    new AutomationRuntime(operationalDatabase, store, secretVault, {
+      notifications,
+    });
+  const automationApi = new AutomationApiService(
+    operationalDatabase,
+    automationRuntime,
+  );
   if (
     ownsDatabase &&
     authService?.getSetupStatus().required &&
@@ -2320,7 +2737,7 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
       options.aiSettings ??
       new AiProviderSettingsService(
         operationalDatabase,
-        new LocalSecretVault(pathForSecrets(config.dataDir)),
+        secretVault,
         { codexBin: config.codexBin, attachmentsRoot: config.attachmentsDir },
       ),
     tools,
@@ -2343,14 +2760,19 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
     investigationExecutions: options.investigationExecutions,
     requestShutdown: options.requestShutdown,
     whatsappQrController: options.whatsappQrController,
+    automations: automationApi,
+    notifications,
   });
   const host = options.host ?? config.apiHost;
   const port = options.port ?? config.apiPort;
   const server = serve({ fetch: app.fetch, hostname: host, port });
+  automationRuntime.start();
 
-  if (ownsDatabase && database) {
-    server.once("close", () => database.close());
-  }
+  server.once("close", () => {
+    void automationRuntime.stop().finally(() => {
+      if (ownsDatabase && database) database.close();
+    });
+  });
 
   return server;
 }

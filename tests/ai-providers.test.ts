@@ -163,6 +163,7 @@ function threadInput(): InvestigationThreadInput {
 
 function structuredRequest(): StructuredJsonRequest {
   return {
+    instructions: "Siga as regras fixas do sistema.",
     prompt: "Devolva JSON.",
     schemaName: "result",
     schema: {
@@ -268,6 +269,7 @@ test("OpenAI Responses envia text.format json_schema e lê output estruturado", 
   assert.equal(calls[0]?.url, "https://example.test/v1/responses");
   const body = requestBody(calls[0]!);
   assert.equal(body.store, false);
+  assert.equal(body.instructions, structuredRequest().instructions);
   assert.deepEqual(
     (body.text as { format: unknown }).format,
     {
@@ -296,6 +298,7 @@ test("Anthropic Messages usa output_config.format e conteúdo base64", async () 
 
   assert.deepEqual(await client.generateJson(structuredRequest()), { ok: true });
   const body = requestBody(calls[0]!);
+  assert.equal(body.system, structuredRequest().instructions);
   assert.deepEqual(
     (body.output_config as { format: unknown }).format,
     { type: "json_schema", schema: structuredRequest().schema },
@@ -331,6 +334,10 @@ test("OpenRouter usa chat completions com response_format estrito", async () => 
       schema: structuredRequest().schema,
     },
   });
+  assert.deepEqual(
+    (body.messages as Array<{ role: string; content: unknown }>).map((message) => message.role),
+    ["system", "user"],
+  );
   const headers = calls[0]?.init.headers as Record<string, string>;
   assert.equal(headers["X-Title"], "Threadmark");
   assert.equal(headers["HTTP-Referer"], "https://threadmark.test");
@@ -350,7 +357,9 @@ test("Ollama usa /api/chat, stream false e schema no campo format", async () => 
   const body = requestBody(calls[0]!);
   assert.equal(body.stream, false);
   assert.deepEqual(body.format, structuredRequest().schema);
-  const message = (body.messages as Array<{ images?: string[] }>)[0]!;
+  const messages = body.messages as Array<{ role: string; images?: string[] }>;
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user"]);
+  const message = messages[1]!;
   assert.deepEqual(message.images, ["aW1hZ2U="]);
   assert.equal(
     Object.keys(calls[0]?.init.headers as Record<string, string>).some(

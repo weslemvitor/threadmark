@@ -1,5 +1,7 @@
 import type {
   InvestigationThreadInput,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   InvestigationTurnResult,
   SupportAnalysis,
   SupportAnalysisInput,
@@ -105,6 +107,11 @@ export interface SupportAgent {
     model: string,
     signal?: AbortSignal,
   ): Promise<TriageAnalysis>;
+
+  generateDocumentation(
+    input: DocumentationDraftInput,
+    signal?: AbortSignal,
+  ): Promise<DocumentationDraftResult>;
 }
 
 export interface JsonSchemaDocument {
@@ -117,6 +124,7 @@ export interface ProviderImage {
 }
 
 export interface StructuredJsonRequest {
+  instructions?: string;
   prompt: string;
   schemaName: string;
   schema: JsonSchemaDocument;

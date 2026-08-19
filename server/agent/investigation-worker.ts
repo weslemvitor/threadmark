@@ -21,21 +21,21 @@ export type InvestigationWorkerEvent =
       jobId: string;
       ticketId?: string;
       groupId?: string;
-      jobKind: "automatic" | "thread_turn" | "triage";
+      jobKind: "automatic" | "thread_turn" | "triage" | "documentation";
     }
   | {
       type: "completed";
       jobId: string;
       ticketId?: string;
       groupId?: string;
-      jobKind: "automatic" | "thread_turn" | "triage";
+      jobKind: "automatic" | "thread_turn" | "triage" | "documentation";
     }
   | {
       type: "failed";
       jobId: string;
       ticketId?: string;
       groupId?: string;
-      jobKind: "automatic" | "thread_turn" | "triage";
+      jobKind: "automatic" | "thread_turn" | "triage" | "documentation";
       error: string;
     }
   | {
@@ -49,7 +49,7 @@ export type InvestigationWorkerEvent =
       jobId: string;
       ticketId?: string;
       groupId?: string;
-      jobKind: "automatic" | "thread_turn" | "triage";
+      jobKind: "automatic" | "thread_turn" | "triage" | "documentation";
       reason: "shutdown" | "retry";
     };
 
@@ -65,7 +65,7 @@ export class InvestigationWorker {
     private readonly agent: Pick<
       SupportAgent,
       "analyse" | "investigateThread"
-    > & Partial<Pick<SupportAgent, "triage">>,
+    > & Partial<Pick<SupportAgent, "triage" | "generateDocumentation">>,
     options: InvestigationWorkerOptions = {},
   ) {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_500;
@@ -131,13 +131,20 @@ export class InvestigationWorker {
         };
         const result = await this.agent.investigateThread(input, jobSignal);
         this.store.completeInvestigationThreadJob(job.id, result);
-      } else {
+      } else if (job.kind === "triage") {
         if (!this.agent.triage) {
           throw new Error("Agente de triagem Codex não está configurado.");
         }
         const input = this.store.getTriageAiJobInput(job.id);
         const result = await this.agent.triage(input, job.model, jobSignal);
         this.store.completeTriageAiJob(job.id, result);
+      } else {
+        if (!this.agent.generateDocumentation) {
+          throw new Error("Agente de documentação não está configurado.");
+        }
+        const input = this.store.getDocumentationJobInput(job.id);
+        const result = await this.agent.generateDocumentation(input, jobSignal);
+        this.store.completeDocumentationJob(job.id, result);
       }
       this.onEvent({
         type: "completed",
@@ -224,8 +231,20 @@ export class InvestigationWorker {
         return true;
       } else if (job.kind === "automatic") {
         this.store.failInvestigationJob(job.id, message);
-      } else {
+      } else if (job.kind === "thread_turn") {
         this.store.failInvestigationThreadJob(job.id, message);
+      } else if (job.attemptCount < 2) {
+        this.store.requeueDocumentationJob(job.id, message);
+        this.onEvent({
+          type: "requeued",
+          jobId: job.id,
+          ticketId: job.ticketId,
+          jobKind: "documentation",
+          reason: "retry",
+        });
+        return true;
+      } else {
+        this.store.failDocumentationJob(job.id, message);
       }
       this.onEvent({
         type: "failed",

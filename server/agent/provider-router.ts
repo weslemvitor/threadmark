@@ -4,6 +4,8 @@ import type { AiProviderSettingsService } from "./provider-settings.js";
 import type { SupportAgent } from "./provider.js";
 import type {
   InvestigationToolDescriptor,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   InvestigationToolRequest,
   InvestigationToolResult,
   InvestigationThreadInput,
@@ -46,7 +48,7 @@ export interface DeepInvestigationToolBroker {
 }
 
 /** Routes each workload to its task-specific provider and records the executed model. */
-export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "triage" | "investigateThread"> {
+export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "triage" | "investigateThread" | "generateDocumentation"> {
   constructor(
     private readonly database: SupportDatabase,
     private readonly settings: AiProviderSettingsService,
@@ -101,6 +103,26 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         );
     }
     return resolved.agent.triage(input, resolved.profile.model, signal);
+  }
+
+  async generateDocumentation(
+    input: DocumentationDraftInput,
+    signal?: AbortSignal,
+  ): Promise<DocumentationDraftResult> {
+    const resolved = await this.settings.createAgentForTask("documentation", this.codex);
+    this.database
+      .prepare(
+        `UPDATE documentation_generation_jobs
+         SET ai_provider_id = ?, ai_connection_id = ?, ai_model = ?
+         WHERE draft_id = ? AND state = 'running'`,
+      )
+      .run(
+        resolved.connection.providerId,
+        resolved.connection.id,
+        resolved.profile.model,
+        input.draftId,
+      );
+    return resolved.agent.generateDocumentation(input, signal);
   }
 
   async investigateThread(

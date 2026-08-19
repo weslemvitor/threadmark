@@ -13,18 +13,24 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { boundProviderDocumentationInput } from "./provider-input.js";
 import {
   buildInvestigationThreadPrompt,
+  buildDocumentationPrompt,
+  DOCUMENTATION_PROMPT_INSTRUCTIONS,
   buildSupportPrompt,
   buildTriagePrompt,
 } from "./prompt.js";
 import {
   parseInvestigationTurnResult,
+  parseDocumentationDraft,
   parseSupportAnalysis,
   triageAnalysisSchema,
 } from "./validation.js";
 import type {
   AnalysisMessage,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
   SupportAnalysis,
@@ -40,6 +46,7 @@ const defaultTurnSchemaPath = path.join(
   "investigation-turn.schema.json",
 );
 const defaultTriageSchemaPath = path.join(moduleDir, "triage-analysis.schema.json");
+const defaultDocumentationSchemaPath = path.join(moduleDir, "documentation-draft.schema.json");
 
 export interface CodexRunnerOptions {
   codexBin?: string;
@@ -48,6 +55,7 @@ export interface CodexRunnerOptions {
   schemaPath?: string;
   turnSchemaPath?: string;
   triageSchemaPath?: string;
+  documentationSchemaPath?: string;
   attachmentsRoot?: string;
   timeoutMs?: number;
   triageTimeoutMs?: number;
@@ -69,7 +77,7 @@ type ProcessExecutor = (args: {
   signal?: AbortSignal;
 }) => Promise<ProcessResult>;
 
-type RunnerMode = "automatic" | "deep" | "triage";
+type RunnerMode = "automatic" | "deep" | "triage" | "documentation";
 export type CodexEnvironment = Record<string, string | undefined>;
 
 const SAFE_CODEX_ENVIRONMENT_KEYS = [
@@ -136,6 +144,14 @@ const INPUT_LIMITS: Record<RunnerMode, {
   triage: {
     maxMessages: 70,
     conversationCharacters: 100_000,
+    maxSentResponses: 0,
+    sentResponseCharacters: 0,
+    maxResolvedPrecedents: 0,
+    resolvedPrecedentCharacters: 0,
+  },
+  documentation: {
+    maxMessages: 100,
+    conversationCharacters: 320_000,
     maxSentResponses: 0,
     sentResponseCharacters: 0,
     maxResolvedPrecedents: 0,
@@ -593,6 +609,8 @@ export class CodexSupportAgent {
       schemaPath: options.schemaPath ?? defaultSchemaPath,
       turnSchemaPath: options.turnSchemaPath ?? defaultTurnSchemaPath,
       triageSchemaPath: options.triageSchemaPath ?? defaultTriageSchemaPath,
+      documentationSchemaPath:
+        options.documentationSchemaPath ?? defaultDocumentationSchemaPath,
       attachmentsRoot:
         options.attachmentsRoot ?? path.join(cwd, ".data", "attachments"),
       timeoutMs: options.timeoutMs ?? 300_000,
@@ -658,6 +676,24 @@ export class CodexSupportAgent {
     const result = triageAnalysisSchema.parse(raw);
     assertExactTriageCoverage(boundedInput, result);
     return result;
+  }
+
+  async generateDocumentation(
+    input: DocumentationDraftInput,
+    model = "default",
+    signal?: AbortSignal,
+  ): Promise<DocumentationDraftResult> {
+    const boundedInput = boundProviderDocumentationInput(input);
+    const raw = await this.executeStructuredRun({
+      input: boundedInput,
+      imageInput: input,
+      prompt: `${DOCUMENTATION_PROMPT_INSTRUCTIONS}\n\n${buildDocumentationPrompt(boundedInput)}`,
+      schemaPath: this.options.documentationSchemaPath,
+      mode: "documentation",
+      model,
+      signal,
+    });
+    return parseDocumentationDraft(raw, boundedInput);
   }
 
   private async executeStructuredRun(input: {

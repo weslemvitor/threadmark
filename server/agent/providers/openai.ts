@@ -62,6 +62,7 @@ export class OpenAIResponsesClient implements StructuredJsonClient {
         model: request.model,
         store: false,
         max_output_tokens: this.maxOutputTokens,
+        ...(request.instructions ? { instructions: request.instructions } : {}),
         input: [{ role: "user", content }],
         text: {
           format: {

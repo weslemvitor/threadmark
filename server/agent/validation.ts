@@ -3,9 +3,42 @@ import { z } from "zod";
 import type {
   InvestigationThreadInput,
   InvestigationTurnResult,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   SupportAnalysis,
   SupportAnalysisInput,
 } from "./types.js";
+
+export const documentationDraftSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(600),
+  audience: z.string().trim().min(1).max(200),
+  bodyMarkdown: z.string().trim().min(1).max(30_000),
+  prerequisites: z.array(z.string().trim().min(1).max(500)).max(20),
+  sourceMessageIds: z.array(z.string().trim().min(1)).max(100),
+  imagePlacements: z.array(z.object({
+    attachmentId: z.string().trim().min(1),
+    afterHeading: z.string().trim().max(200).nullable(),
+    caption: z.string().trim().min(1).max(500),
+  })).max(10),
+  warnings: z.array(z.string().trim().min(1).max(1_000)).max(20),
+});
+
+export function parseDocumentationDraft(
+  value: unknown,
+  input: DocumentationDraftInput,
+): DocumentationDraftResult {
+  const result = documentationDraftSchema.parse(value);
+  const messageIds = new Set(input.messages.map((message) => message.id));
+  const attachmentIds = new Set(input.availableImages.map((image) => image.attachmentId));
+  if (result.sourceMessageIds.some((id) => !messageIds.has(id))) {
+    throw new Error("A documentação citou uma mensagem fora do ticket.");
+  }
+  if (result.imagePlacements.some((image) => !attachmentIds.has(image.attachmentId))) {
+    throw new Error("A documentação citou uma imagem que não pertence ao ticket.");
+  }
+  return result;
+}
 
 export const supportAnalysisSchema = z.object({
   createTicket: z.boolean(),

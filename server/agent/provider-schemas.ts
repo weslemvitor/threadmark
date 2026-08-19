@@ -1,6 +1,7 @@
 import investigationTurnSchemaDocument from "./investigation-turn.schema.json" with { type: "json" };
 import supportAnalysisSchemaDocument from "./support-analysis.schema.json" with { type: "json" };
 import triageAnalysisSchemaDocument from "./triage-analysis.schema.json" with { type: "json" };
+import documentationDraftSchemaDocument from "./documentation-draft.schema.json" with { type: "json" };
 
 import type { JsonSchemaDocument } from "./provider.js";
 
@@ -14,6 +15,10 @@ export const INVESTIGATION_TURN_JSON_SCHEMA = withoutDialectDeclaration(
 
 export const TRIAGE_ANALYSIS_JSON_SCHEMA = withoutDialectDeclaration(
   triageAnalysisSchemaDocument,
+);
+
+export const DOCUMENTATION_DRAFT_JSON_SCHEMA = withoutDialectDeclaration(
+  documentationDraftSchemaDocument,
 );
 
 function withoutDialectDeclaration(value: object): JsonSchemaDocument {

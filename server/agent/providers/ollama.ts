@@ -42,13 +42,18 @@ export class OllamaChatClient implements StructuredJsonClient {
         model: request.model,
         stream: false,
         format: request.schema,
-        messages: [{
-          role: "user",
-          content: request.prompt,
-          ...(request.images.length
-            ? { images: request.images.map((image) => image.dataBase64) }
-            : {}),
-        }],
+        messages: [
+          ...(request.instructions
+            ? [{ role: "system", content: request.instructions }]
+            : []),
+          {
+            role: "user",
+            content: request.prompt,
+            ...(request.images.length
+              ? { images: request.images.map((image) => image.dataBase64) }
+              : {}),
+          },
+        ],
         options: { temperature: 0 },
       },
       timeoutMs: this.timeoutMs,

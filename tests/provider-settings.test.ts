@@ -33,6 +33,7 @@ test("configurações de IA persistem metadados no SQLite e segredo cifrado fora
         { taskKind: "triage", connectionId: "builtin-codex", enabled: true },
         { taskKind: "automatic", connectionId: "builtin-codex", enabled: true },
         { taskKind: "deep", connectionId: "builtin-codex", enabled: true },
+        { taskKind: "documentation", connectionId: "builtin-codex", enabled: true },
       ],
     );
     service.updateProfiles(
@@ -276,6 +277,7 @@ test("API persiste conexão e modelo independentes por tarefa e sincroniza a tri
         { taskKind: "triage", model: "gpt-5.4-mini" },
         { taskKind: "automatic", model: "gpt-5.4" },
         { taskKind: "deep", model: "default" },
+        { taskKind: "documentation", model: "default" },
       ],
     );
   } finally {

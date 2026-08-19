@@ -73,6 +73,7 @@ export class AnthropicMessagesClient implements StructuredJsonClient {
       body: {
         model: request.model,
         max_tokens: this.maxOutputTokens,
+        ...(request.instructions ? { system: request.instructions } : {}),
         messages: [{ role: "user", content }],
         output_config: {
           format: {

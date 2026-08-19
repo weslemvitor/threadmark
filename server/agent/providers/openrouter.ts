@@ -77,7 +77,12 @@ export class OpenRouterChatClient implements StructuredJsonClient {
       body: {
         model: request.model,
         max_tokens: this.maxOutputTokens,
-        messages: [{ role: "user", content }],
+        messages: [
+          ...(request.instructions
+            ? [{ role: "system", content: request.instructions }]
+            : []),
+          { role: "user", content },
+        ],
         response_format: {
           type: "json_schema",
           json_schema: {

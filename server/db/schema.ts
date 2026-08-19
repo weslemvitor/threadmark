@@ -2298,4 +2298,475 @@ export const migrations: Migration[] = [
       DROP TABLE IF EXISTS directory_record_types;
     `,
   },
+  {
+    version: 40,
+    name: "documentation_drafts",
+    sql: `
+      ALTER TABLE ai_task_profiles RENAME TO ai_task_profiles_v39;
+
+      CREATE TABLE ai_task_profiles (
+        task_kind TEXT PRIMARY KEY
+          CHECK (task_kind IN ('triage', 'automatic', 'deep', 'documentation')),
+        connection_id TEXT REFERENCES ai_provider_connections(id) ON DELETE SET NULL,
+        model TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      INSERT INTO ai_task_profiles (
+        task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      )
+      SELECT task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      FROM ai_task_profiles_v39;
+
+      INSERT INTO ai_task_profiles (
+        task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      )
+      SELECT
+        'documentation', connection_id, model, enabled, 'migration-40',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM ai_task_profiles_v39
+      WHERE task_kind = 'deep';
+
+      DROP TABLE ai_task_profiles_v39;
+
+      CREATE TABLE documentation_drafts (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'draft'
+          CHECK (status IN ('draft', 'ready', 'archived')),
+        title TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        audience TEXT NOT NULL DEFAULT '',
+        body_markdown TEXT NOT NULL DEFAULT '',
+        prerequisites_json TEXT NOT NULL DEFAULT '[]',
+        warnings_json TEXT NOT NULL DEFAULT '[]',
+        source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+        image_placements_json TEXT NOT NULL DEFAULT '[]',
+        ai_provider_id TEXT,
+        ai_connection_id TEXT,
+        ai_model TEXT,
+        prompt_version TEXT,
+        generated_at TEXT,
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX documentation_drafts_status_updated_idx
+        ON documentation_drafts(status, updated_at DESC);
+
+      CREATE TABLE documentation_generation_jobs (
+        id TEXT PRIMARY KEY,
+        draft_id TEXT NOT NULL REFERENCES documentation_drafts(id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'queued'
+          CHECK (state IN ('queued', 'running', 'completed', 'failed')),
+        requested_by TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        claimed_at TEXT,
+        lease_expires_at TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        error TEXT,
+        ai_provider_id TEXT,
+        ai_connection_id TEXT,
+        ai_model TEXT
+      ) STRICT;
+
+      CREATE INDEX documentation_generation_jobs_queue_idx
+        ON documentation_generation_jobs(state, requested_at, id);
+      CREATE UNIQUE INDEX documentation_generation_jobs_active_idx
+        ON documentation_generation_jobs(draft_id)
+        WHERE state IN ('queued', 'running');
+    `,
+  },
+  {
+    version: 41,
+    name: "durable_automation_engine",
+    sql: `
+      CREATE TABLE automation_workflows (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'draft'
+          CHECK (status IN ('draft', 'active', 'paused', 'archived')),
+        current_version INTEGER NOT NULL DEFAULT 1 CHECK (current_version > 0),
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX automation_workflows_status_updated_idx
+        ON automation_workflows(status, updated_at DESC);
+
+      CREATE TABLE automation_workflow_versions (
+        workflow_id TEXT NOT NULL
+          REFERENCES automation_workflows(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL CHECK (version > 0),
+        definition_json TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workflow_id, version)
+      ) WITHOUT ROWID;
+
+      CREATE TABLE automation_events (
+        id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        subject_type TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        occurred_at TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'queued'
+          CHECK (state IN ('queued', 'processing', 'completed', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        available_at TEXT NOT NULL,
+        lease_expires_at TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        processed_at TEXT
+      ) STRICT;
+
+      CREATE INDEX automation_events_queue_idx
+        ON automation_events(state, available_at, occurred_at, id);
+
+      CREATE TABLE automation_runs (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        workflow_version INTEGER NOT NULL,
+        event_id TEXT REFERENCES automation_events(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN (
+            'queued', 'running', 'waiting', 'paused',
+            'completed', 'failed', 'cancelled'
+          )),
+        input_json TEXT NOT NULL DEFAULT '{}',
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        updated_at TEXT NOT NULL,
+        finished_at TEXT,
+        FOREIGN KEY (workflow_id, workflow_version)
+          REFERENCES automation_workflow_versions(workflow_id, version)
+          ON DELETE RESTRICT,
+        UNIQUE(workflow_id, idempotency_key)
+      ) STRICT;
+
+      CREATE INDEX automation_runs_status_updated_idx
+        ON automation_runs(status, updated_at, id);
+      CREATE INDEX automation_runs_workflow_created_idx
+        ON automation_runs(workflow_id, created_at DESC);
+
+      CREATE TABLE automation_run_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+        node_id TEXT NOT NULL,
+        node_type TEXT NOT NULL
+          CHECK (node_type IN (
+            'trigger', 'condition', 'wait', 'approval',
+            'internal_action', 'app_action'
+          )),
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN (
+            'queued', 'running', 'sleeping', 'awaiting_approval',
+            'retry', 'completed', 'failed', 'cancelled', 'skipped'
+          )),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        max_attempts INTEGER NOT NULL DEFAULT 1 CHECK (max_attempts BETWEEN 1 AND 5),
+        idempotency_key TEXT NOT NULL UNIQUE,
+        input_json TEXT NOT NULL DEFAULT '{}',
+        output_json TEXT,
+        available_at TEXT NOT NULL,
+        lease_expires_at TEXT,
+        error TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(run_id, node_id)
+      ) STRICT;
+
+      CREATE INDEX automation_run_steps_queue_idx
+        ON automation_run_steps(status, available_at, run_id, id);
+      CREATE INDEX automation_run_steps_run_idx
+        ON automation_run_steps(run_id, created_at, id);
+    `,
+  },
+  {
+    version: 42,
+    name: "connected_apps_and_automation_event_cursor",
+    sql: `
+      CREATE TABLE connected_apps (
+        id TEXT PRIMARY KEY,
+        provider_type TEXT NOT NULL
+          CHECK (provider_type IN ('slack_webhook', 'custom_http')),
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        config_json TEXT NOT NULL DEFAULT '{}',
+        secret_ref TEXT,
+        secret_configured INTEGER NOT NULL DEFAULT 0
+          CHECK (secret_configured IN (0, 1)),
+        last_tested_at TEXT,
+        last_test_status TEXT
+          CHECK (last_test_status IS NULL OR last_test_status IN ('success', 'failed')),
+        last_test_message TEXT,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX connected_apps_enabled_name_idx
+        ON connected_apps(enabled DESC, name COLLATE NOCASE, id);
+
+      CREATE TABLE automation_event_cursors (
+        source TEXT PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 43,
+    name: "in_app_notifications",
+    sql: `
+      CREATE TABLE notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK (source_type IN ('automation', 'investigation', 'system')),
+        source_id TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        target_url TEXT,
+        tone TEXT NOT NULL DEFAULT 'info'
+          CHECK (tone IN ('info', 'success', 'warning', 'urgent')),
+        read_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, idempotency_key)
+      ) STRICT;
+
+      CREATE INDEX notifications_user_created_idx
+        ON notifications(user_id, created_at DESC, id DESC);
+      CREATE INDEX notifications_user_unread_idx
+        ON notifications(user_id, read_at, created_at DESC);
+      CREATE INDEX notifications_source_idx
+        ON notifications(source_type, source_id, created_at DESC);
+    `,
+  },
+  {
+    version: 44,
+    name: "replace_web_push_with_in_app_notifications",
+    sql: `
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK (source_type IN ('automation', 'investigation', 'system')),
+        source_id TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        target_url TEXT,
+        tone TEXT NOT NULL DEFAULT 'info'
+          CHECK (tone IN ('info', 'success', 'warning', 'urgent')),
+        read_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, idempotency_key)
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS notifications_user_created_idx
+        ON notifications(user_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS notifications_user_unread_idx
+        ON notifications(user_id, read_at, created_at DESC);
+      CREATE INDEX IF NOT EXISTS notifications_source_idx
+        ON notifications(source_type, source_id, created_at DESC);
+
+      UPDATE automation_workflow_versions
+      SET definition_json = replace(
+        definition_json,
+        '"send_push_notification"',
+        '"create_in_app_notification"'
+      )
+      WHERE definition_json LIKE '%"send_push_notification"%';
+
+      DROP TABLE IF EXISTS push_delivery_attempts;
+      DROP TABLE IF EXISTS push_subscriptions;
+      DROP TABLE IF EXISTS push_vapid_keys;
+    `,
+  },
+  {
+    version: 45,
+    name: "automation_workflow_layouts",
+    sql: `
+      CREATE TABLE automation_workflow_layouts (
+        workflow_id TEXT PRIMARY KEY
+          REFERENCES automation_workflows(id) ON DELETE CASCADE,
+        positions_json TEXT NOT NULL DEFAULT '{}',
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
+  {
+    version: 46,
+    name: "single_current_automation_definition",
+    sql: `
+      ALTER TABLE automation_runs ADD COLUMN definition_json TEXT;
+
+      UPDATE automation_runs
+      SET definition_json = COALESCE(
+        (
+          SELECT version.definition_json
+          FROM automation_workflow_versions AS version
+          WHERE version.workflow_id = automation_runs.workflow_id
+            AND version.version = automation_runs.workflow_version
+        ),
+        (
+          SELECT current.definition_json
+          FROM automation_workflows AS workflow
+          JOIN automation_workflow_versions AS current
+            ON current.workflow_id = workflow.id
+           AND current.version = workflow.current_version
+          WHERE workflow.id = automation_runs.workflow_id
+        )
+      )
+      WHERE status IN ('queued', 'running', 'waiting', 'paused');
+
+      UPDATE automation_workflow_versions
+      SET
+        definition_json = COALESCE(
+          (
+            SELECT current.definition_json
+            FROM automation_workflows AS workflow
+            JOIN automation_workflow_versions AS current
+              ON current.workflow_id = workflow.id
+             AND current.version = workflow.current_version
+            WHERE workflow.id = automation_workflow_versions.workflow_id
+          ),
+          definition_json
+        ),
+        created_by = COALESCE(
+          (
+            SELECT current.created_by
+            FROM automation_workflows AS workflow
+            JOIN automation_workflow_versions AS current
+              ON current.workflow_id = workflow.id
+             AND current.version = workflow.current_version
+            WHERE workflow.id = automation_workflow_versions.workflow_id
+          ),
+          created_by
+        ),
+        created_at = COALESCE(
+          (
+            SELECT current.created_at
+            FROM automation_workflows AS workflow
+            JOIN automation_workflow_versions AS current
+              ON current.workflow_id = workflow.id
+             AND current.version = workflow.current_version
+            WHERE workflow.id = automation_workflow_versions.workflow_id
+          ),
+          created_at
+        )
+      WHERE version = 1;
+
+      UPDATE automation_runs SET workflow_version = 1;
+      DELETE FROM automation_workflow_versions WHERE version <> 1;
+      UPDATE automation_workflows SET current_version = 1;
+    `,
+  },
+  {
+    version: 47,
+    name: "monotonic_ticket_event_cursor",
+    sql: `
+      ALTER TABLE ticket_events ADD COLUMN ingestion_sequence INTEGER;
+
+      UPDATE ticket_events
+      SET ingestion_sequence = rowid;
+
+      CREATE UNIQUE INDEX ticket_events_ingestion_sequence_idx
+        ON ticket_events(ingestion_sequence)
+        WHERE ingestion_sequence IS NOT NULL;
+
+      CREATE TABLE ticket_event_sequence (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        last_value INTEGER NOT NULL CHECK (last_value >= 0)
+      ) STRICT;
+
+      INSERT INTO ticket_event_sequence (singleton, last_value)
+      SELECT 1, COALESCE(MAX(ingestion_sequence), 0)
+      FROM ticket_events;
+
+      ALTER TABLE automation_event_cursors
+        ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0;
+
+      UPDATE automation_event_cursors
+      SET event_sequence = COALESCE(
+        (
+          SELECT event.ingestion_sequence
+          FROM ticket_events AS event
+          WHERE event.id = automation_event_cursors.event_id
+        ),
+        (SELECT MAX(event.ingestion_sequence) FROM ticket_events AS event),
+        0
+      );
+    `,
+  },
+  {
+    version: 48,
+    name: "automation_activation_sequence",
+    sql: `
+      ALTER TABLE automation_workflows
+        ADD COLUMN activation_event_sequence INTEGER;
+
+      UPDATE automation_workflows AS workflow
+      SET activation_event_sequence = COALESCE(
+        (
+          SELECT MIN(source_event.ingestion_sequence) - 1
+          FROM automation_runs AS run
+          JOIN automation_events AS event ON event.id = run.event_id
+          JOIN ticket_events AS source_event
+            ON source_event.id = json_extract(event.payload_json, '$.sourceEventId')
+          WHERE run.workflow_id = workflow.id
+            AND json_extract(run.input_json, '$.dryRun') IS NOT 1
+            AND source_event.ingestion_sequence IS NOT NULL
+        ),
+        (SELECT last_value FROM ticket_event_sequence WHERE singleton = 1),
+        0
+      )
+      WHERE workflow.status = 'active';
+
+      ALTER TABLE automation_event_cursors
+        ADD COLUMN reconciled_event_sequence INTEGER NOT NULL DEFAULT 0;
+
+      UPDATE automation_event_cursors
+      SET reconciled_event_sequence = COALESCE(
+        (
+          SELECT MIN(workflow.activation_event_sequence)
+          FROM automation_workflows AS workflow
+          WHERE workflow.status = 'active'
+            AND workflow.activation_event_sequence IS NOT NULL
+        ),
+        event_sequence
+      );
+    `,
+  },
+  {
+    version: 49,
+    name: "remove_persisted_automation_dry_runs",
+    sql: `
+      DELETE FROM automation_runs
+      WHERE json_extract(input_json, '$.dryRun') IS 1;
+    `,
+  },
 ];

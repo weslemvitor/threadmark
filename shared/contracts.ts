@@ -627,6 +627,80 @@ export interface TicketDetailDto extends TicketSummaryDto {
   investigationThread: InvestigationThreadSummaryDto | null;
 }
 
+export const DOCUMENTATION_DRAFT_STATUSES = [
+  "draft",
+  "ready",
+  "archived",
+] as const;
+
+export type DocumentationDraftStatus =
+  (typeof DOCUMENTATION_DRAFT_STATUSES)[number];
+
+export const DOCUMENTATION_GENERATION_STATES = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+] as const;
+
+export type DocumentationGenerationState =
+  (typeof DOCUMENTATION_GENERATION_STATES)[number];
+
+export interface DocumentationImagePlacementDto {
+  attachmentId: string;
+  messageId: string;
+  fileName: string | null;
+  mimeType: string;
+  url: string;
+  caption: string;
+  afterHeading: string | null;
+}
+
+export interface DocumentationDraftDto {
+  id: string;
+  ticketId: string;
+  ticketNumber: number;
+  ticketTitle: string;
+  status: DocumentationDraftStatus;
+  generationState: DocumentationGenerationState | null;
+  generationError: string | null;
+  title: string;
+  summary: string;
+  audience: string;
+  bodyMarkdown: string;
+  prerequisites: string[];
+  warnings: string[];
+  sourceMessageIds: string[];
+  images: DocumentationImagePlacementDto[];
+  aiProviderId: string | null;
+  aiModel: string | null;
+  generatedAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentationDraftListResponse {
+  items: DocumentationDraftDto[];
+  total: number;
+}
+
+export interface DeleteDocumentationDraftResponse {
+  id: string;
+  ticketId: string;
+  deleted: true;
+}
+
+export interface UpdateDocumentationDraftInput {
+  title: string;
+  summary: string;
+  audience: string;
+  bodyMarkdown: string;
+  prerequisites: string[];
+  status: DocumentationDraftStatus;
+}
+
 export interface TicketListResponse {
   items: TicketSummaryDto[];
   total: number;
@@ -1125,6 +1199,32 @@ export interface ChangeAuthPasswordInput {
 
 export interface AuthUserListResponse {
   items: AuthUserDto[];
+}
+
+export type NotificationSourceType = "automation" | "investigation" | "system";
+export type NotificationTone = "info" | "success" | "warning" | "urgent";
+
+export interface NotificationDto {
+  id: string;
+  title: string;
+  body: string;
+  targetUrl: string | null;
+  sourceType: NotificationSourceType;
+  sourceId: string | null;
+  tone: NotificationTone;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface NotificationListResponse {
+  items: NotificationDto[];
+  total: number;
+  unread: number;
+}
+
+export interface NotificationReadResponse {
+  updated: boolean;
+  unread: number;
 }
 
 export const LOCAL_TOOL_TYPES = [

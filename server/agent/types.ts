@@ -7,6 +7,7 @@ export interface AnalysisMessage {
   timestampUtc: string;
   text: string | null;
   attachments: Array<{
+    id?: string;
     kind: "image" | "document" | "video" | "audio" | "other";
     fileName: string | null;
     mimeType?: string | null;
@@ -15,6 +16,38 @@ export interface AnalysisMessage {
     extractedText: string | null;
   }>;
   quotedMessageId: string | null;
+}
+
+export interface DocumentationDraftInput {
+  draftId: string;
+  ticketId: string;
+  ticketNumber: number;
+  title: string;
+  summary: string;
+  resolution: string;
+  categories: string[];
+  messages: AnalysisMessage[];
+  availableImages: Array<{
+    attachmentId: string;
+    messageId: string;
+    fileName: string | null;
+    mimeType: string;
+  }>;
+}
+
+export interface DocumentationDraftResult {
+  title: string;
+  summary: string;
+  audience: string;
+  bodyMarkdown: string;
+  prerequisites: string[];
+  sourceMessageIds: string[];
+  imagePlacements: Array<{
+    attachmentId: string;
+    afterHeading: string | null;
+    caption: string;
+  }>;
+  warnings: string[];
 }
 
 export interface SupportConversationState {

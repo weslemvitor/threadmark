@@ -28,6 +28,7 @@ import { createVinextWebProcessController } from "./runtime/web-process.js";
 import { waitForWebBuildReady } from "./runtime/web-readiness.js";
 import { DeepToolExecutor } from "./tools/deep-tool-executor.js";
 import { LocalToolService } from "./tools/local-tool-service.js";
+import { NotificationService } from "./notifications/index.js";
 import { TriageAiScheduler, TriageWorker } from "./triage/index.js";
 import { AudioTranscriptionService } from "./transcription/index.js";
 import { createInboundWhatsAppClient } from "./whatsapp/index.js";
@@ -60,6 +61,7 @@ async function main(): Promise<void> {
   const database = createDatabase(config.databasePath);
   const store = new SupportStore(database);
   const secretVault = new LocalSecretVault(path.join(config.dataDir, "secrets"));
+  const notifications = new NotificationService(database);
   const providerSettings = new AiProviderSettingsService(
     database,
     secretVault,
@@ -168,6 +170,7 @@ async function main(): Promise<void> {
           },
         }
       : undefined,
+    notifications,
   });
   const webProcess = config.startWeb
     ? createVinextWebProcessController(config.projectRoot)
@@ -226,6 +229,31 @@ async function main(): Promise<void> {
       onEvent(event) {
         if (event.type === "failed") {
           console.error(`Investigação ${event.jobId} falhou: ${event.error}`);
+        }
+        if (
+          (event.type === "completed" || event.type === "failed") &&
+          event.ticketId &&
+          (event.jobKind === "automatic" || event.jobKind === "thread_turn")
+        ) {
+          void Promise.resolve().then(() => {
+            const ticket = store.getTicketDetail(event.ticketId!);
+            const investigation = event.jobKind === "thread_turn"
+              ? "Investigação aprofundada"
+              : "Investigação automática";
+            return notifications.createForAll({
+              title: event.type === "completed"
+                ? `${investigation} concluída`
+                : `${investigation} falhou`,
+              body: `#${ticket.number} · ${ticket.client.name}\n${ticket.title}`,
+              targetUrl: `/tickets/${ticket.number}`,
+              sourceType: "investigation",
+              sourceId: event.jobId,
+              idempotencyKey: `investigation:${event.jobId}:${event.type}`,
+              tone: event.type === "failed" ? "urgent" : "success",
+            });
+          }).catch((error) => {
+            console.error(`Falha ao notificar conclusão da investigação ${event.jobId}`, error);
+          });
         }
       },
     });

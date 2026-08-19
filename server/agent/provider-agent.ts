@@ -3,6 +3,8 @@ import path from "node:path";
 
 import {
   buildInvestigationThreadPrompt,
+  buildDocumentationPrompt,
+  DOCUMENTATION_PROMPT_INSTRUCTIONS,
   buildSupportPrompt,
   buildTriagePrompt,
 } from "./prompt.js";
@@ -18,14 +20,18 @@ import {
   INVESTIGATION_TURN_JSON_SCHEMA,
   SUPPORT_ANALYSIS_JSON_SCHEMA,
   TRIAGE_ANALYSIS_JSON_SCHEMA,
+  DOCUMENTATION_DRAFT_JSON_SCHEMA,
 } from "./provider-schemas.js";
 import {
   boundProviderSupportInput,
+  boundProviderDocumentationInput,
   boundProviderTriageInput,
 } from "./provider-input.js";
 import type { CodexSupportAgent } from "./codex-runner.js";
 import type {
   AnalysisMessage,
+  DocumentationDraftInput,
+  DocumentationDraftResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
   SupportAnalysis,
@@ -35,6 +41,7 @@ import type {
 } from "./types.js";
 import {
   parseInvestigationTurnResult,
+  parseDocumentationDraft,
   parseSupportAnalysis,
   triageAnalysisSchema,
 } from "./validation.js";
@@ -143,6 +150,23 @@ export class StructuredSupportAgent implements SupportAgent {
     return result;
   }
 
+  async generateDocumentation(
+    input: DocumentationDraftInput,
+    signal?: AbortSignal,
+  ): Promise<DocumentationDraftResult> {
+    const boundedInput = boundProviderDocumentationInput(input);
+    const raw = await this.client.generateJson({
+      instructions: DOCUMENTATION_PROMPT_INSTRUCTIONS,
+      prompt: buildDocumentationPrompt(boundedInput),
+      schemaName: "documentation_draft",
+      schema: DOCUMENTATION_DRAFT_JSON_SCHEMA,
+      model: this.model,
+      images: await this.collectTrustedImages(input.messages),
+      signal,
+    });
+    return parseDocumentationDraft(raw, boundedInput);
+  }
+
   private async collectTrustedImages(
     messages: AnalysisMessage[],
   ): Promise<ProviderImage[]> {
@@ -242,6 +266,13 @@ export class CodexProviderAdapter implements SupportAgent {
     signal?: AbortSignal,
   ): Promise<TriageAnalysis> {
     return this.agent.triage(input, model.trim() || this.model, signal);
+  }
+
+  generateDocumentation(
+    input: DocumentationDraftInput,
+    signal?: AbortSignal,
+  ): Promise<DocumentationDraftResult> {
+    return this.agent.generateDocumentation(input, this.model, signal);
   }
 }
 

@@ -34,7 +34,7 @@ export class AiProviderSettingsError extends Error {
   }
 }
 
-export type AiTaskKind = "triage" | "automatic" | "deep";
+export type AiTaskKind = "triage" | "automatic" | "deep" | "documentation";
 
 export interface AiConnectionDto {
   id: string;
@@ -244,7 +244,7 @@ export class AiProviderSettingsService {
       .prepare(
         `SELECT task_kind, connection_id, model, enabled, updated_at
          FROM ai_task_profiles
-         ORDER BY CASE task_kind WHEN 'triage' THEN 0 WHEN 'automatic' THEN 1 ELSE 2 END`,
+         ORDER BY CASE task_kind WHEN 'triage' THEN 0 WHEN 'automatic' THEN 1 WHEN 'deep' THEN 2 ELSE 3 END`,
       )
       .all() as ProfileRow[]).map(profileDto);
   }
@@ -274,7 +274,7 @@ export class AiProviderSettingsService {
     const byTask = new Map(profiles.map((profile) => [profile.taskKind, profile]));
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      for (const taskKind of ["triage", "automatic", "deep"] as const) {
+      for (const taskKind of ["triage", "automatic", "deep", "documentation"] as const) {
         const profile = byTask.get(taskKind);
         if (!profile) continue;
         const model = requiredText(profile.model, "Modelo", 200);
@@ -547,7 +547,9 @@ function taskLabel(task: AiTaskKind): string {
     ? "A triagem"
     : task === "automatic"
       ? "A investigação automática"
-      : "A investigação profunda";
+      : task === "deep"
+        ? "A investigação profunda"
+        : "A geração de documentação";
 }
 
 function assertProviderSupportsTask(

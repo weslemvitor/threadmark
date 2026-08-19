@@ -1,8 +1,28 @@
 import type {
   AnalysisMessage,
+  DocumentationDraftInput,
   SupportAnalysisInput,
   TriageAnalysisInput,
 } from "./types.js";
+
+export function boundProviderDocumentationInput(
+  input: DocumentationDraftInput,
+): DocumentationDraftInput {
+  const budget = { remaining: 220_000 };
+  return {
+    ...input,
+    title: truncate(input.title, 500),
+    summary: truncate(input.summary, 4_000),
+    resolution: truncate(input.resolution, 12_000),
+    categories: input.categories.slice(0, 30).map((value) => truncate(value, 200)),
+    messages: input.messages.slice(-100).map((message) => boundMessage(message, budget)),
+    availableImages: input.availableImages.slice(0, 20).map((image) => ({
+      ...image,
+      fileName: image.fileName ? truncate(image.fileName, 500) : null,
+      mimeType: truncate(image.mimeType, 200),
+    })),
+  };
+}
 
 const SUPPORT_MESSAGE_LIMIT = 50;
 const TRIAGE_CONTEXT_LIMIT = 20;
