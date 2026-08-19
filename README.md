@@ -16,6 +16,7 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Seleção manual de mensagens para criar um ticket, anexar a um caso existente, guardar como contexto ou restaurar itens revisados.
 - Diretório local com grupos e pessoas sincronizados do WhatsApp.
 - Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período e exportação.
+- Automações visuais com gatilhos de ticket, condições, esperas, aprovações humanas, ações internas e apps conectados.
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
 - Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.
 - Broker de ferramentas tipadas readonly, disponível somente dentro da sala manual.
@@ -51,6 +52,16 @@ Baileys inbound-only
 ```
 
 A Web UI é a interface operacional; o OpenTUI acompanha o mesmo SQLite e a mesma API local. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md) e a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md).
+
+## Automações e apps conectados
+
+A área **Automações** oferece um editor visual baseado em nós. Um fluxo começa com um gatilho de ticket, pode aplicar condições, aguardar um período, exigir aprovação da equipe e então executar uma ação interna ou chamar um app conectado. Rascunhos incompletos podem ser salvos; a ativação só é permitida quando o grafo é válido, acíclico e sem junções ambíguas.
+
+A disposição visual dos nós, o nome e a descrição são persistidos separadamente da definição funcional. Por isso, reorganizar o canvas ou editar esses metadados não desativa um fluxo ativo. Alterações em gatilhos, condições, conexões ou ações substituem a definição atual; um fluxo ativo permanece ativo e passa a usar a configuração nova nos próximos eventos, enquanto execuções já abertas preservam o snapshot com que começaram. O canvas exibe a configuração operacional principal de cada etapa, como `7 dias` ou `Arquivar ticket`.
+
+As primeiras conexões disponíveis são Slack por webhook e API HTTP personalizada. Credenciais ficam no cofre local cifrado e nunca retornam para a interface. O botão de teste do fluxo executa apenas a validação estrutural e mostra o resultado no próprio canvas, sem persistir uma execução, alterar tickets ou chamar serviços externos. Execuções reais são persistidas no SQLite, retomam após reinício e permitem pausa, cancelamento e decisão humana nas etapas de aprovação.
+
+Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações também ignoram os eventos de ticket que elas próprias produziram, evitando ciclos involuntários. Na primeira inicialização do motor, o cursor começa no estado atual: eventos antigos não são reproduzidos em massa.
 
 ## Requisitos
 
@@ -117,11 +128,11 @@ O Diretório não cria uma taxonomia comercial adicional. A organização operac
 
 ## IA e investigação
 
-O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket e investigação profunda. O Codex CLI integrado pode ser usado nas duas; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão ou turno da sala recebe um identificador e um estado persistido, evitando reprocessamento contínuo da mesma mensagem.
+O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket, investigação profunda e geração de documentações. O Codex CLI integrado pode ser usado nas três; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão, turno da sala ou geração documental recebe um identificador e um estado persistido, evitando reprocessamento contínuo do mesmo conteúdo.
 
 Nas sugestões de ticket, a janela de silêncio padrão é de três minutos e pode ser alterada na mesma tela. Cada nova mensagem externa reinicia a contagem; mensagens da equipe entram somente como contexto. A IA pode aguardar mais informações sem criar um card, atualizar uma sugestão pendente quando o assunto continua ou separar assuntos distintos. **Analisar agora** antecipa essa avaliação, mas não cria tickets automaticamente.
 
-Ao resolver um ticket, a resolução é salva somente no atendimento. O encerramento não cria conteúdo reutilizável nem executa IA automaticamente.
+Ao resolver um ticket, a resolução é salva somente no atendimento. O encerramento não cria conteúdo reutilizável nem executa IA automaticamente. Quando o caso realmente contém um procedimento reaproveitável, o operador pode usar **Gerar documentação**. A IA cria um rascunho em português a partir das mensagens, da resolução e das imagens comprovadamente vinculadas ao ticket. O resultado fica persistido no SQLite em **Documentações**, exige revisão humana e pode ser copiado, exportado em DOCX compatível com importação no Intercom ou excluído definitivamente com confirmação; excluir a documentação não remove o ticket, as mensagens nem os anexos originais. O Threadmark não publica automaticamente no Intercom ou em outro serviço.
 
 No Codex, sugestões e investigação profunda rodam em uma execução efêmera sem rede livre, navegador, apps, plugins, MCP, memória ou HOME pessoal. A triagem recebe somente o contexto sanitizado e até cinco imagens preparadas. A sala manual pode acessar apenas a codebase e as ferramentas locais explicitamente autorizadas, sempre em modo de leitura.
 
@@ -285,7 +296,7 @@ Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
 - `server/whatsapp/`: fronteira Baileys inbound-only.
 - `server/ingestion/`: normalização e persistência de mensagens e mídias.
 - `server/db/`: schema e migrações SQLite.
-- `server/domain/`: tickets, Diretório, categorias, conhecimento e auditoria.
+- `server/domain/`: tickets, Diretório, categorias, documentações e auditoria.
 - `server/triage/`: detecção conservadora de demandas.
 - `server/agent/`: prompts, provedores e worker da sala de investigação.
 - `server/transcription/`: catálogo, download, execução e fila local de transcrição.
@@ -297,7 +308,7 @@ Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
 ## Limitações atuais
 
 - A transcrição local aceita inicialmente os áudios OGG/Opus recebidos pelo WhatsApp; outros codecs podem permanecer apenas preservados.
-- A Web UI precisa permanecer aberta para notificações do navegador.
+- A central de notificações registra avisos internos por usuário no SQLite. Automações e investigações podem criar notificações com link para o contexto, sem depender de permissões, HTTPS ou serviços externos do navegador.
 - Imagens e PDFs são os principais responsáveis pelo crescimento em disco.
 - O Baileys não é uma API oficial; mudanças no WhatsApp podem exigir manutenção do conector.
 

@@ -15,7 +15,9 @@ Dependendo da configuração e das mensagens recebidas, a instalação pode guar
 - imagens, PDFs, documentos, áudios e metadados de anexos;
 - transcrições de áudio, confiança, estado da fila e falhas de processamento;
 - tickets, categorias, responsáveis, prioridades e status;
-- prompts operacionais, resultados de IA, evidências e sugestões;
+- prompts operacionais, resultados de IA, evidências, sugestões e rascunhos documentais;
+- definições, eventos, execuções e auditoria de automações;
+- notificações internas por usuário e estado de leitura;
 - usuários locais, sessões, configurações e trilha de auditoria;
 - logs técnicos necessários para diagnóstico.
 
@@ -29,6 +31,10 @@ O download inicial do modelo de transcrição acessa o Hugging Face. O arquivo d
 
 O projeto não oferece um backend hospedado central. Entretanto, ao configurar um provedor remoto de IA, o recorte enviado para análise deixa a máquina e passa a ser tratado também pelos termos e políticas daquele provedor. Use um provedor local quando essa transferência não for aceitável.
 
+Apps conectados também mudam essa fronteira. Uma ação real pode enviar os campos explicitamente configurados para Slack ou para uma API HTTP externa. Webhooks, tokens e headers sensíveis ficam no cofre local cifrado, não são devolvidos pela API e não devem ser colocados no nome, descrição, URL com query string, template ou documentação do fluxo. O teste estrutural de um fluxo não envia dados. O teste de uma conexão valida localmente a configuração, a URL e a resolução DNS, sem disparar uma requisição ao endpoint escolhido.
+
+Notificações ficam somente no SQLite local, vinculadas ao usuário do Threadmark. Título, corpo, origem, URL interna e estado lido/não lido não passam por serviços de push ou por provedores externos. Ainda assim, evite colocar dados desnecessários no título ou corpo dos nós de notificação.
+
 ## Minimização
 
 - Monitore apenas grupos necessários.
@@ -40,7 +46,7 @@ O projeto não oferece um backend hospedado central. Entretanto, ao configurar u
 
 ## Retenção e exclusão
 
-Arquivar um ticket não apaga o conteúdo. Antes de atender uma solicitação de eliminação, confirme quais identidades, grupos, mensagens, tickets, anexos, backups e logs precisam ser removidos e quais dados devem ser mantidos por obrigação legal.
+Arquivar um ticket não apaga o conteúdo. Uma documentação pode ser excluída definitivamente pela própria tela; isso remove o rascunho e seus jobs de geração do banco ativo, mas preserva o ticket, as mensagens e os anexos que serviram como fonte. Antes de atender uma solicitação de eliminação mais ampla, confirme quais identidades, grupos, mensagens, tickets, anexos, backups e logs precisam ser removidos e quais dados devem ser mantidos por obrigação legal.
 
 Não apague diretamente arquivos do SQLite enquanto o serviço estiver ativo. Faça backup, pare o daemon e valide a integridade após qualquer manutenção de retenção.
 
