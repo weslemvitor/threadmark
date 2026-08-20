@@ -7,12 +7,11 @@ contratos, persistência e integrações em cada etapa.
 
 ## Contexto
 
-O Threadmark cresceu com quatro superfícies distintas:
+O Threadmark cresceu com três superfícies distintas:
 
 - Web UI local em `app/`;
 - API, domínio, integrações e runtime em `server/`;
-- contratos comuns em `shared/`;
-- cockpit OpenTUI em `tui/`.
+- contratos comuns em `shared/`.
 
 Essa separação de alto nível continua correta. O problema está principalmente
 na organização interna:
@@ -27,7 +26,7 @@ na organização interna:
 
 Aplicar uma única árvore de pastas a todas as superfícies criaria abstrações
 artificiais. A estrutura precisa respeitar as responsabilidades diferentes de
-frontend, backend, contratos compartilhados e TUI.
+frontend, backend e contratos compartilhados.
 
 ## Decisão
 
@@ -88,17 +87,11 @@ domínio não estiver concluída. Métodos serão retirados de
 Os contratos serão separados por domínio atrás desse barrel antes de qualquer
 consumidor mudar de import.
 
-### TUI
-
-O TUI mantém estrutura própria. Ele consome contratos compartilhados e estado
-do runtime, mas não importa componentes ou regras internas do frontend.
-
 ## Limites de dependência
 
 ```text
 app feature -> app shared/platform -> shared contracts
 server module -> server infrastructure/integration -> shared contracts
-tui -> shared contracts
 shared contracts -> nenhuma superfície da aplicação
 ```
 

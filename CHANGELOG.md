@@ -4,6 +4,12 @@ As mudanças relevantes do Threadmark são registradas neste arquivo. O projeto 
 [Versionamento Semântico](https://semver.org/lang/pt-BR/) e o formato do
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 
+## [Não publicado]
+
+### Removido
+
+- Cockpit OpenTUI, dependência nativa, comando `threadmark tui` e testes específicos. A Web UI permanece como interface operacional e a CLI continua responsável pelo ciclo de vida e diagnóstico.
+
 ## [0.2.0] - 2026-08-07
 
 ### Adicionado

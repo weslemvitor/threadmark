@@ -21,12 +21,11 @@ Aplicação local de suporte assistido para observar conversas recebidas pelo Wh
 - UI em português brasileiro.
 - A Web UI é somente leitura para conversas; pode copiar sugestões e alterar o estado interno do ticket.
 - Transcrição de áudio é opcional, local e deve preservar o arquivo original; a triagem espera transcrições realtime pendentes.
-- Validar mudanças com testes focados, typecheck, lint e build. Alterações no terminal também exigem `npm run test:tui`.
+- Validar mudanças com testes focados, typecheck, lint e build.
 
 ## Estrutura
 
 - `app/`: Web UI local.
-- `tui/`: cockpit OpenTUI.
 - `server/`: API, SQLite, provedores de IA, daemon e captura Baileys.
 - `shared/`: contratos compartilhados entre UI e servidor.
 - `.data/`: estado local ignorado pelo Git.

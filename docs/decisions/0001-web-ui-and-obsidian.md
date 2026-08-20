@@ -13,7 +13,7 @@ O sistema precisa exibir timeline de mensagens, anexos, tickets simultâneos, gr
 - Usar uma Web UI local como interface operacional principal.
 - Manter SQLite como fonte de verdade.
 - Tratar Obsidian e outras pastas Markdown como integrações opcionais de conhecimento curado.
-- Usar CLI/OpenTUI para ciclo de vida, status, ressincronização e diagnóstico.
+- Usar a CLI para ciclo de vida, status, ressincronização e diagnóstico.
 - Nunca expor composer ou envio de mensagem na Web UI.
 
 ## Consequências

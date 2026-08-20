@@ -65,7 +65,7 @@ await main().catch((error) => {
 });
 
 async function main(): Promise<void> {
-  const command = (process.argv[2] ?? "tui").toLowerCase();
+  const command = (process.argv[2] ?? "help").toLowerCase();
   switch (command) {
     case "-h":
     case "--help":
@@ -76,9 +76,6 @@ async function main(): Promise<void> {
     case "--version":
     case "version":
       await printVersion();
-      return;
-    case "tui":
-      await launchTui();
       return;
     case "start":
     case "on":
@@ -150,32 +147,6 @@ async function main(): Promise<void> {
       printHelp();
       process.exitCode = 1;
   }
-}
-
-async function launchTui(): Promise<void> {
-  const config = loadConfig();
-  const child = spawn("bun", [path.join(config.projectRoot, "tui", "index.ts")], {
-    cwd: config.projectRoot,
-    env: process.env,
-    stdio: "inherit",
-  });
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        reject(
-          new Error(
-            "Bun não foi encontrado. Instale Bun >= 1.3.11 para abrir o OpenTUI ou use `threadmark on` para iniciar a Web UI.",
-          ),
-        );
-        return;
-      }
-      reject(error);
-    });
-    child.once("close", (code, signal) => {
-      resolve(signal ? 0 : (code ?? 1));
-    });
-  });
-  if (exitCode !== 0) process.exitCode = exitCode;
 }
 
 async function start(): Promise<void> {
@@ -1059,7 +1030,6 @@ Operação:
   off | stop                  Encerra os serviços com segurança
   status                      Exibe o estado operacional
   open                        Abre a Web UI local
-  tui                         Abre o cockpit OpenTUI
   doctor [--json]             Verifica processo, API, Web, SQLite, WhatsApp, IA e disco
 
 Configuração:

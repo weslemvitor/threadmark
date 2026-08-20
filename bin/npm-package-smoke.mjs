@@ -96,26 +96,9 @@ try {
     throw new Error("threadmark doctor não retornou o relatório estruturado esperado.");
   }
 
-  if (process.platform !== "win32") {
-    const emptyPath = path.join(temporary, "without-bun");
-    await mkdir(emptyPath, { recursive: true });
-    const tuiWithoutBun = await run(process.execPath, [executable], {
-      allowedExitCodes: [1],
-      cwd: temporary,
-      env: {
-        ...process.env,
-        PATH: emptyPath,
-        SUPPORT_AGENT_ENABLED: "false",
-        SUPPORT_DATA_DIR: path.join(temporary, "tui-data"),
-        SUPPORT_START_WEB: "false",
-        SUPPORT_WHATSAPP_ENABLED: "false",
-      },
-    });
-    if (!tuiWithoutBun.stderr.includes("Bun não foi encontrado")) {
-      throw new Error(
-        "A CLI instalada não explicou como continuar quando o Bun está ausente.",
-      );
-    }
+  const help = await run(executable, [], { cwd: temporary });
+  if (!help.stdout.includes("Uso:") || !help.stdout.includes("on | start")) {
+    throw new Error("A CLI instalada não exibiu a ajuda ao ser executada sem argumentos.");
   }
 
   console.log(

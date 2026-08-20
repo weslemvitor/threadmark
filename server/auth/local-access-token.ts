@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
 
-/** Machine-local bearer credential used by the bundled TUI and CLI. */
+/** Machine-local bearer credential used by bundled local clients and the CLI. */
 export class LocalAccessToken {
   private digest: Buffer | null = null;
 

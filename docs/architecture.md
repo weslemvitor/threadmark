@@ -22,7 +22,7 @@ WhatsApp / Baileys (inbound-only)
             -> pedido JSON de operação tipada
             -> broker local valida autorização
             -> executor readonly devolve resultado limitado
-  -> Web UI + OpenTUI
+  -> Web UI
 ```
 
 ## Processos locais
@@ -30,7 +30,7 @@ WhatsApp / Baileys (inbound-only)
 - Web UI: `http://127.0.0.1:3000`.
 - API: `http://127.0.0.1:4317` por padrão.
 - Daemon: captura, heartbeat, triagem, transcrição local e worker da sala de investigação.
-- OpenTUI: cliente da mesma API; sair da interface não encerra o daemon.
+- CLI: controla ciclo de vida, configuração e diagnóstico sem duplicar a interface operacional.
 
 Todos os listeners usam loopback por padrão. Expor a API em outra interface muda o modelo de ameaça e exige proteção de rede adicional.
 

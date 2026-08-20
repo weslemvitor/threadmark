@@ -13,7 +13,7 @@ Use fixtures obviamente sintéticas, como `+5500000000000`, `900000000000001@lid
 
 ## Ambiente
 
-O macOS é a única plataforma validada de ponta a ponta nesta versão. Node.js `>=22.13.0` é obrigatório; Bun `>=1.3.0` é necessário para executar e testar o OpenTUI.
+O macOS é a única plataforma validada de ponta a ponta nesta versão. Node.js `>=22.13.0` é obrigatório.
 
 ```bash
 git clone https://github.com/weslemvitor/threadmark.git
@@ -67,7 +67,6 @@ npm run privacy:check
 npm run typecheck
 npm run lint
 npm run build
-npm run test:tui
 ```
 
 Para conferir o pacote instalável completo antes de publicar, execute `npm run release:check`.

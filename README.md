@@ -20,7 +20,6 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
 - Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.
 - Broker de ferramentas tipadas readonly, disponível somente dentro da sala manual.
-- Cockpit OpenTUI para acompanhar fila, tickets, grupos, captura e investigações.
 - SQLite como fonte de verdade e arquivos locais com permissões restritivas.
 
 ## Invariantes de segurança
@@ -46,12 +45,12 @@ Baileys inbound-only
   -> ticket confirmado como recorte de mensagens
   -> contexto completo aberto pelo card do Kanban
   -> sala de investigação profunda opcional e persistente
-  -> Web UI local + OpenTUI
+  -> Web UI local
   -> cópia manual da resposta pelo operador
   -> resolução documentada no ticket
 ```
 
-A Web UI é a interface operacional; o OpenTUI acompanha o mesmo SQLite e a mesma API local. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md) e a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md).
+A Web UI é a interface operacional. A CLI permanece responsável pelo ciclo de vida e pelo diagnóstico, sem uma interface própria de terminal. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md) e a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md).
 
 ## Automações e apps conectados
 
@@ -66,11 +65,10 @@ Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações tamb
 ## Requisitos
 
 - Node.js `>=22.13.0`.
-- Bun `>=1.3.11` para o renderer nativo do OpenTUI.
 - Uma conta do WhatsApp autorizada para o pareamento.
 - Um provedor de IA configurado, caso deseje triagem e sala de investigação profunda.
 
-O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, OpenTUI, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
+O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
 
 ## Instalação local
 
@@ -170,7 +168,6 @@ A transcrição vem desativada em instalações novas. Depois de instalar o mode
 
 ```bash
 threadmark on             # inicia API, Web UI, captura, triagem e worker
-threadmark tui            # abre o cockpit OpenTUI
 threadmark open           # abre a Web UI
 threadmark status         # mostra o estado local
 threadmark doctor         # verifica processo, API, Web, SQLite, WhatsApp, IA e disco
@@ -200,23 +197,6 @@ workers continuam ativos. O arquivo `logs/daemon.log` dentro de `SUPPORT_DATA_DI
 ao atingir 5 MiB, mantendo cinco gerações.
 
 `threadmark on` confirma a identidade da API antes de abrir ou migrar o SQLite e só anuncia sucesso após API e assets Web estarem prontos. `threadmark off` solicita shutdown pela API com o token desta instalação; ele nunca encerra um PID apenas porque apareceu num arquivo antigo. O Doctor testa somente os provedores usados pelos perfis ativos.
-
-Atalhos principais do OpenTUI:
-
-```text
-↑/↓ ou j/k  selecionar ticket
-Enter / 1   abrir detalhe ou voltar à fila
-f           alternar filtro
-i           enfileirar investigação
-c           copiar sugestão
-g           abrir visão operacional
-o           abrir a Web UI
-r           atualizar
-? / Esc     ajuda ou voltar
-q           sair somente da TUI
-```
-
-Sair da TUI não interrompe a captura nem o worker.
 
 ## Dados locais e backup
 
@@ -280,7 +260,6 @@ O reset preserva o estado anterior em `.data/presentation-backups/`. O cenário 
 ```bash
 npm run dev
 npm run test:unit
-npm run test:tui
 npm run typecheck
 npm run lint
 npm run build
@@ -292,7 +271,6 @@ Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
 ## Estrutura do repositório
 
 - `app/`: interface web local.
-- `tui/`: cockpit OpenTUI e cliente da API local.
 - `server/whatsapp/`: fronteira Baileys inbound-only.
 - `server/ingestion/`: normalização e persistência de mensagens e mídias.
 - `server/db/`: schema e migrações SQLite.

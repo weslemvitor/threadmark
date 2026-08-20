@@ -36,7 +36,7 @@ Inclua, quando possível, a versão ou commit, sistema operacional, impacto, pas
 
 ## Boas práticas para operadores
 
-- Atualize Node.js, Bun e dependências regularmente.
+- Atualize Node.js e as dependências regularmente.
 - Revise `npm run audit:runtime` e alterações no lockfile.
 - Advisories transitivos sem atualização compatível só podem ser reconhecidos explicitamente em `bin/npm-audit-runtime.mjs`; qualquer vulnerabilidade alta ou crítica nova continua bloqueando a CI.
 - Use criptografia de disco e backups criptografados.
