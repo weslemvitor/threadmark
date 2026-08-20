@@ -767,6 +767,8 @@ export interface DashboardExportRowDto {
   clientKind: ClientKind;
   groupSubject: string;
   affectedStoreName: string | null;
+  assigneeName: string | null;
+  assigneeRole: AuthRole | null;
   status: TicketStatus;
   priority: TicketPriority;
   needsReview: boolean;
@@ -777,6 +779,56 @@ export interface DashboardExportRowDto {
   latestResolutionAtSaoPaulo: string | null;
   createdInPeriod: boolean;
   resolvedInPeriod: boolean;
+}
+
+export interface DashboardAssigneeMetricDto {
+  assignee: (TicketAssigneeDto & { active: boolean }) | null;
+  /** Tickets created in the selected period and currently assigned to this user. */
+  created: number;
+  /** Non-terminal tickets among those created in the selected period. */
+  open: number;
+  /** Tickets resolved in the selected period and currently assigned to this user. */
+  resolved: number;
+}
+
+export interface DashboardMetricComparisonDto {
+  current: number | null;
+  previous: number | null;
+}
+
+export interface DashboardComparisonDto {
+  previousPeriod: DashboardPeriodDto;
+  created: DashboardMetricComparisonDto;
+  resolved: DashboardMetricComparisonDto;
+  backlog: DashboardMetricComparisonDto;
+  resolutionRatePercent: DashboardMetricComparisonDto;
+  medianResolutionMinutes: DashboardMetricComparisonDto;
+  reopened: DashboardMetricComparisonDto;
+  unassignedBacklog: DashboardMetricComparisonDto;
+}
+
+export interface DashboardOperationalMetricsDto {
+  /** Resolutions registered in the period divided by tickets created in it. */
+  resolutionRatePercent: number | null;
+  /** Median elapsed minutes in the latest resolution cycle of each resolved ticket. */
+  medianResolutionMinutes: number | null;
+  /** Tickets moved from resolved back to a non-terminal status in the period. */
+  reopened: number;
+  /** Unassigned tickets still open at the end of the period. */
+  unassignedBacklog: number;
+  /** All tickets still open at the end of the period. */
+  backlog: number;
+}
+
+export type DashboardAgingBucketId =
+  | "under_24h"
+  | "one_to_three_days"
+  | "three_to_seven_days"
+  | "over_seven_days";
+
+export interface DashboardAgingBucketDto {
+  id: DashboardAgingBucketId;
+  count: number;
 }
 
 export interface DashboardResponse {
@@ -793,11 +845,18 @@ export interface DashboardResponse {
     groups: number;
   };
   statusCounts: StatusCountDto[];
+  priorityCounts: Array<{ priority: TicketPriority; count: number }>;
   ticketsByDay: Array<{ date: string; created: number; resolved: number }>;
   topCategories: Array<{ category: CategoryDto; count: number }>;
   topGroups: Array<{ groupId: string; groupSubject: string; count: number }>;
   /** @deprecated Use topGroups. */
   topClients: Array<{ clientId: string; clientName: string; count: number }>;
+  /** Team breakdown always covers the selected period, independently of the assignee filter. */
+  assigneeMetrics: DashboardAssigneeMetricDto[];
+  operations: DashboardOperationalMetricsDto;
+  aging: DashboardAgingBucketDto[];
+  /** Null for the all-time view, which has no equivalent previous interval. */
+  comparison: DashboardComparisonDto | null;
   recentTickets: TicketSummaryDto[];
 }
 

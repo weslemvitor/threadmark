@@ -210,10 +210,15 @@ async function apiResponseError(response: Response): Promise<ApiError> {
   );
 }
 
-function dashboardPath(path: string, range: DashboardDateRange): string {
+function dashboardPath(
+  path: string,
+  range: DashboardDateRange,
+  assigneeId = "all",
+): string {
   const params = new URLSearchParams();
   if (range.from) params.set("from", range.from);
   if (range.to) params.set("to", range.to);
+  if (assigneeId !== "all") params.set("assigneeId", assigneeId);
   const query = params.toString();
   return query ? `${path}?${query}` : path;
 }
@@ -288,20 +293,27 @@ export async function detachCategoryFromTicket(
 
 export async function getDashboard(
   range: DashboardDateRange = {},
+  assigneeId = "all",
 ): Promise<DashboardData> {
-  return request<DashboardData>(dashboardPath("/api/dashboard", range));
+  return request<DashboardData>(
+    dashboardPath("/api/dashboard", range, assigneeId),
+  );
 }
 
 export async function getDashboardExport(
   range: DashboardDateRange = {},
+  assigneeId = "all",
 ): Promise<{ blob: Blob; fileName: string }> {
   let response: Response;
   try {
-    response = await fetch(dashboardPath(`${API_URL}/api/dashboard/export`, range), {
-      headers: { Accept: "text/csv" },
-      credentials: "include",
-      cache: "no-store",
-    });
+    response = await fetch(
+      dashboardPath(`${API_URL}/api/dashboard/export`, range, assigneeId),
+      {
+        headers: { Accept: "text/csv" },
+        credentials: "include",
+        cache: "no-store",
+      },
+    );
   } catch {
     throw new ApiError(
       "Não foi possível alcançar o serviço local para exportar o dashboard.",

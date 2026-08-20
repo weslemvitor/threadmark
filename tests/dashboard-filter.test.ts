@@ -60,7 +60,7 @@ test("período personalizado valida ordem e gera rótulo e nome de exportação"
   );
 });
 
-test("UI consulta e exporta exatamente o período selecionado", async () => {
+test("UI consulta e exporta exatamente o período e responsável selecionados", async () => {
   const [api, period, view, css] = await Promise.all([
     readFile(new URL("../app/lib/api.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/dashboard-period.ts", import.meta.url), "utf8"),
@@ -70,6 +70,7 @@ test("UI consulta e exporta exatamente o período selecionado", async () => {
 
   assert.match(api, /params\.set\("from", range\.from\)/);
   assert.match(api, /params\.set\("to", range\.to\)/);
+  assert.match(api, /params\.set\("assigneeId", assigneeId\)/);
   assert.match(api, /\/api\/dashboard\/export/);
   assert.match(api, /await response\.blob\(\)/);
   assert.match(period, /last_7_days/);
@@ -78,7 +79,14 @@ test("UI consulta e exporta exatamente o período selecionado", async () => {
   assert.match(period, /all_time/);
   assert.match(view, /type="date"/);
   assert.match(view, /Exportar CSV/);
-  assert.match(view, /getDashboardExport\(range\)/);
+  assert.match(view, /getDashboardExport\(range, selectedAssignee\)/);
+  assert.match(view, /Filtrar dashboard por responsável/);
+  assert.match(view, /Atendimento por responsável/);
+  assert.match(view, /Eficiência operacional/);
+  assert.match(view, /Envelhecimento do backlog/);
+  assert.match(view, /Tickets por prioridade/);
+  assert.match(view, /vs\. anterior/);
+  assert.match(view, /Sem responsável/);
   assert.match(view, /currentDashboard\.period/);
   assert.match(view, /Tickets criados e resoluções de/);
   assert.match(view, /Snapshot atual da fila de auditoria/);

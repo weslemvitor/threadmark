@@ -58,12 +58,17 @@ export function DashboardMetricCard({
   note,
   tone,
   icon,
+  comparison,
 }: {
   label: string;
   value: string;
   note: string;
   tone: string;
   icon: ReactNode;
+  comparison?: {
+    label: string;
+    tone: "positive" | "negative" | "neutral";
+  } | null;
 }) {
   return (
     <Card className="min-h-25 flex-row items-center gap-3 p-4 py-4 shadow-sm">
@@ -75,10 +80,22 @@ export function DashboardMetricCard({
       >
         {icon}
       </span>
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-xs font-medium text-muted-foreground">{label}</span>
         <strong className="mt-1 text-2xl leading-none font-semibold tracking-tight text-foreground">{value}</strong>
-        <small className="mt-1.5 truncate text-xs text-muted-foreground/80">{note}</small>
+        {comparison ? (
+          <small
+            className={cn(
+              "mt-1.5 w-fit rounded-full px-1.5 py-0.5 text-[11px] font-medium",
+              comparison.tone === "positive" && "bg-emerald-500/10 text-emerald-700",
+              comparison.tone === "negative" && "bg-red-500/10 text-red-700",
+              comparison.tone === "neutral" && "bg-muted text-muted-foreground",
+            )}
+          >
+            {comparison.label}
+          </small>
+        ) : null}
+        <small className="mt-1.5 line-clamp-2 text-xs text-muted-foreground/80">{note}</small>
       </div>
     </Card>
   );

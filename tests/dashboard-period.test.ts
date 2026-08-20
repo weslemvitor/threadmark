@@ -3,6 +3,10 @@ import test, { afterEach } from "node:test";
 
 import { createDatabase, type SupportDatabase } from "../server/db/index.js";
 import { SupportStore } from "../server/domain/index.js";
+import {
+  previousDashboardPeriod,
+  resolveDashboardPeriod,
+} from "../server/domain/dashboard-period.js";
 import { createTestApiApp } from "../server/index.js";
 
 const databases: SupportDatabase[] = [];
@@ -66,6 +70,29 @@ function dashboardFixture() {
     slug: "crm",
     label: "CRM",
   });
+  const timestamp = "2026-06-01T12:00:00.000Z";
+  const insertUser = database.prepare(`
+    INSERT INTO local_users (
+      id, username, display_name, role, password_hash, active,
+      password_changed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'operator', 'fixture-hash', 1, ?, ?, ?)
+  `);
+  insertUser.run(
+    "dashboard-user-a",
+    "ana.suporte",
+    "Ana Suporte",
+    timestamp,
+    timestamp,
+    timestamp,
+  );
+  insertUser.run(
+    "dashboard-user-b",
+    "bruno.suporte",
+    "Bruno Suporte",
+    timestamp,
+    timestamp,
+    timestamp,
+  );
 
   function createTicket(input: {
     id: string;
@@ -105,7 +132,7 @@ function dashboardFixture() {
     client: "a",
     createdAt: "2026-07-01T02:59:59.000Z",
   });
-  createTicket({
+  const resolvedTicket = createTicket({
     id: "ticket-inside-resolved",
     client: "a",
     createdAt: "2026-07-01T03:00:00.000Z",
@@ -121,7 +148,18 @@ function dashboardFixture() {
   database
     .prepare("UPDATE tickets SET status = 'archived', archived_at = ? WHERE id = ?")
     .run("2026-07-01T11:00:00.000Z", "ticket-inside-archived");
-  createTicket({
+  database
+    .prepare(
+      `INSERT INTO ticket_events
+        (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
+       VALUES (?, ?, 'status_changed', 'Operador', 'new', 'archived', '{}', ?)`,
+    )
+    .run(
+      "inside-ticket-archived-in-period",
+      "ticket-inside-archived",
+      "2026-07-01T11:00:00.000Z",
+    );
+  const openTicket = createTicket({
     id: "ticket-inside-open",
     client: "b",
     createdAt: "2026-07-03T02:59:59.000Z",
@@ -133,11 +171,26 @@ function dashboardFixture() {
     client: "b",
     createdAt: "2026-07-03T03:00:00.000Z",
   });
-  createTicket({
+  const reopenedTicket = createTicket({
     id: "ticket-old-reopened",
     client: "b",
     createdAt: "2026-06-20T12:00:00.000Z",
   });
+  store.updateTicketAssignee(
+    resolvedTicket.id,
+    "dashboard-user-a",
+    "Operador de teste",
+  );
+  store.updateTicketAssignee(
+    openTicket.id,
+    "dashboard-user-b",
+    "Operador de teste",
+  );
+  store.updateTicketAssignee(
+    reopenedTicket.id,
+    "dashboard-user-b",
+    "Operador de teste",
+  );
   database
     .prepare(
       `INSERT INTO ticket_events
@@ -148,6 +201,17 @@ function dashboardFixture() {
       "old-ticket-resolution-in-period",
       "ticket-old-reopened",
       "2026-07-02T02:30:00.000Z",
+    );
+  database
+    .prepare(
+      `INSERT INTO ticket_events
+        (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
+       VALUES (?, ?, 'status_changed', 'Operador', 'resolved', 'in_progress', '{}', ?)`,
+    )
+    .run(
+      "old-ticket-reopened-in-period",
+      "ticket-old-reopened",
+      "2026-07-02T02:45:00.000Z",
     );
   createTicket({
     id: "ticket-restored-from-archive",
@@ -200,6 +264,22 @@ function dashboardFixture() {
   return { database, store, app: createTestApiApp(store) };
 }
 
+test("período anterior preserva a quantidade de dias no fuso do workspace", () => {
+  const current = resolveDashboardPeriod(
+    { from: "2026-03-08", to: "2026-03-08" },
+    "America/New_York",
+  );
+  assert.ok(current);
+
+  assert.deepEqual(previousDashboardPeriod(current), {
+    from: "2026-03-07",
+    to: "2026-03-07",
+    timeZone: "America/New_York",
+    fromUtc: "2026-03-07T05:00:00.000Z",
+    toUtcExclusive: "2026-03-08T05:00:00.000Z",
+  });
+});
+
 test("dashboard interpreta o intervalo inclusivo em America/Sao_Paulo", () => {
   const { store } = dashboardFixture();
   const dashboard = store.getDashboard({ from: "2026-07-01", to: "2026-07-02" });
@@ -224,15 +304,160 @@ test("dashboard interpreta o intervalo inclusivo em America/Sao_Paulo", () => {
     { date: "2026-07-01", created: 2, resolved: 2 },
     { date: "2026-07-02", created: 1, resolved: 0 },
   ]);
+  assert.deepEqual(dashboard.priorityCounts, [
+    { priority: "low", count: 0 },
+    { priority: "normal", count: 3 },
+    { priority: "high", count: 0 },
+    { priority: "urgent", count: 0 },
+  ]);
+  assert.equal(dashboard.operations.backlog, 3);
+  assert.equal(dashboard.operations.resolutionRatePercent, 66.7);
+  assert.equal(dashboard.operations.reopened, 1);
+  assert.equal(dashboard.operations.unassignedBacklog, 1);
+  assert.ok((dashboard.operations.medianResolutionMinutes ?? 0) > 0);
+  assert.deepEqual(dashboard.aging, [
+    { id: "under_24h", count: 1 },
+    { id: "one_to_three_days", count: 1 },
+    { id: "three_to_seven_days", count: 0 },
+    { id: "over_seven_days", count: 1 },
+  ]);
+  assert.deepEqual(dashboard.comparison, {
+    previousPeriod: {
+      from: "2026-06-29",
+      to: "2026-06-30",
+      timeZone: "America/Sao_Paulo",
+      fromUtc: "2026-06-29T03:00:00.000Z",
+      toUtcExclusive: "2026-07-01T03:00:00.000Z",
+    },
+    created: { current: 3, previous: 1 },
+    resolved: { current: 2, previous: 0 },
+    backlog: { current: 3, previous: 2 },
+    resolutionRatePercent: { current: 66.7, previous: 0 },
+    medianResolutionMinutes: {
+      current: dashboard.operations.medianResolutionMinutes,
+      previous: null,
+    },
+    reopened: { current: 1, previous: 0 },
+    unassignedBacklog: { current: 1, previous: 1 },
+  });
   assert.equal(dashboard.topCategories[0]?.category.label, "Dashboard");
   assert.equal(dashboard.topCategories[0]?.count, 2);
   assert.equal(dashboard.topClients[0]?.clientName, "Agência Alpha");
   assert.equal(dashboard.topClients[0]?.count, 2);
   assert.equal(dashboard.topGroups[0]?.groupId, "dashboard-group-a");
   assert.equal(dashboard.topGroups[0]?.count, 2);
+  assert.deepEqual(dashboard.assigneeMetrics, [
+    {
+      assignee: {
+        id: "dashboard-user-a",
+        displayName: "Ana Suporte",
+        role: "operator",
+        active: true,
+      },
+      created: 1,
+      open: 0,
+      resolved: 1,
+    },
+    {
+      assignee: {
+        id: "dashboard-user-b",
+        displayName: "Bruno Suporte",
+        role: "operator",
+        active: true,
+      },
+      created: 1,
+      open: 1,
+      resolved: 1,
+    },
+    {
+      assignee: null,
+      created: 1,
+      open: 0,
+      resolved: 0,
+    },
+  ]);
   assert.deepEqual(
     dashboard.recentTickets.map((ticket) => ticket.id),
     ["ticket-inside-open", "ticket-inside-archived", "ticket-inside-resolved"],
+  );
+});
+
+test("dashboard filtra indicadores por responsável e preserva a visão da equipe", async () => {
+  const { app, store } = dashboardFixture();
+
+  const assigned = store.getDashboard(
+    { from: "2026-07-01", to: "2026-07-02" },
+    "dashboard-user-a",
+  );
+  assert.deepEqual(assigned.totals, {
+    tickets: 1,
+    open: 0,
+    needsReview: 0,
+    resolved: 1,
+    orphanDemands: 1,
+    clients: 1,
+    groups: 1,
+  });
+  assert.deepEqual(
+    assigned.recentTickets.map((ticket) => ticket.id),
+    ["ticket-inside-resolved"],
+  );
+  assert.equal(assigned.assigneeMetrics.length, 3);
+  assert.equal(assigned.operations.backlog, 0);
+  assert.equal(assigned.operations.unassignedBacklog, 1);
+  assert.deepEqual(assigned.comparison?.created, { current: 1, previous: 0 });
+
+  const unassigned = store.getDashboard(
+    { from: "2026-07-01", to: "2026-07-02" },
+    null,
+  );
+  assert.equal(unassigned.totals.tickets, 1);
+  assert.equal(unassigned.operations.backlog, 1);
+  assert.equal(unassigned.statusCounts.find((item) => item.status === "archived")?.count, 1);
+  assert.deepEqual(
+    unassigned.recentTickets.map((ticket) => ticket.id),
+    ["ticket-inside-archived"],
+  );
+
+  const apiResponse = await app.request(
+    "/api/dashboard?from=2026-07-01&to=2026-07-02&assigneeId=dashboard-user-b",
+  );
+  assert.equal(apiResponse.status, 200);
+  const apiDashboard = await apiResponse.json() as {
+    totals: typeof assigned.totals;
+  };
+  assert.deepEqual(apiDashboard.totals, {
+    tickets: 1,
+    open: 1,
+    needsReview: 1,
+    resolved: 1,
+    orphanDemands: 1,
+    clients: 1,
+    groups: 1,
+  });
+
+  const unassignedResponse = await app.request(
+    "/api/dashboard?from=2026-07-01&to=2026-07-02&assigneeId=unassigned",
+  );
+  assert.equal(unassignedResponse.status, 200);
+  assert.equal((await unassignedResponse.json() as { totals: { tickets: number } }).totals.tickets, 1);
+
+  const unknownResponse = await app.request(
+    "/api/dashboard?from=2026-07-01&to=2026-07-02&assigneeId=unknown-user",
+  );
+  assert.equal(unknownResponse.status, 400);
+});
+
+test("dashboard de todo o histórico não inventa um período anterior", () => {
+  const { store } = dashboardFixture();
+  const dashboard = store.getDashboard();
+
+  assert.equal(dashboard.period, null);
+  assert.equal(dashboard.comparison, null);
+  assert.ok(dashboard.operations.backlog >= 1);
+  assert.equal(
+    dashboard.aging.reduce((total, bucket) => total + bucket.count, 0),
+    dashboard.operations.backlog,
   );
 });
 
@@ -269,12 +494,24 @@ test("API valida o intervalo e exporta CSV readonly com resoluções históricas
     /threadmark-dashboard-2026-07-01_2026-07-02\.csv/,
   );
   assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.match(csv, /"assignee_name","assignee_role"/);
+  assert.match(csv, /"Ana Suporte","operator"/);
   assert.match(csv, /"'=SUM\(A1:A2\)"/);
   assert.match(csv, /"ticket-old-reopened"|"Resumo de ticket-old-reopened"/);
   assert.doesNotMatch(csv, /ticket-before/);
   assert.doesNotMatch(csv, /ticket-after/);
   assert.doesNotMatch(csv, /ticket-restored-from-archive/);
   assert.equal(after.count, before.count);
+
+  const assignedResponse = await app.request(
+    "/api/dashboard/export?from=2026-07-01&to=2026-07-02&assigneeId=dashboard-user-a",
+  );
+  const assignedBytes = new Uint8Array(await assignedResponse.arrayBuffer());
+  const assignedCsv = Buffer.from(assignedBytes.subarray(3)).toString("utf8");
+  assert.equal(assignedResponse.status, 200);
+  assert.match(assignedCsv, /ticket-inside-resolved/);
+  assert.doesNotMatch(assignedCsv, /ticket-inside-open/);
+  assert.doesNotMatch(assignedCsv, /ticket-inside-archived/);
 });
 
 test("dashboard interpreta o período no fuso configurado do workspace", () => {

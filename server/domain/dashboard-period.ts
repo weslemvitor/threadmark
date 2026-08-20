@@ -45,6 +45,15 @@ export function dashboardCalendarDates(period: DashboardPeriodDto): string[] {
   return dates;
 }
 
+export function previousDashboardPeriod(
+  period: DashboardPeriodDto,
+): DashboardPeriodDto {
+  const days = dashboardCalendarDates(period).length;
+  const to = addCalendarDays(period.from, -1);
+  const from = addCalendarDays(to, 1 - days);
+  return resolveDashboardPeriod({ from, to }, period.timeZone) as DashboardPeriodDto;
+}
+
 export function dashboardDateInTimeZone(
   timestamp: string,
   timeZone: string = DASHBOARD_TIME_ZONE,

@@ -679,17 +679,36 @@ function runtimeFromFile(
   };
 }
 
-function dashboardPeriodFromUrl(url: URL): DashboardPeriodInput | undefined {
+function dashboardQueryFromUrl(url: URL): {
+  period: DashboardPeriodInput | undefined;
+  assigneeId: string | null | undefined;
+} {
   const from = url.searchParams.get("from")?.trim() || null;
   const to = url.searchParams.get("to")?.trim() || null;
-  if (!from && !to) return undefined;
   if (!from || !to) {
-    throw new ValidationError("Informe from e to juntos no formato YYYY-MM-DD", {
-      from,
-      to,
-    });
+    if (from || to) {
+      throw new ValidationError("Informe from e to juntos no formato YYYY-MM-DD", {
+        from,
+        to,
+      });
+    }
   }
-  return { from, to };
+  const hasAssignee = url.searchParams.has("assigneeId");
+  const rawAssignee = url.searchParams.get("assigneeId")?.trim() ?? "";
+  if (hasAssignee && !rawAssignee) {
+    throw new ValidationError("Informe um responsável válido para filtrar o dashboard");
+  }
+  if (rawAssignee.length > 200) {
+    throw new ValidationError("Identificador de responsável inválido");
+  }
+  return {
+    period: from && to ? { from, to } : undefined,
+    assigneeId: hasAssignee
+      ? rawAssignee === "unassigned"
+        ? null
+        : rawAssignee
+      : undefined,
+  };
 }
 
 function dashboardExportCsv(rows: DashboardExportRowDto[]): string {
@@ -702,6 +721,8 @@ function dashboardExportCsv(rows: DashboardExportRowDto[]): string {
     "client_kind",
     "group_subject",
     "affected_store_name",
+    "assignee_name",
+    "assignee_role",
     "status",
     "priority",
     "needs_review",
@@ -723,6 +744,8 @@ function dashboardExportCsv(rows: DashboardExportRowDto[]): string {
       row.clientKind,
       row.groupSubject,
       row.affectedStoreName,
+      row.assigneeName,
+      row.assigneeRole,
       row.status,
       row.priority,
       row.needsReview,
@@ -1937,14 +1960,16 @@ function createApiAppInternal(
   });
 
   app.get("/api/dashboard", (context) => {
-    const period = dashboardPeriodFromUrl(new URL(context.req.url));
-    return context.json(store.getDashboard(period));
+    const query = dashboardQueryFromUrl(new URL(context.req.url));
+    return context.json(store.getDashboard(query.period, query.assigneeId));
   });
 
   app.get("/api/dashboard/export", (context) => {
-    const period = dashboardPeriodFromUrl(new URL(context.req.url));
-    const rows = store.getDashboardExportRows(period);
-    const suffix = period ? `${period.from}_${period.to}` : "all";
+    const query = dashboardQueryFromUrl(new URL(context.req.url));
+    const rows = store.getDashboardExportRows(query.period, query.assigneeId);
+    const suffix = query.period
+      ? `${query.period.from}_${query.period.to}`
+      : "all";
     return new Response(dashboardExportCsv(rows), {
       headers: {
         "Cache-Control": "private, no-store, max-age=0",

@@ -162,6 +162,8 @@ A sala de investigação é iniciada somente pelo operador. Não existe rota nem
 - `POST /api/tools/:id/test`
 - `GET /api/dashboard` e `GET /api/dashboard/export`
 
+As duas rotas do dashboard aceitam `from` e `to` como período inclusivo e `assigneeId` como filtro opcional. O valor reservado `unassigned` representa tickets sem responsável; a visão principal e o CSV usam o mesmo recorte, enquanto o comparativo da equipe permanece completo dentro do período selecionado. Quando há período, a resposta também calcula uma janela anterior de mesma duração e compara criação, resolução, backlog ao fim do recorte, taxa de resolução, tempo mediano do ciclo, reaberturas e tickets sem responsável. O envelhecimento reconstrói o estado dos tickets no fim do período usando o histórico persistido de eventos; a visão de todo o histórico não fabrica uma janela anterior.
+
 ### Automações e apps conectados
 
 - `GET /api/automations`, `POST /api/automations` e `GET /api/automations/:id`

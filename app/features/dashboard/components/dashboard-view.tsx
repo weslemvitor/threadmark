@@ -4,16 +4,20 @@ import {
   CalendarDays,
   ChartPie,
   CheckCircle2,
-  CircleDashed,
   Clock3,
   Download,
+  Gauge,
   Inbox,
   LoaderCircle,
   MessageSquareWarning,
   MessagesSquare,
   RefreshCw,
+  RotateCcw,
   ShieldAlert,
+  TimerReset,
   TrendingUp,
+  UserMinus,
+  UsersRound,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getDashboard, getDashboardExport } from "@/app/lib/api";
@@ -26,7 +30,12 @@ import {
   type DashboardDateRange,
   type DashboardPeriodId,
 } from "@/app/lib/dashboard-period";
-import { formatNumber, getClientName, statusLabels } from "@/app/lib/format";
+import {
+  formatNumber,
+  getClientName,
+  priorityLabels,
+  statusLabels,
+} from "@/app/lib/format";
 import type { DashboardData, TicketSummary } from "@/app/lib/types";
 import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
@@ -41,6 +50,53 @@ import {
   DashboardMetricCard,
   DashboardStatusDonut,
 } from "./dashboard-charts";
+
+const allAssigneesFilter = "all";
+const unassignedFilter = "unassigned";
+
+function dashboardRequestKey(
+  range: DashboardDateRange,
+  assigneeId: string,
+): string {
+  return `${dashboardRangeKey(range)}:${assigneeId}`;
+}
+
+type MetricComparison = {
+  current: number | null;
+  previous: number | null;
+};
+
+function comparisonPresentation(
+  metric: MetricComparison | undefined,
+  favorableDirection?: "higher" | "lower",
+): { label: string; tone: "positive" | "negative" | "neutral" } | null {
+  if (!metric || metric.current === null || metric.previous === null) return null;
+  const delta = metric.current - metric.previous;
+  if (delta === 0) return { label: "Sem variação", tone: "neutral" };
+  if (metric.previous === 0) {
+    return { label: "Novo vs. anterior", tone: "neutral" };
+  }
+  const percentage = Math.abs((delta / metric.previous) * 100);
+  const direction = delta > 0 ? "↑" : "↓";
+  const favorable = favorableDirection === "higher"
+    ? delta > 0
+    : favorableDirection === "lower"
+      ? delta < 0
+      : null;
+  return {
+    label: `${direction} ${percentage.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% vs. anterior`,
+    tone: favorable === null ? "neutral" : favorable ? "positive" : "negative",
+  };
+}
+
+function formatDuration(minutes: number | null): string {
+  if (minutes === null) return "—";
+  if (minutes < 60) return `${formatNumber(Math.round(minutes))} min`;
+  if (minutes < 1_440) {
+    return `${(minutes / 60).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} h`;
+  }
+  return `${(minutes / 1_440).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} dias`;
+}
 
 function DashboardPanelHeader({
   icon,
@@ -88,6 +144,7 @@ export function DashboardView({
   );
   const [selectedPeriod, setSelectedPeriod] =
     useState<DashboardPeriodId>("last_7_days");
+  const [selectedAssignee, setSelectedAssignee] = useState(allAssigneesFilter);
   const [range, setRange] = useState<DashboardDateRange>(initialRange);
   const [draftFrom, setDraftFrom] = useState(initialRange.from ?? "");
   const [draftTo, setDraftTo] = useState(initialRange.to ?? "");
@@ -99,21 +156,22 @@ export function DashboardView({
   const [exported, setExported] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [loadedDashboard, setLoadedDashboard] = useState<{
-    rangeKey: string;
+    requestKey: string;
     data: DashboardData;
   } | null>(null);
   const rangeFrom = range.from;
   const rangeTo = range.to;
   const activeRangeKey = dashboardRangeKey(range);
+  const activeRequestKey = dashboardRequestKey(range, selectedAssignee);
   const today = initialRange.to ?? "";
 
   useEffect(() => {
     let active = true;
     const requestedRange = { from: rangeFrom, to: rangeTo };
-    const requestedKey = dashboardRangeKey(requestedRange);
-    void getDashboard(requestedRange)
+    const requestedKey = dashboardRequestKey(requestedRange, selectedAssignee);
+    void getDashboard(requestedRange, selectedAssignee)
       .then((data) => {
-        if (active) setLoadedDashboard({ rangeKey: requestedKey, data });
+        if (active) setLoadedDashboard({ requestKey: requestedKey, data });
       })
       .catch((error) => {
         if (!active) return;
@@ -129,18 +187,30 @@ export function DashboardView({
     return () => {
       active = false;
     };
-  }, [dashboard, rangeFrom, rangeTo, reloadVersion]);
+  }, [dashboard, rangeFrom, rangeTo, reloadVersion, selectedAssignee]);
 
   const currentDashboard =
-    loadedDashboard?.rangeKey === activeRangeKey
+    loadedDashboard?.requestKey === activeRequestKey
       ? loadedDashboard.data
-      : activeRangeKey === "all:all"
+      : activeRangeKey === "all:all" && selectedAssignee === allAssigneesFilter
         ? dashboard
         : null;
   const effectiveRange = currentDashboard?.period
     ? { from: currentDashboard.period.from, to: currentDashboard.period.to }
     : range;
   const rangeLabel = formatDashboardRangeLabel(effectiveRange, timeZone);
+  const assigneeOptions =
+    currentDashboard?.assigneeMetrics ??
+    loadedDashboard?.data.assigneeMetrics ??
+    dashboard?.assigneeMetrics ??
+    [];
+  const selectedAssigneeLabel =
+    selectedAssignee === allAssigneesFilter
+      ? "Toda a equipe"
+      : selectedAssignee === unassignedFilter
+        ? "Sem responsável"
+        : assigneeOptions.find((metric) => metric.assignee?.id === selectedAssignee)
+            ?.assignee?.displayName ?? "Responsável selecionado";
 
   function loadRange(nextRange: DashboardDateRange) {
     setFilterLoading(true);
@@ -156,6 +226,14 @@ export function DashboardView({
     setFilterLoading(true);
     setLoadError(null);
     setReloadVersion((current) => current + 1);
+  }
+
+  function selectAssignee(assigneeId: string) {
+    if (assigneeId === selectedAssignee) return;
+    setFilterLoading(true);
+    setLoadError(null);
+    setExportError(null);
+    setSelectedAssignee(assigneeId);
   }
 
   function selectPeriod(period: DashboardPeriodId) {
@@ -188,7 +266,7 @@ export function DashboardView({
     setExported(false);
     setExportError(null);
     try {
-      const result = await getDashboardExport(range);
+      const result = await getDashboardExport(range, selectedAssignee);
       const objectUrl = URL.createObjectURL(result.blob);
       const link = document.createElement("a");
       link.href = objectUrl;
@@ -213,7 +291,7 @@ export function DashboardView({
 
   const toolbar = (
     <Card
-      aria-label="Filtrar indicadores por período"
+      aria-label="Filtrar indicadores por período e responsável"
       className="mb-4 grid gap-3 p-3 py-3 shadow-sm lg:grid-cols-[minmax(210px,1fr)_auto]"
     >
       <div className="flex min-w-0 items-center gap-2.5">
@@ -222,7 +300,7 @@ export function DashboardView({
         </span>
         <div className="flex min-w-0 flex-col">
           <strong className="text-sm font-semibold text-foreground">Período dos indicadores</strong>
-          <small className="mt-0.5 text-xs leading-relaxed text-muted-foreground">Tickets criados e resoluções de {rangeLabel}</small>
+          <small className="mt-0.5 text-xs leading-relaxed text-muted-foreground">Tickets criados e resoluções de {rangeLabel} · {selectedAssigneeLabel}</small>
         </div>
       </div>
       <div className="flex min-w-0 flex-wrap items-end gap-2 lg:justify-end">
@@ -238,6 +316,29 @@ export function DashboardView({
             {dashboardPeriodOptions.map((option) => (
               <option key={option.id} value={option.id}>{option.label}</option>
             ))}
+          </NativeSelect>
+        </label>
+        <label className="flex min-w-0 flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">Responsável</span>
+          <NativeSelect
+            aria-label="Filtrar dashboard por responsável"
+            className="h-9 min-w-44 text-sm"
+            onChange={(event) => selectAssignee(event.target.value)}
+            value={selectedAssignee}
+            wrapperClassName="w-full sm:w-fit"
+          >
+            <option value={allAssigneesFilter}>Toda a equipe</option>
+            {assigneeOptions
+              .filter((metric) => metric.assignee)
+              .map((metric) => (
+                <option key={metric.assignee?.id} value={metric.assignee?.id}>
+                  {metric.assignee?.displayName}
+                  {metric.assignee?.active ? "" : " (inativo)"}
+                </option>
+              ))}
+            {assigneeOptions.some((metric) => !metric.assignee) ? (
+              <option value={unassignedFilter}>Sem responsável</option>
+            ) : null}
           </NativeSelect>
         </label>
         {selectedPeriod === "custom" ? (
@@ -344,6 +445,38 @@ export function DashboardView({
     label: group.groupSubject,
     count: group.count,
   }));
+  const priorityColors = {
+    urgent: "var(--destructive)",
+    high: "var(--chart-3)",
+    normal: "var(--chart-1)",
+    low: "var(--muted-foreground)",
+  } satisfies Record<TicketSummary["priority"], string>;
+  const priorityItems = currentDashboard.priorityCounts
+    .filter((item) => item.count > 0)
+    .map((item) => ({
+      label: priorityLabels[item.priority],
+      value: item.count,
+      color: priorityColors[item.priority],
+    }));
+  const comparisonRange = currentDashboard.comparison
+    ? formatDashboardRangeLabel(
+        {
+          from: currentDashboard.comparison.previousPeriod.from,
+          to: currentDashboard.comparison.previousPeriod.to,
+        },
+        timeZone,
+      )
+    : null;
+  const agingLabels = {
+    under_24h: "Até 24 horas",
+    one_to_three_days: "1 a 3 dias",
+    three_to_seven_days: "3 a 7 dias",
+    over_seven_days: "Mais de 7 dias",
+  } satisfies Record<DashboardData["aging"][number]["id"], string>;
+  const largestAgingBucket = Math.max(
+    1,
+    ...currentDashboard.aging.map((bucket) => bucket.count),
+  );
 
   return (
     <div aria-busy={filterLoading} className="min-h-full w-full p-4 sm:p-5">
@@ -358,6 +491,7 @@ export function DashboardView({
       ) : null}
       <section className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <DashboardMetricCard
+          comparison={comparisonPresentation(currentDashboard.comparison?.created)}
           label="Tickets criados"
           value={formatNumber(currentDashboard.totals.tickets)}
           note={`${currentDashboard.totals.open} ainda abertos neste recorte`}
@@ -365,18 +499,26 @@ export function DashboardView({
           icon={<Inbox size={20} />}
         />
         <DashboardMetricCard
-          label="Aguardando revisão"
-          value={formatNumber(currentDashboard.totals.needsReview)}
-          note="Entre os tickets criados no período"
-          tone="blue"
-          icon={<CircleDashed size={20} />}
-        />
-        <DashboardMetricCard
+          comparison={comparisonPresentation(
+            currentDashboard.comparison?.resolved,
+            "higher",
+          )}
           label="Resolvidos no período"
           value={formatNumber(currentDashboard.totals.resolved)}
           note="Resoluções concluídas dentro do recorte"
           tone="green"
           icon={<CheckCircle2 size={20} />}
+        />
+        <DashboardMetricCard
+          comparison={comparisonPresentation(
+            currentDashboard.comparison?.backlog,
+            "lower",
+          )}
+          label="Backlog no fim do período"
+          value={formatNumber(currentDashboard.operations.backlog)}
+          note="Todos os tickets que ainda estavam abertos"
+          tone="blue"
+          icon={<Clock3 size={20} />}
         />
         <DashboardMetricCard
           label="Demandas órfãs agora"
@@ -386,6 +528,181 @@ export function DashboardView({
           icon={<MessageSquareWarning size={20} />}
         />
       </section>
+
+      <section className="mb-3 grid items-stretch gap-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
+        <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm">
+          <DashboardPanelHeader
+            action={comparisonRange ? (
+              <Badge className="shrink-0" variant="outline">
+                anterior: {comparisonRange}
+              </Badge>
+            ) : undefined}
+            description="Qualidade e velocidade do atendimento no recorte"
+            icon={<Gauge size={17} />}
+            title="Eficiência operacional"
+          />
+          <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-4">
+            {[
+              {
+                label: "Taxa de resolução",
+                value: currentDashboard.operations.resolutionRatePercent === null
+                  ? "—"
+                  : `${currentDashboard.operations.resolutionRatePercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`,
+                note: "Resolvidos ÷ criados",
+                icon: <CheckCircle2 size={16} />,
+                comparison: comparisonPresentation(
+                  currentDashboard.comparison?.resolutionRatePercent,
+                  "higher",
+                ),
+              },
+              {
+                label: "Tempo mediano",
+                value: formatDuration(currentDashboard.operations.medianResolutionMinutes),
+                note: "Do início do ciclo à resolução",
+                icon: <TimerReset size={16} />,
+                comparison: comparisonPresentation(
+                  currentDashboard.comparison?.medianResolutionMinutes,
+                  "lower",
+                ),
+              },
+              {
+                label: "Tickets reabertos",
+                value: formatNumber(currentDashboard.operations.reopened),
+                note: "Voltaram após resolução",
+                icon: <RotateCcw size={16} />,
+                comparison: comparisonPresentation(
+                  currentDashboard.comparison?.reopened,
+                  "lower",
+                ),
+              },
+              {
+                label: "Sem responsável",
+                value: formatNumber(currentDashboard.operations.unassignedBacklog),
+                note: "Backlog de toda a equipe",
+                icon: <UserMinus size={16} />,
+                comparison: comparisonPresentation(
+                  currentDashboard.comparison?.unassignedBacklog,
+                  "lower",
+                ),
+              },
+            ].map((metric) => (
+              <div className="min-w-0 rounded-xl border bg-muted/20 p-3" key={metric.label}>
+                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <span className="text-primary">{metric.icon}</span>
+                  {metric.label}
+                </div>
+                <strong className="mt-2 block text-xl font-semibold tracking-tight text-foreground">
+                  {metric.value}
+                </strong>
+                <p className="mt-1 text-xs text-muted-foreground">{metric.note}</p>
+                {metric.comparison ? (
+                  <Badge
+                    className={cn(
+                      "mt-2 border-0",
+                      metric.comparison.tone === "positive" && "bg-emerald-500/10 text-emerald-700",
+                      metric.comparison.tone === "negative" && "bg-red-500/10 text-red-700",
+                    )}
+                    variant="secondary"
+                  >
+                    {metric.comparison.label}
+                  </Badge>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm">
+          <DashboardPanelHeader
+            description="Idade dos tickets ainda abertos no fim do recorte"
+            icon={<Clock3 size={17} />}
+            title="Envelhecimento do backlog"
+          />
+          <div className="grid gap-3">
+            {currentDashboard.aging.map((bucket) => (
+              <div className="grid gap-1.5" key={bucket.id}>
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-medium text-foreground">{agingLabels[bucket.id]}</span>
+                  <strong className="tabular-nums text-muted-foreground">{formatNumber(bucket.count)}</strong>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full min-w-0 rounded-full bg-primary transition-[width]"
+                    style={{ width: `${(bucket.count / largestAgingBucket) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </section>
+
+      <Card className="mb-3 min-w-0 gap-4 p-4 py-4 shadow-sm">
+        <DashboardPanelHeader
+          action={(
+            <Badge className="shrink-0" variant="secondary">
+              {currentDashboard.assigneeMetrics.filter((metric) => metric.assignee).length} pessoas
+            </Badge>
+          )}
+          description="Criados e abertos no recorte; resolvidos pela data da conclusão"
+          icon={<UsersRound size={17} />}
+          title="Atendimento por responsável"
+        />
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {currentDashboard.assigneeMetrics.map((metric) => {
+            const filterValue = metric.assignee?.id ?? unassignedFilter;
+            const selected = selectedAssignee === filterValue;
+            const displayName = metric.assignee?.displayName ?? "Sem responsável";
+            const initials = metric.assignee
+              ? metric.assignee.displayName
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((part) => part[0]?.toLocaleUpperCase("pt-BR"))
+                  .join("")
+              : "—";
+
+            return (
+              <Button
+                aria-pressed={selected}
+                className={cn(
+                  "grid min-h-24 min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-xl border bg-background p-3 text-left shadow-xs transition-colors hover:border-primary/40 hover:bg-primary/5",
+                  selected && "border-primary bg-primary/5 ring-1 ring-primary/20",
+                )}
+                key={filterValue}
+                onClick={() => selectAssignee(filterValue)}
+                size="unstyled"
+                type="button"
+                variant="unstyled"
+              >
+                <span className="row-span-2 grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                  {initials}
+                </span>
+                <span className="flex min-w-0 items-center justify-between gap-2">
+                  <strong className="truncate text-sm font-semibold text-foreground">{displayName}</strong>
+                  <Badge className="shrink-0" variant={selected ? "default" : "outline"}>
+                    {selected
+                      ? "Filtrado"
+                      : metric.assignee
+                        ? metric.assignee.active ? "Ativo" : "Inativo"
+                        : "Fila"}
+                  </Badge>
+                </span>
+                <span className="grid min-w-0 grid-cols-3 gap-2 text-xs text-muted-foreground">
+                  <span className="flex flex-col"><b className="text-sm text-foreground">{formatNumber(metric.created)}</b>Criados</span>
+                  <span className="flex flex-col"><b className="text-sm text-foreground">{formatNumber(metric.open)}</b>Abertos</span>
+                  <span className="flex flex-col"><b className="text-sm text-foreground">{formatNumber(metric.resolved)}</b>Resolvidos</span>
+                </span>
+              </Button>
+            );
+          })}
+        </div>
+        {!currentDashboard.assigneeMetrics.length ? (
+          <p className="flex min-h-20 items-center justify-center text-sm text-muted-foreground">
+            Adicione pessoas à equipe para acompanhar a distribuição dos tickets.
+          </p>
+        ) : null}
+      </Card>
 
       <section className="grid items-start gap-3 lg:grid-cols-2 2xl:grid-cols-3">
         <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm lg:col-span-2">
@@ -445,6 +762,15 @@ export function DashboardView({
             title="Categorias mais frequentes"
           />
           {categoryItems.length ? <DashboardHorizontalBars items={categoryItems} /> : <p className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">As categorias aparecerão com os tickets.</p>}
+        </Card>
+
+        <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm">
+          <DashboardPanelHeader
+            description="Urgência dos tickets criados no período"
+            icon={<AlertTriangle size={17} />}
+            title="Tickets por prioridade"
+          />
+          {priorityItems.length ? <DashboardHorizontalBars items={priorityItems} /> : <p className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">As prioridades aparecerão com os tickets.</p>}
         </Card>
 
         <Card className="min-w-0 gap-4 p-4 py-4 shadow-sm">

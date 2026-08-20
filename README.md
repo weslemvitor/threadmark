@@ -15,7 +15,7 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Triagem supervisionada com janela de silêncio configurável, agrupamento semântico, espera por contexto e atualização de sugestões existentes.
 - Seleção manual de mensagens para criar um ticket, anexar a um caso existente, guardar como contexto ou restaurar itens revisados.
 - Diretório local com grupos e pessoas sincronizados do WhatsApp.
-- Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período e exportação.
+- Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período, responsável, comparação com o período anterior, eficiência operacional, envelhecimento do backlog e exportação filtrada.
 - Automações visuais com gatilhos de ticket, condições, esperas, aprovações humanas, ações internas e apps conectados.
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
 - Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.

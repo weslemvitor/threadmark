@@ -27,6 +27,10 @@ import type {
   ConversationTriageBlocksResponse,
   CreateConversationTicketInput,
   DashboardExportRowDto,
+  DashboardAssigneeMetricDto,
+  DashboardAgingBucketDto,
+  DashboardOperationalMetricsDto,
+  DashboardPeriodDto,
   DashboardPeriodInput,
   DocumentationDraftDto,
   DocumentationDraftListResponse,
@@ -132,6 +136,7 @@ import {
   dashboardDateInTimeZone,
   dashboardDateTimeInTimeZone,
   recentDashboardPeriod,
+  previousDashboardPeriod,
   resolveDashboardPeriod,
 } from "./dashboard-period.js";
 import {
@@ -143,6 +148,18 @@ import { assertStatusTransition } from "./status.js";
 const DEFAULT_TRIAGE_AI_MODEL = "gpt-5.4-mini";
 const DEFAULT_TRIAGE_SILENCE_WINDOW_SECONDS = 180;
 const MIN_VISIBLE_TICKET_SUGGESTION_CONFIDENCE = 0.9;
+
+function roundMetric(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = values.toSorted((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] as number;
+  return ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2;
+}
 
 function normalizeTriageSilenceWindowSeconds(value: number): number {
   if (!Number.isInteger(value) || value < 30 || value > 1_800) {
@@ -295,6 +312,8 @@ export interface CategoryListFilters {
 export interface TicketListFilters {
   statuses?: TicketStatus[];
   clientId?: string;
+  /** Undefined includes everyone; null includes only tickets without an assignee. */
+  assigneeId?: string | null;
   query?: string;
   includeArchived?: boolean;
   productForwardingKind?: ProductForwardingKind;
@@ -9693,6 +9712,13 @@ export class SupportStore {
       parameters.push(filters.clientId);
     }
 
+    if (filters.assigneeId === null) {
+      where.push("t.assignee_user_id IS NULL");
+    } else if (filters.assigneeId !== undefined) {
+      where.push("t.assignee_user_id = ?");
+      parameters.push(filters.assigneeId);
+    }
+
     if (filters.productForwardingKind) {
       where.push(
         `EXISTS (
@@ -10186,7 +10212,11 @@ export class SupportStore {
       );
   }
 
-  getDashboard(input?: DashboardPeriodInput): DashboardResponse {
+  getDashboard(
+    input?: DashboardPeriodInput,
+    assigneeId?: string | null,
+  ): DashboardResponse {
+    this.validateDashboardAssignee(assigneeId);
     const timeZone = this.workspaceTimeZone();
     const period = resolveDashboardPeriod(input, timeZone);
     const createdRangeSql = period
@@ -10195,29 +10225,47 @@ export class SupportStore {
     const createdRangeParameters = period
       ? [period.fromUtc, period.toUtcExclusive]
       : [];
+    const assigneeSql = assigneeId === null
+      ? " AND t.assignee_user_id IS NULL"
+      : assigneeId === undefined
+        ? ""
+        : " AND t.assignee_user_id = ?";
+    const assigneeParameters = assigneeId === undefined || assigneeId === null
+      ? []
+      : [assigneeId];
+    const createdScopeSql = `${createdRangeSql}${assigneeSql}`;
+    const createdScopeParameters = [
+      ...createdRangeParameters,
+      ...assigneeParameters,
+    ];
     const resolutionRangeSql = period
       ? " AND event.occurred_at >= ? AND event.occurred_at < ?"
       : "";
     const resolutionRangeParameters = period
       ? [period.fromUtc, period.toUtcExclusive]
       : [];
+    const resolutionScopeSql = `${resolutionRangeSql}${assigneeSql}`;
+    const resolutionScopeParameters = [
+      ...resolutionRangeParameters,
+      ...assigneeParameters,
+    ];
     const ticketTotal = this.database
       .prepare(
         `SELECT COUNT(*) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL${createdRangeSql}`,
+         WHERE c.ignored_at IS NULL${createdScopeSql}`,
       )
-      .get(...createdRangeParameters) as { count: number };
+      .get(...createdScopeParameters) as { count: number };
     const openTotal = this.database
       .prepare(
         `SELECT COUNT(*) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL
-           AND t.status NOT IN ('resolved', 'archived')${createdRangeSql}`,
+           AND t.status NOT IN ('resolved', 'archived')${createdScopeSql}`,
       )
-      .get(...createdRangeParameters) as { count: number };
+      .get(...createdScopeParameters) as { count: number };
     const reviewTotal = this.database
       .prepare(
         `SELECT COUNT(*) AS count
@@ -10225,9 +10273,9 @@ export class SupportStore {
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL
            AND t.needs_review = 1
-           AND t.status NOT IN ('resolved', 'archived')${createdRangeSql}`,
+           AND t.status NOT IN ('resolved', 'archived')${createdScopeSql}`,
       )
-      .get(...createdRangeParameters) as { count: number };
+      .get(...createdScopeParameters) as { count: number };
     const resolvedTotal = this.database
       .prepare(
         `SELECT COUNT(DISTINCT event.ticket_id) AS count
@@ -10237,18 +10285,18 @@ export class SupportStore {
          WHERE c.ignored_at IS NULL
            AND event.event_type IN ('ticket_created', 'status_changed')
            AND event.to_status = 'resolved'
-           AND (event.from_status IS NULL OR event.from_status != 'archived')${resolutionRangeSql}`,
+           AND (event.from_status IS NULL OR event.from_status != 'archived')${resolutionScopeSql}`,
       )
-      .get(...resolutionRangeParameters) as { count: number };
-    const clientTotal = period
+      .get(...resolutionScopeParameters) as { count: number };
+    const clientTotal = period || assigneeId !== undefined
       ? (this.database
           .prepare(
             `SELECT COUNT(DISTINCT t.client_id) AS count
              FROM tickets t
              JOIN clients c ON c.id = t.client_id
-             WHERE c.ignored_at IS NULL${createdRangeSql}`,
+             WHERE c.ignored_at IS NULL${createdScopeSql}`,
           )
-          .get(...createdRangeParameters) as { count: number })
+          .get(...createdScopeParameters) as { count: number })
       : (this.database
           .prepare(
             `SELECT COUNT(*) AS count
@@ -10271,9 +10319,9 @@ export class SupportStore {
         `SELECT COUNT(DISTINCT t.group_id) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL${createdRangeSql}`,
+         WHERE c.ignored_at IS NULL${createdScopeSql}`,
       )
-      .get(...createdRangeParameters) as { count: number };
+      .get(...createdScopeParameters) as { count: number };
     const orphanTotal = this.database
       .prepare(
         `SELECT COUNT(DISTINCT m.group_id) AS count
@@ -10297,11 +10345,26 @@ export class SupportStore {
         `SELECT t.status, COUNT(*) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL${createdRangeSql}
+         WHERE c.ignored_at IS NULL${createdScopeSql}
          GROUP BY t.status`,
       )
-      .all(...createdRangeParameters) as Array<{ status: TicketStatus; count: number }>;
+      .all(...createdScopeParameters) as Array<{ status: TicketStatus; count: number }>;
     const statusMap = new Map(rawStatusCounts.map((item) => [item.status, item.count]));
+    const rawPriorityCounts = this.database
+      .prepare(
+        `SELECT t.priority, COUNT(*) AS count
+         FROM tickets t
+         JOIN clients c ON c.id = t.client_id
+         WHERE c.ignored_at IS NULL${createdScopeSql}
+         GROUP BY t.priority`,
+      )
+      .all(...createdScopeParameters) as Array<{
+      priority: TicketPriority;
+      count: number;
+    }>;
+    const priorityMap = new Map(
+      rawPriorityCounts.map((item) => [item.priority, item.count]),
+    );
 
     const chartPeriod = period ?? recentDashboardPeriod(14, new Date(), timeZone);
     const dailyCounts = new Map(
@@ -10316,7 +10379,7 @@ export class SupportStore {
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL
-           AND t.created_at >= ? AND t.created_at < ?
+           AND t.created_at >= ? AND t.created_at < ?${assigneeSql}
          UNION ALL
          SELECT event.occurred_at, 'resolved' AS activity
          FROM ticket_events event
@@ -10326,13 +10389,15 @@ export class SupportStore {
            AND event.event_type IN ('ticket_created', 'status_changed')
            AND event.to_status = 'resolved'
            AND (event.from_status IS NULL OR event.from_status != 'archived')
-           AND event.occurred_at >= ? AND event.occurred_at < ?`,
+           AND event.occurred_at >= ? AND event.occurred_at < ?${assigneeSql}`,
       )
       .all(
         chartPeriod.fromUtc,
         chartPeriod.toUtcExclusive,
+        ...assigneeParameters,
         chartPeriod.fromUtc,
         chartPeriod.toUtcExclusive,
+        ...assigneeParameters,
       ) as Array<{ occurred_at: string; activity: "created" | "resolved" }>;
     for (const activity of ticketActivity) {
       const bucket = dailyCounts.get(
@@ -10349,23 +10414,23 @@ export class SupportStore {
          JOIN categories c ON c.id = tc.category_id
          JOIN tickets t ON t.id = tc.ticket_id
          JOIN clients ticket_client ON ticket_client.id = t.client_id
-         WHERE ticket_client.ignored_at IS NULL${createdRangeSql}
+         WHERE ticket_client.ignored_at IS NULL${createdScopeSql}
          GROUP BY c.id
          ORDER BY count DESC, c.label
          LIMIT 8`,
       )
-      .all(...createdRangeParameters) as Array<CategoryRow & { count: number }>;
+      .all(...createdScopeParameters) as Array<CategoryRow & { count: number }>;
     const topClients = this.database
       .prepare(
         `SELECT c.id AS client_id, c.name AS client_name, COUNT(t.id) AS count
          FROM clients c
          JOIN tickets t ON t.client_id = c.id
-         WHERE c.ignored_at IS NULL${createdRangeSql}
+         WHERE c.ignored_at IS NULL${createdScopeSql}
          GROUP BY c.id
          ORDER BY count DESC, c.name
          LIMIT 8`,
       )
-      .all(...createdRangeParameters) as Array<{
+      .all(...createdScopeParameters) as Array<{
       client_id: string;
       client_name: string;
       count: number;
@@ -10378,16 +10443,26 @@ export class SupportStore {
          FROM tickets t
          JOIN whatsapp_groups conversation ON conversation.id = t.group_id
          JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL${createdRangeSql}
+         WHERE c.ignored_at IS NULL${createdScopeSql}
          GROUP BY conversation.id
          ORDER BY count DESC, conversation.subject, conversation.id
          LIMIT 8`,
       )
-      .all(...createdRangeParameters) as Array<{
+      .all(...createdScopeParameters) as Array<{
       group_id: string;
       group_subject: string;
       count: number;
     }>;
+    const currentOperational = this.getDashboardOperationalSnapshot(
+      period,
+      assigneeId,
+      ticketTotal.count,
+      resolvedTotal.count,
+    );
+    const previousPeriod = period ? previousDashboardPeriod(period) : null;
+    const previousOperational = previousPeriod
+      ? this.getDashboardOperationalSnapshot(previousPeriod, assigneeId)
+      : null;
     return {
       period,
       totals: {
@@ -10402,6 +10477,10 @@ export class SupportStore {
       statusCounts: TICKET_STATUSES.map((status) => ({
         status,
         count: statusMap.get(status) ?? 0,
+      })),
+      priorityCounts: TICKET_PRIORITIES.map((priority) => ({
+        priority,
+        count: priorityMap.get(priority) ?? 0,
       })),
       ticketsByDay,
       topCategories: topCategoryRows.map((row) => ({
@@ -10418,17 +10497,352 @@ export class SupportStore {
         clientName: row.client_name,
         count: row.count,
       })),
+      assigneeMetrics: this.getDashboardAssigneeMetrics(period),
+      operations: currentOperational.operations,
+      aging: currentOperational.aging,
+      comparison: previousPeriod && previousOperational
+        ? {
+            previousPeriod,
+            created: {
+              current: ticketTotal.count,
+              previous: previousOperational.created,
+            },
+            resolved: {
+              current: resolvedTotal.count,
+              previous: previousOperational.resolved,
+            },
+            backlog: {
+              current: currentOperational.operations.backlog,
+              previous: previousOperational.operations.backlog,
+            },
+            resolutionRatePercent: {
+              current: currentOperational.operations.resolutionRatePercent,
+              previous: previousOperational.operations.resolutionRatePercent,
+            },
+            medianResolutionMinutes: {
+              current: currentOperational.operations.medianResolutionMinutes,
+              previous: previousOperational.operations.medianResolutionMinutes,
+            },
+            reopened: {
+              current: currentOperational.operations.reopened,
+              previous: previousOperational.operations.reopened,
+            },
+            unassignedBacklog: {
+              current: currentOperational.operations.unassignedBacklog,
+              previous: previousOperational.operations.unassignedBacklog,
+            },
+          }
+        : null,
       recentTickets: this.listTickets({
         includeArchived: Boolean(period),
         createdFromUtc: period?.fromUtc,
         createdToUtcExclusive: period?.toUtcExclusive,
         order: "created_desc",
+        assigneeId,
         limit: 6,
       }).items,
     };
   }
 
-  getDashboardExportRows(input?: DashboardPeriodInput): DashboardExportRowDto[] {
+  private getDashboardOperationalSnapshot(
+    period: DashboardPeriodDto | null,
+    assigneeId?: string | null,
+    knownCreated?: number,
+    knownResolved?: number,
+  ): {
+    created: number;
+    resolved: number;
+    operations: DashboardOperationalMetricsDto;
+    aging: DashboardAgingBucketDto[];
+  } {
+    const assigneeSql = assigneeId === null
+      ? " AND t.assignee_user_id IS NULL"
+      : assigneeId === undefined
+        ? ""
+        : " AND t.assignee_user_id = ?";
+    const assigneeParameters = assigneeId === undefined || assigneeId === null
+      ? []
+      : [assigneeId];
+    const createdRangeSql = period
+      ? " AND t.created_at >= ? AND t.created_at < ?"
+      : "";
+    const createdRangeParameters = period
+      ? [period.fromUtc, period.toUtcExclusive]
+      : [];
+    const resolutionRangeSql = period
+      ? " AND event.occurred_at >= ? AND event.occurred_at < ?"
+      : "";
+    const resolutionRangeParameters = period
+      ? [period.fromUtc, period.toUtcExclusive]
+      : [];
+    const created = knownCreated ?? (this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM tickets t
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL${createdRangeSql}${assigneeSql}
+    `).get(...createdRangeParameters, ...assigneeParameters) as { count: number }).count;
+    const resolved = knownResolved ?? (this.database.prepare(`
+      SELECT COUNT(DISTINCT event.ticket_id) AS count
+      FROM ticket_events event
+      JOIN tickets t ON t.id = event.ticket_id
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL
+        AND event.event_type IN ('ticket_created', 'status_changed')
+        AND event.to_status = 'resolved'
+        AND (event.from_status IS NULL OR event.from_status != 'archived')
+        ${resolutionRangeSql}${assigneeSql}
+    `).get(...resolutionRangeParameters, ...assigneeParameters) as { count: number }).count;
+
+    const now = new Date().toISOString();
+    const cutoff = period && period.toUtcExclusive < now
+      ? period.toUtcExclusive
+      : now;
+    const scopedBacklog = this.getDashboardBacklogRows(cutoff, assigneeId);
+    const allBacklog = assigneeId === undefined
+      ? scopedBacklog
+      : this.getDashboardBacklogRows(cutoff);
+    const resolutionRows = this.database.prepare(`
+      SELECT event.ticket_id,
+             event.occurred_at AS resolved_at,
+             COALESCE(
+               (
+                 SELECT MAX(previous.occurred_at)
+                 FROM ticket_events previous
+                 WHERE previous.ticket_id = event.ticket_id
+                   AND previous.occurred_at < event.occurred_at
+                   AND previous.to_status NOT IN ('resolved', 'archived')
+               ),
+               t.created_at
+             ) AS started_at
+      FROM ticket_events event
+      JOIN tickets t ON t.id = event.ticket_id
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL
+        AND event.event_type IN ('ticket_created', 'status_changed')
+        AND event.to_status = 'resolved'
+        AND (event.from_status IS NULL OR event.from_status != 'archived')
+        ${resolutionRangeSql}${assigneeSql}
+      ORDER BY event.ticket_id, event.occurred_at DESC, event.id DESC
+    `).all(...resolutionRangeParameters, ...assigneeParameters) as Array<{
+      ticket_id: string;
+      resolved_at: string;
+      started_at: string;
+    }>;
+    const latestResolutionByTicket = new Map<string, number>();
+    for (const row of resolutionRows) {
+      if (latestResolutionByTicket.has(row.ticket_id)) continue;
+      const duration = (
+        new Date(row.resolved_at).getTime() - new Date(row.started_at).getTime()
+      ) / 60_000;
+      if (Number.isFinite(duration) && duration >= 0) {
+        latestResolutionByTicket.set(row.ticket_id, duration);
+      }
+    }
+    const medianResolutionMinutes = median(
+      [...latestResolutionByTicket.values()],
+    );
+    const reopened = (this.database.prepare(`
+      SELECT COUNT(DISTINCT event.ticket_id) AS count
+      FROM ticket_events event
+      JOIN tickets t ON t.id = event.ticket_id
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL
+        AND event.event_type = 'status_changed'
+        AND event.from_status = 'resolved'
+        AND event.to_status NOT IN ('resolved', 'archived')
+        ${resolutionRangeSql}${assigneeSql}
+    `).get(...resolutionRangeParameters, ...assigneeParameters) as { count: number }).count;
+
+    const cutoffTime = new Date(cutoff).getTime();
+    const agingCounts = new Map<DashboardAgingBucketDto["id"], number>([
+      ["under_24h", 0],
+      ["one_to_three_days", 0],
+      ["three_to_seven_days", 0],
+      ["over_seven_days", 0],
+    ]);
+    for (const ticket of scopedBacklog) {
+      const ageHours = Math.max(
+        0,
+        (cutoffTime - new Date(ticket.created_at).getTime()) / 3_600_000,
+      );
+      const bucket = ageHours < 24
+        ? "under_24h"
+        : ageHours < 72
+          ? "one_to_three_days"
+          : ageHours < 168
+            ? "three_to_seven_days"
+            : "over_seven_days";
+      agingCounts.set(bucket, (agingCounts.get(bucket) ?? 0) + 1);
+    }
+
+    return {
+      created,
+      resolved,
+      operations: {
+        resolutionRatePercent: created > 0
+          ? roundMetric((resolved / created) * 100)
+          : null,
+        medianResolutionMinutes: medianResolutionMinutes === null
+          ? null
+          : roundMetric(medianResolutionMinutes),
+        reopened,
+        unassignedBacklog: allBacklog.filter((ticket) => !ticket.assignee_user_id).length,
+        backlog: scopedBacklog.length,
+      },
+      aging: [...agingCounts].map(([id, count]) => ({ id, count })),
+    };
+  }
+
+  private getDashboardBacklogRows(
+    cutoff: string,
+    assigneeId?: string | null,
+  ): Array<{ created_at: string; assignee_user_id: string | null }> {
+    const assigneeSql = assigneeId === null
+      ? " AND t.assignee_user_id IS NULL"
+      : assigneeId === undefined
+        ? ""
+        : " AND t.assignee_user_id = ?";
+    const assigneeParameters = assigneeId === undefined || assigneeId === null
+      ? []
+      : [assigneeId];
+    return this.database.prepare(`
+      WITH ticket_state_at_cutoff AS (
+        SELECT
+          t.created_at,
+          t.assignee_user_id,
+          COALESCE(
+            (
+              SELECT event.to_status
+              FROM ticket_events event
+              WHERE event.ticket_id = t.id
+                AND event.to_status IS NOT NULL
+                AND event.occurred_at < ?
+              ORDER BY event.occurred_at DESC, event.id DESC
+              LIMIT 1
+            ),
+            t.status
+          ) AS effective_status
+        FROM tickets t
+        JOIN clients c ON c.id = t.client_id
+        WHERE c.ignored_at IS NULL
+          AND t.created_at < ?${assigneeSql}
+      )
+      SELECT created_at, assignee_user_id
+      FROM ticket_state_at_cutoff
+      WHERE effective_status NOT IN ('resolved', 'archived')
+    `).all(cutoff, cutoff, ...assigneeParameters) as Array<{
+      created_at: string;
+      assignee_user_id: string | null;
+    }>;
+  }
+
+  private validateDashboardAssignee(assigneeId?: string | null): void {
+    if (assigneeId === undefined || assigneeId === null) return;
+    const user = this.database
+      .prepare("SELECT id FROM local_users WHERE id = ?")
+      .get(assigneeId) as { id: string } | undefined;
+    if (!user) {
+      throw new ValidationError("Responsável selecionado no dashboard não existe", {
+        assigneeId,
+      });
+    }
+  }
+
+  private getDashboardAssigneeMetrics(
+    period: DashboardPeriodDto | null,
+  ): DashboardAssigneeMetricDto[] {
+    const createdRangeSql = period
+      ? " AND t.created_at >= ? AND t.created_at < ?"
+      : "";
+    const createdParameters = period
+      ? [period.fromUtc, period.toUtcExclusive]
+      : [];
+    const resolutionRangeSql = period
+      ? " AND event.occurred_at >= ? AND event.occurred_at < ?"
+      : "";
+    const resolutionParameters = period
+      ? [period.fromUtc, period.toUtcExclusive]
+      : [];
+    const createdRows = this.database.prepare(`
+      SELECT
+        t.assignee_user_id AS assignee_id,
+        COUNT(*) AS created,
+        SUM(CASE WHEN t.status NOT IN ('resolved', 'archived') THEN 1 ELSE 0 END) AS open
+      FROM tickets t
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL${createdRangeSql}
+      GROUP BY t.assignee_user_id
+    `).all(...createdParameters) as Array<{
+      assignee_id: string | null;
+      created: number;
+      open: number;
+    }>;
+    const resolvedRows = this.database.prepare(`
+      SELECT t.assignee_user_id AS assignee_id, COUNT(DISTINCT event.ticket_id) AS resolved
+      FROM ticket_events event
+      JOIN tickets t ON t.id = event.ticket_id
+      JOIN clients c ON c.id = t.client_id
+      WHERE c.ignored_at IS NULL
+        AND event.event_type IN ('ticket_created', 'status_changed')
+        AND event.to_status = 'resolved'
+        AND (event.from_status IS NULL OR event.from_status != 'archived')${resolutionRangeSql}
+      GROUP BY t.assignee_user_id
+    `).all(...resolutionParameters) as Array<{
+      assignee_id: string | null;
+      resolved: number;
+    }>;
+    const keyFor = (id: string | null) => id ?? "__unassigned__";
+    const createdByAssignee = new Map(
+      createdRows.map((row) => [keyFor(row.assignee_id), row]),
+    );
+    const resolvedByAssignee = new Map(
+      resolvedRows.map((row) => [keyFor(row.assignee_id), row.resolved]),
+    );
+    const users = this.database.prepare(`
+      SELECT id, display_name, role, active
+      FROM local_users
+      ORDER BY display_name COLLATE NOCASE, id
+    `).all() as Array<{
+      id: string;
+      display_name: string;
+      role: AuthRole;
+      active: number;
+    }>;
+    const metrics = users.flatMap((user): DashboardAssigneeMetricDto[] => {
+      const created = createdByAssignee.get(user.id);
+      const resolved = resolvedByAssignee.get(user.id) ?? 0;
+      const isActiveSupportUser = Boolean(user.active) && user.role !== "viewer";
+      if (!isActiveSupportUser && !created && resolved === 0) return [];
+      return [{
+        assignee: {
+          id: user.id,
+          displayName: user.display_name,
+          role: user.role,
+          active: Boolean(user.active),
+        },
+        created: created?.created ?? 0,
+        open: created?.open ?? 0,
+        resolved,
+      }];
+    });
+    const unassignedCreated = createdByAssignee.get("__unassigned__");
+    const unassignedResolved = resolvedByAssignee.get("__unassigned__") ?? 0;
+    if (unassignedCreated || unassignedResolved > 0) {
+      metrics.push({
+        assignee: null,
+        created: unassignedCreated?.created ?? 0,
+        open: unassignedCreated?.open ?? 0,
+        resolved: unassignedResolved,
+      });
+    }
+    return metrics;
+  }
+
+  getDashboardExportRows(
+    input?: DashboardPeriodInput,
+    assigneeId?: string | null,
+  ): DashboardExportRowDto[] {
+    this.validateDashboardAssignee(assigneeId);
     const timeZone = this.workspaceTimeZone();
     const period = resolveDashboardPeriod(input, timeZone);
     const periodFilter = period
@@ -10449,7 +10863,12 @@ export class SupportStore {
            )
          )`
       : "";
-    const parameters = period
+    const assigneeFilter = assigneeId === null
+      ? "AND t.assignee_user_id IS NULL"
+      : assigneeId === undefined
+        ? ""
+        : "AND t.assignee_user_id = ?";
+    const periodParameters = period
       ? [
           period.fromUtc,
           period.toUtcExclusive,
@@ -10457,6 +10876,10 @@ export class SupportStore {
           period.toUtcExclusive,
         ]
       : [];
+    const parameters = [
+      ...periodParameters,
+      ...(assigneeId === undefined || assigneeId === null ? [] : [assigneeId]),
+    ];
     const rows = this.database
       .prepare(
         `SELECT
@@ -10468,6 +10891,8 @@ export class SupportStore {
            client.kind AS client_kind,
            conversation.subject AS group_subject,
            store.name AS store_name,
+           assignee.display_name AS assignee_name,
+           assignee.role AS assignee_role,
            t.status,
            t.priority,
            t.needs_review,
@@ -10484,8 +10909,10 @@ export class SupportStore {
          JOIN clients client ON client.id = t.client_id
          JOIN whatsapp_groups conversation ON conversation.id = t.group_id
          LEFT JOIN client_stores store ON store.id = t.affected_store_id
+         LEFT JOIN local_users assignee ON assignee.id = t.assignee_user_id
          WHERE client.ignored_at IS NULL
          ${periodFilter}
+         ${assigneeFilter}
          ORDER BY t.created_at, t.number`,
       )
       .all(...parameters) as Array<{
@@ -10497,6 +10924,8 @@ export class SupportStore {
       client_kind: ClientKind;
       group_subject: string;
       store_name: string | null;
+      assignee_name: string | null;
+      assignee_role: AuthRole | null;
       status: TicketStatus;
       priority: TicketPriority;
       needs_review: number;
@@ -10527,6 +10956,8 @@ export class SupportStore {
       clientKind: row.client_kind,
       groupSubject: row.group_subject,
       affectedStoreName: row.store_name,
+      assigneeName: row.assignee_name,
+      assigneeRole: row.assignee_role,
       status: row.status,
       priority: row.priority,
       needsReview: Boolean(row.needs_review),
