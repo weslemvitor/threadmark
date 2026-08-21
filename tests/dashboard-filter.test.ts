@@ -94,6 +94,6 @@ test("UI consulta e exporta exatamente o período e responsável selecionados", 
   assert.match(view, /aria-live="polite"/);
   assert.match(view, /lg:grid-cols-\[minmax\(210px,1fr\)_auto\]/);
   assert.match(view, /flex min-w-0 flex-wrap items-end gap-2/);
-  assert.match(view, /wrapperClassName="w-full sm:w-fit"/);
+  assert.match(view, /SelectTrigger[^>]*className="h-9 w-full min-w-(?:40|44) text-sm sm:w-fit"/);
   assert.doesNotMatch(css, /\.dashboard-(?:period|custom|export)-/);
 });

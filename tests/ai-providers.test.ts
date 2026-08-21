@@ -692,6 +692,54 @@ test("agente remoto só envia imagens locais dentro da raiz confiável", async (
   }
 });
 
+test("investigação remota envia imagem do operador somente após consentimento explícito", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-provider-consent-"));
+  const attachmentsRoot = path.join(temporary, "attachments");
+  const trusted = path.join(attachmentsRoot, "operator.png");
+  await mkdir(attachmentsRoot, { recursive: true });
+  await writeFile(trusted, "operator-image");
+  const requests: StructuredJsonRequest[] = [];
+  const client: StructuredJsonClient = {
+    async generateJson(request) {
+      requests.push(request);
+      return validTurn;
+    },
+  };
+  const agent = new StructuredSupportAgent({
+    providerId: "openai",
+    model: "vision-model",
+    attachmentsRoot,
+    client,
+  });
+
+  try {
+    const input = threadInput();
+    input.images = [{
+      id: "operator-image-1",
+      messageId: "operator-1",
+      fileName: "operator.png",
+      mimeType: "image/png",
+      localPath: trusted,
+      sizeBytes: 14,
+    }];
+    input.imageAnalysisApproved = false;
+    await agent.investigateThread(input);
+    assert.equal(requests[0]?.images.length, 0);
+
+    input.imageAnalysisApproved = true;
+    await agent.investigateThread(input);
+    assert.equal(requests[1]?.images.length, 1);
+    assert.match(requests[1]?.prompt ?? "", /operator\.png/);
+    assert.doesNotMatch(requests[1]?.prompt ?? "", new RegExp(temporary));
+    assert.equal(
+      Buffer.from(requests[1]!.images[0]!.dataBase64, "base64").toString(),
+      "operator-image",
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("triagem remota mantém cobertura exata e ordem das candidatas", async () => {
   const client: StructuredJsonClient = {
     async generateJson() {

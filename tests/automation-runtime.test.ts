@@ -8,6 +8,7 @@ import { AutomationApiService } from "../server/automation-runtime/api-service.j
 import { AutomationRuntime } from "../server/automation-runtime/index.js";
 import { createDatabase } from "../server/db/index.js";
 import { SupportStore } from "../server/domain/index.js";
+import { ConnectedAppService } from "../server/integrations/index.js";
 import { createTestApiApp } from "../server/index.js";
 import { LocalSecretVault } from "../server/runtime/secret-vault.js";
 
@@ -387,11 +388,13 @@ test("API persiste rascunho incompleto e nunca devolve segredo de app", async ()
         type: "slack_webhook",
         name: "Slack do suporte",
         enabled: true,
+        aiEnabled: true,
         endpoint: "https://hooks.slack.com/services/example/example/example",
       },
       "Teste",
     );
     assert.equal(app.secretConfigured, true);
+    assert.equal(app.aiEnabled, true);
     assert.equal("endpoint" in app, false);
     assert.doesNotMatch(JSON.stringify(current.api.listConnectedApps()), /services\/example/);
 
@@ -406,9 +409,125 @@ test("API persiste rascunho incompleto e nunca devolve segredo de app", async ()
       "Teste",
     );
     assert.equal(updated.status, "disabled");
+    assert.equal(updated.aiEnabled, true, "atualização antiga preserva a autorização da IA");
     assert.equal(updated.secretConfigured, true);
   } finally {
     await current.close();
+  }
+});
+
+test("automação executa somente uma ferramenta MCP descoberta e autorizada", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "threadmark-mcp-automation-"));
+  const database = createDatabase(":memory:");
+  const support = new SupportStore(database);
+  const vault = new LocalSecretVault(directory);
+  const methods: string[] = [];
+  const connectedApps = new ConnectedAppService(
+    database,
+    vault,
+    async (_input, init) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      methods.push(request.method ?? "");
+      if (request.id === undefined) return new Response(null, { status: 202 });
+      const result = request.method === "initialize"
+        ? {
+            protocolVersion: "2025-11-25",
+            capabilities: { tools: {} },
+            serverInfo: { name: "mock", version: "1.0.0" },
+          }
+        : request.method === "tools/list"
+          ? {
+              tools: [{
+                name: "create_issue",
+                title: "Criar issue",
+                description: "Cria uma issue a partir do ticket.",
+                inputSchema: {
+                  type: "object",
+                  properties: { title: { type: "string" } },
+                  required: ["title"],
+                },
+                annotations: { readOnlyHint: false, destructiveHint: false },
+              }],
+            }
+          : request.method === "tools/call"
+            ? { structuredContent: { id: "ISSUE-101" }, content: [] }
+            : {};
+      return Response.json({ jsonrpc: "2.0", id: request.id, result }, {
+        headers: { "mcp-session-id": "automation-test" },
+      });
+    },
+    async () => [{ address: "93.184.216.34" }],
+  );
+  const runtime = new AutomationRuntime(database, support, vault, {
+    pollIntervalMs: 5,
+    connectedApps,
+  });
+  const api = new AutomationApiService(database, runtime);
+
+  try {
+    const app = await connectedApps.create({
+      type: "mcp_remote",
+      name: "Projetos MCP",
+      enabled: true,
+      aiEnabled: true,
+      endpoint: "https://mcp.example.com/mcp",
+    }, "Teste");
+    await connectedApps.validateConnection(app.id);
+    await connectedApps.update(app.id, {
+      type: "mcp_remote",
+      name: "Projetos MCP",
+      enabled: true,
+      aiEnabled: true,
+      endpoint: "",
+      mcpTools: [{
+        name: "create_issue",
+        aiEnabled: true,
+        automationEnabled: true,
+        confirmationRequired: false,
+      }],
+    }, "Teste");
+    assert.equal(runtime.pumpTicketEvents(), 0);
+    const workflow = api.createAutomation({ name: "Criar issue externa" }, "Teste");
+    api.updateAutomation(workflow.id, {
+      name: workflow.name,
+      description: null,
+      definition: {
+        nodes: [{
+          id: "created",
+          type: "trigger",
+          position: { x: 0, y: 0 },
+          config: { eventType: "ticket_created" },
+        }, {
+          id: "external",
+          type: "app_action",
+          position: { x: 0, y: 180 },
+          config: {
+            appId: "mcp-remote",
+            connectionId: app.id,
+            actionId: "create_issue",
+            input: { title: "Ticket {{ticket.number}} · {{ticket.title}}" },
+          },
+        }],
+        edges: [{ id: "created-external", source: "created", target: "external" }],
+      },
+    }, "Teste");
+    api.activateAutomation(workflow.id, "Teste");
+    createTicket(support, "2026-08-20T16:00:00.000Z", "mcp-automation-message");
+    runtime.pumpTicketEvents();
+    await runtime.engine.runUntilIdle();
+
+    assert.equal(methods.includes("tools/call"), true);
+    assert.equal(
+      runtime.workflows.listRuns({ workflowId: workflow.id })[0]?.status,
+      "completed",
+    );
+  } finally {
+    await runtime.stop();
+    database.close();
+    await rm(directory, { force: true, recursive: true });
   }
 });
 

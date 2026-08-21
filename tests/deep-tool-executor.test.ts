@@ -5,12 +5,537 @@ import path from "node:path";
 import test from "node:test";
 
 import { createDatabase } from "../server/db/index.js";
+import { SupportStore } from "../server/domain/index.js";
+import { ConnectedAppService } from "../server/integrations/index.js";
 import { LocalSecretVault } from "../server/runtime/secret-vault.js";
 import {
   DeepToolExecutor,
   type PostgresQueryRequest,
 } from "../server/tools/deep-tool-executor.js";
 import { LocalToolService } from "../server/tools/local-tool-service.js";
+
+test("app conectado autorizado fica disponível ao Threadmark AI sem expor o segredo", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-connected-app-tool-"));
+  const database = createDatabase(":memory:");
+  const vault = new LocalSecretVault(path.join(temporary, "secrets"));
+  const localTools = new LocalToolService(database, vault);
+  const connectedApps = new ConnectedAppService(database, vault);
+  const app = await connectedApps.create({
+    type: "intercom",
+    name: "Intercom",
+    description: "Cria rascunhos de documentação.",
+    enabled: true,
+    aiEnabled: true,
+    endpoint: "https://api.intercom.io/",
+    secret: "intercom-test-token",
+  }, "Teste");
+  let observedAuthorization = "";
+  let observedBody = "";
+  const executor = new DeepToolExecutor(localTools, {
+    connectedApps,
+    integrationVault: vault,
+    integrationLookup: async () => [{ address: "93.184.216.34" }],
+    fetchImpl: async (_input, init) => {
+      observedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
+      observedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ id: "article-42", state: "draft" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  try {
+    const descriptor = executor.descriptors().find((item) => item.id === `connected-app:${app.id}`);
+    assert.ok(descriptor);
+    assert.equal(descriptor.type, "connected_app");
+    assert.deepEqual(descriptor.operations.map((item) => item.name), [
+      "search_conversations",
+      "get_conversation",
+      "get_current_admin",
+      "list_collections",
+      "create_article",
+    ]);
+    assert.doesNotMatch(JSON.stringify(descriptor), /intercom-test-token/);
+
+    const result = await executor.execute({
+      requestId: "intercom-create-1",
+      toolId: descriptor.id,
+      operation: "create_article",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: "operator-message-1",
+        title: "Como configurar",
+        description: "Orientação revisável",
+        body: "<p>Passo a passo</p>",
+        authorId: "admin-42",
+        collectionId: "collection-12",
+      }),
+      purpose: "Criar o rascunho solicitado explicitamente pelo operador.",
+    });
+
+    assert.equal(result.status, "success");
+    assert.match(result.content, /article-42/);
+    assert.equal(observedAuthorization, "Bearer intercom-test-token");
+    assert.match(observedBody, /Como configurar/);
+    assert.deepEqual(JSON.parse(observedBody), {
+      title: "Como configurar",
+      description: "Orientação revisável",
+      body: "<p>Passo a passo</p>",
+      author_id: "admin-42",
+      state: "draft",
+      parent_id: "collection-12",
+      parent_type: "collection",
+    });
+    assert.doesNotMatch(JSON.stringify(result), /intercom-test-token/);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem expor o token", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-mcp-ai-tool-"));
+  const database = createDatabase(":memory:");
+  const vault = new LocalSecretVault(path.join(temporary, "secrets"));
+  const localTools = new LocalToolService(database, vault);
+  const connectedApps = new ConnectedAppService(
+    database,
+    vault,
+    async (_input, init) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      if (request.id === undefined) return new Response(null, { status: 202 });
+      const result = request.method === "initialize"
+        ? {
+            protocolVersion: "2025-11-25",
+            capabilities: { tools: {} },
+            serverInfo: { name: "mock", version: "1.0.0" },
+          }
+        : request.method === "tools/list"
+          ? {
+              tools: [{
+                name: "search_projects",
+                title: "Buscar projetos",
+                description: "Lista projetos por nome.",
+                inputSchema: {
+                  type: "object",
+                  properties: { query: { type: "string" } },
+                },
+                annotations: { readOnlyHint: true, destructiveHint: false },
+              }, {
+                name: "delete_project",
+                title: "Excluir projeto",
+                description: "Exclui um projeto.",
+                inputSchema: { type: "object" },
+                annotations: { readOnlyHint: false, destructiveHint: true },
+              }],
+            }
+          : request.method === "tools/call"
+            ? { structuredContent: { projects: [{ id: "project-1", name: "Suporte" }] }, content: [] }
+            : {};
+      return Response.json({ jsonrpc: "2.0", id: request.id, result }, {
+        headers: { "mcp-session-id": "ai-test" },
+      });
+    },
+    async () => [{ address: "93.184.216.34" }],
+  );
+
+  try {
+    const created = await connectedApps.create({
+      type: "mcp_remote",
+      name: "Projetos MCP",
+      enabled: true,
+      aiEnabled: true,
+      endpoint: "https://mcp.example.com/mcp",
+      secret: "ai-mcp-secret",
+    }, "Teste");
+    await connectedApps.validateConnection(created.id);
+    await connectedApps.update(created.id, {
+      type: "mcp_remote",
+      name: "Projetos MCP",
+      enabled: true,
+      aiEnabled: true,
+      endpoint: "",
+      mcpTools: [{
+        name: "search_projects",
+        aiEnabled: true,
+        automationEnabled: false,
+        confirmationRequired: false,
+      }, {
+        name: "delete_project",
+        aiEnabled: false,
+        automationEnabled: false,
+        confirmationRequired: true,
+      }],
+    }, "Teste");
+    const executor = new DeepToolExecutor(localTools, {
+      connectedApps,
+      integrationVault: vault,
+    });
+    const descriptor = executor.descriptors().find(
+      (candidate) => candidate.id === `connected-app:${created.id}`,
+    );
+    assert.ok(descriptor);
+    assert.deepEqual(descriptor.operations.map((operation) => operation.name), ["search_projects"]);
+    assert.doesNotMatch(JSON.stringify(descriptor), /ai-mcp-secret/);
+
+    const result = await executor.execute({
+      requestId: "mcp-search-1",
+      toolId: descriptor.id,
+      operation: "search_projects",
+      argumentsJson: JSON.stringify({ input: { query: "Suporte" } }),
+      purpose: "Localizar o projeto solicitado.",
+    });
+    assert.equal(result.status, "success");
+    assert.match(result.content, /project-1/);
+    assert.doesNotMatch(JSON.stringify(result), /ai-mcp-secret/);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-context-tool-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "context-account",
+    phoneNumber: "+5548999999000",
+    displayName: "Comercial",
+  });
+  const client = store.upsertClient({
+    id: "context-client",
+    name: "Loja Contexto",
+    slug: "loja-contexto",
+    kind: "ecommerce",
+  });
+  const group = store.upsertGroup({
+    id: "context-group",
+    accountId: account.id,
+    clientId: client.id,
+    externalJid: "context@g.us",
+    subject: "Atendimento Métricas",
+  });
+  const participant = store.upsertParticipant({
+    id: "context-participant",
+    externalJid: "context-user@s.whatsapp.net",
+    displayName: "Cliente Contexto",
+  });
+  store.addGroupParticipant(group.id, participant.id);
+  const message = store.upsertMessage({
+    id: "context-message",
+    externalId: "context-message-external",
+    groupId: group.id,
+    senderId: participant.id,
+    occurredAt: "2026-08-20T12:00:00.000Z",
+    text: "Como funciona o ROAS Global no dashboard?",
+    messageType: "text",
+    triageKind: "demand",
+  });
+  const ticket = store.createTicket({
+    id: "context-ticket",
+    groupId: group.id,
+    sourceMessageId: message.id,
+    title: "Dúvida sobre ROAS Global",
+    summary: "Cliente pediu a definição da métrica.",
+  });
+  store.recordResolution({
+    ticketId: ticket.id,
+    summary: "Explicamos que a métrica consolida o retorno dos canais configurados.",
+    validatedBy: "Operador",
+  });
+  const service = new LocalToolService(
+    database,
+    new LocalSecretVault(path.join(temporary, "secrets")),
+  );
+  const executor = new DeepToolExecutor(service, { database });
+
+  try {
+    const descriptor = executor.descriptors()[0];
+    assert.equal(descriptor?.id, "threadmark-context");
+    assert.deepEqual(descriptor?.operations.map((item) => item.name), [
+      "search_support_context",
+      "prepare_ticket_draft",
+      "create_ticket_from_draft",
+    ]);
+
+    const result = await executor.execute({
+      requestId: "threadmark-search-1",
+      toolId: "threadmark-context",
+      operation: "search_support_context",
+      argumentsJson: JSON.stringify({ query: "ROAS Global", scope: "all", limit: 10 }),
+      purpose: "Localizar o histórico já resolvido.",
+    });
+    assert.equal(result.status, "success");
+    assert.match(result.content, /Dúvida sobre ROAS Global/);
+    assert.match(result.content, /consolida o retorno/);
+    assert.match(result.content, /Como funciona o ROAS Global/);
+    assert.match(result.reference ?? "", /threadmark-search-1$/);
+
+    const unsupported = await executor.execute({
+      requestId: "threadmark-search-2",
+      toolId: "threadmark-context",
+      operation: "query_readonly",
+      argumentsJson: JSON.stringify({ query: "DELETE FROM tickets" }),
+      purpose: "Operação não permitida.",
+    });
+    assert.equal(unsupported.status, "error");
+    assert.match(unsupported.summary, /não autorizada/i);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Intercom autorizado permite somente leituras nativas limitadas sem expor o token", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-intercom-read-"));
+  const database = createDatabase(":memory:");
+  const vault = new LocalSecretVault(path.join(temporary, "secrets"));
+  const localTools = new LocalToolService(database, vault);
+  const connectedApps = new ConnectedAppService(database, vault);
+  const app = await connectedApps.create({
+    type: "intercom",
+    name: "Intercom",
+    enabled: true,
+    aiEnabled: true,
+    endpoint: "https://api.intercom.io/",
+    secret: "intercom-read-token",
+  }, "Teste");
+  const requests: Array<{ url: URL; init: RequestInit }> = [];
+  const executor = new DeepToolExecutor(localTools, {
+    connectedApps,
+    integrationVault: vault,
+    fetchImpl: (async (input, init) => {
+      const url = new URL(String(input));
+      requests.push({ url, init: init ?? {} });
+      if (url.pathname === "/conversations/search") {
+        return new Response(JSON.stringify({
+          total_count: 1,
+          conversations: [{
+            id: "987",
+            title: "Ajuda com campanhas",
+            state: "open",
+            priority: "high",
+            created_at: 1_776_662_400,
+            updated_at: 1_776_666_000,
+            source: {
+              subject: "Campanhas",
+              body: "<p>Não consigo criar uma campanha.</p>",
+              author: { id: "contact-1", name: "Bruno Alves", email: "bruno@example.test" },
+            },
+          }],
+        }), { status: 200 });
+      }
+      if (url.pathname === "/me") {
+        return Response.json({
+          type: "admin",
+          id: "admin-42",
+          name: "Autor Teste",
+          email: "autor@example.test",
+        });
+      }
+      if (url.pathname === "/help_center/collections") {
+        return Response.json({
+          type: "list",
+          total_count: 1,
+          data: [{ id: "collection-12", name: "Métricas", description: "Ajuda de métricas" }],
+        });
+      }
+      return new Response(JSON.stringify({
+        id: "987",
+        state: "open",
+        source: {
+          id: "source-1",
+          body: "Mensagem inicial",
+          author: { id: "contact-1", type: "user", name: "Bruno Alves" },
+        },
+        conversation_parts: {
+          conversation_parts: [{
+            id: "part-1",
+            part_type: "comment",
+            created_at: 1_776_666_000,
+            body: "<p>Preciso liberar o acesso.</p>",
+            author: { id: "contact-1", type: "user", name: "Bruno Alves" },
+          }],
+        },
+      }), { status: 200 });
+    }) as typeof globalThis.fetch,
+  });
+
+  try {
+    const toolId = `connected-app:${app.id}`;
+    const search = await executor.execute({
+      requestId: "intercom-search-1",
+      toolId,
+      operation: "search_conversations",
+      argumentsJson: JSON.stringify({ query: "Bruno Alves", limit: 5 }),
+      purpose: "Localizar a conversa recente do cliente.",
+    });
+    assert.equal(search.status, "success");
+    assert.match(search.content, /Bruno Alves/);
+    assert.match(search.content, /Não consigo criar uma campanha/);
+
+    const conversation = await executor.execute({
+      requestId: "intercom-get-1",
+      toolId,
+      operation: "get_conversation",
+      argumentsJson: JSON.stringify({ conversationId: "987" }),
+      purpose: "Ler o contexto integral da conversa escolhida.",
+    });
+    assert.equal(conversation.status, "success");
+    assert.match(conversation.content, /Preciso liberar o acesso/);
+    const admins = await executor.execute({
+      requestId: "intercom-admins-1",
+      toolId,
+      operation: "get_current_admin",
+      argumentsJson: "{}",
+      purpose: "Descobrir um authorId válido.",
+    });
+    assert.equal(admins.status, "success");
+    assert.match(admins.content, /admin-42/);
+    const collections = await executor.execute({
+      requestId: "intercom-collections-1",
+      toolId,
+      operation: "list_collections",
+      argumentsJson: JSON.stringify({ limit: 50 }),
+      purpose: "Escolher a coleção de destino.",
+    });
+    assert.equal(collections.status, "success");
+    assert.match(collections.content, /collection-12/);
+    assert.equal(requests[0]?.url.pathname, "/conversations/search");
+    assert.equal(requests[0]?.init.method, "POST");
+    assert.equal(requests[1]?.url.pathname, "/conversations/987");
+    assert.equal(requests[1]?.url.searchParams.get("display_as"), "plaintext");
+    assert.equal(requests[2]?.url.pathname, "/me");
+    assert.equal(requests[3]?.url.pathname, "/help_center/collections");
+    assert.equal(new Headers(requests[0]?.init.headers).get("authorization"), "Bearer intercom-read-token");
+    assert.doesNotMatch(JSON.stringify(search), /intercom-read-token/);
+    assert.doesNotMatch(JSON.stringify(conversation), /intercom-read-token/);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Threadmark AI prepara prévia e cria ticket idempotente somente após confirmação posterior", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-ticket-draft-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "ai-ticket-account",
+    phoneNumber: "+5548999999111",
+    displayName: "Comercial",
+  });
+  const client = store.upsertClient({
+    id: "ai-ticket-client",
+    name: "Cliente Intercom",
+    slug: "cliente-intercom",
+    kind: "ecommerce",
+  });
+  const group = store.upsertGroup({
+    id: "ai-ticket-group",
+    accountId: account.id,
+    clientId: client.id,
+    externalJid: "ai-ticket@g.us",
+    subject: "Cliente Intercom & Suporte",
+  });
+  const thread = store.createThreadmarkAiThread({}, "Weslem");
+  const withRequest = store.addInvestigationThreadMessage(thread.id, {
+    body: "Transforme a conversa 987 do Intercom em um ticket do Threadmark.",
+  });
+  const requestMessage = withRequest.messages.find((message) => message.role === "operator");
+  assert.ok(requestMessage);
+  const executor = new DeepToolExecutor(
+    new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
+    { database, supportStore: store },
+  );
+
+  try {
+    const draft = await executor.execute({
+      requestId: "prepare-ticket-1",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: requestMessage.id,
+        groupId: group.id,
+        title: "Acesso para criar campanhas",
+        summary: "Bruno informou no Intercom que não consegue criar campanhas e pediu liberação de acesso.",
+        priority: "high",
+        externalSource: { type: "intercom_conversation", id: "987" },
+      }),
+      purpose: "Preparar a prévia solicitada sem criar o ticket.",
+    });
+    assert.equal(draft.status, "success");
+    assert.match(draft.summary, /nenhum ticket foi criado/i);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM tickets").get() as { total: number }).total, 0);
+    const draftId = (JSON.parse(draft.content) as { draftId: string }).draftId;
+
+    database.prepare(
+      `UPDATE investigation_thread_jobs
+       SET state = 'completed', finished_at = requested_at, result_json = '{}'
+       WHERE thread_id = ?`,
+    ).run(thread.id);
+    const withConfirmation = store.addInvestigationThreadMessage(thread.id, {
+      body: "Pode criar esse ticket exatamente como está na prévia.",
+    });
+    const confirmation = withConfirmation.messages
+      .filter((message) => message.role === "operator")
+      .at(-1);
+    assert.ok(confirmation);
+
+    const created = await executor.execute({
+      requestId: "create-ticket-1",
+      toolId: "threadmark-context",
+      operation: "create_ticket_from_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId,
+      }),
+      purpose: "Criar o ticket confirmado pelo operador.",
+    });
+    assert.equal(created.status, "success");
+    assert.match(created.summary, /Ticket #1 criado/);
+    const ticket = store.getTicketDetail("threadmark-ai-ticket:" + draftId);
+    assert.equal(ticket.title, "Acesso para criar campanhas");
+    assert.equal(ticket.priority, "high");
+    assert.equal(ticket.group.id, group.id);
+    const persistedDraft = database.prepare(
+      `SELECT state, external_source_type, external_source_id, created_ticket_id
+       FROM threadmark_ai_ticket_drafts WHERE id = ?`,
+    ).get(draftId) as {
+      state: string;
+      external_source_type: string;
+      external_source_id: string;
+      created_ticket_id: string;
+    };
+    assert.deepEqual(persistedDraft, {
+      state: "created",
+      external_source_type: "intercom_conversation",
+      external_source_id: "987",
+      created_ticket_id: ticket.id,
+    });
+
+    const replay = await executor.execute({
+      requestId: "create-ticket-2",
+      toolId: "threadmark-context",
+      operation: "create_ticket_from_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId,
+      }),
+      purpose: "Repetição idempotente da mesma confirmação.",
+    });
+    assert.equal(replay.status, "success");
+    assert.match(replay.summary, /já havia sido criado/i);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM tickets").get() as { total: number }).total, 1);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
 
 test("executor profundo lê somente dentro da raiz explicitamente autorizada", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-deep-tool-"));
@@ -348,6 +873,57 @@ test("ClickHouse recebe readonly=2 e nunca expõe a credencial no resultado", as
     });
     assert.equal(externalFunction.status, "error");
     assert.match(externalFunction.summary, /table function externa/i);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("CloudWatch limita uma página sem combinar flags incompatíveis da AWS CLI", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-cloudwatch-tool-"));
+  const database = createDatabase(":memory:");
+  const service = new LocalToolService(
+    database,
+    new LocalSecretVault(path.join(temporary, "secrets")),
+  );
+  const logGroup = "/aws/lambda/adstart-sls-prod-gexecuteProcessWhatsappWebhook";
+  const tool = await service.create({
+    type: "aws_cloudwatch",
+    name: "WhatsApp inbound readonly",
+    config: {
+      region: "eu-central-1",
+      authMode: "profile",
+      profile: "default",
+      logGroupPrefixes: [logGroup],
+    },
+    allowedOperations: ["query_logs"],
+  }, "test");
+  const commandArguments: string[][] = [];
+  const executor = new DeepToolExecutor(service, {
+    async commandRunner(request) {
+      commandArguments.push(request.args);
+      return "{}";
+    },
+  });
+
+  try {
+    const connection = await executor.test(tool.id);
+    assert.equal(connection.ok, true);
+
+    const query = await executor.execute({
+      requestId: "aws-logs-1",
+      toolId: tool.id,
+      operation: "query_logs",
+      argumentsJson: JSON.stringify({ logGroup, limit: 25 }),
+      purpose: "Consultar erros de recebimento do WhatsApp.",
+    });
+    assert.equal(query.status, "success");
+    assert.equal(commandArguments.length, 2);
+    for (const args of commandArguments) {
+      assert.ok(args.includes("--limit"));
+      assert.ok(args.includes("--no-paginate"));
+      assert.ok(!args.includes("--max-items"));
+    }
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });

@@ -15,7 +15,7 @@ test("configurações expõem uma tela dedicada de ferramentas com fronteira pro
   assert.match(settings, /id: "tools", label: "Ferramentas"/);
   assert.match(settings, /<ToolsSettingsSection/);
   assert.match(tools, /A triagem nunca recebe estas ferramentas/);
-  assert.match(tools, /Somente a sala de investigação pode usar/);
+  assert.match(tools, /Somente o Threadmark AI pode usar/);
   assert.match(tools, /Nova ferramenta/);
   assert.match(tools, /Editar/);
   assert.match(tools, /Testar/);

@@ -245,7 +245,7 @@ test("API gerencia tools locais sem retornar segredos e exclusão remove o cofre
     assert.equal(service.listEnabledForDeep().length, 0);
     await assert.rejects(
       service.getSecretConfig(created.id),
-      /não está ativa para investigação aprofundada/,
+      /não está ativa para o Threadmark AI/,
     );
 
     const deleted = await app.request(`/api/tools/${created.id}`, {

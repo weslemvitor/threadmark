@@ -90,8 +90,56 @@ test("controles interativos passam exclusivamente pelos primitives Shadcn", asyn
   assert.deepEqual(
     violations,
     [],
-    "Use Button, Input, Select, NativeSelect ou Textarea de app/components/ui",
+    "Use Button, Input, Select ou Textarea de app/components/ui",
   );
+});
+
+test("features não reintroduzem o seletor nativo legado", async () => {
+  const files = await tsxFiles(new URL("../app/features/", import.meta.url));
+  const violations: string[] = [];
+
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    if (/NativeSelect|components\/ui\/native-select/.test(source)) {
+      violations.push(file.pathname);
+    }
+  }
+
+  assert.deepEqual(violations, [], "Use Select ou Combobox do Shadcn");
+});
+
+test("cadastro do Intercom usa formulário Shadcn sem valores de exemplo persistidos", async () => {
+  const source = await readFile(
+    new URL("../app/features/automations/components/connected-apps-panel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /<SelectItem value="intercom">Intercom<\/SelectItem>/);
+  assert.match(source, /Access token da API do Intercom/);
+  assert.match(source, /Região do workspace/);
+  assert.match(source, /Leitura de conversas, do autor associado ao token e de coleções/);
+  assert.match(source, /type === "intercom" \? INTERCOM_REGIONS\[0\]\.value : ""/);
+  assert.doesNotMatch(source, /name: type === "slack_webhook"/);
+  assert.doesNotMatch(source, /Slack do suporte/);
+  assert.doesNotMatch(source, /Minha API/);
+});
+
+test("combobox compartilhado usa Popover Shadcn e semântica acessível de lista", async () => {
+  const [combobox, popover] = await Promise.all([
+    readFile(new URL("../app/components/ui/combobox.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ui/popover.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(combobox, /from "@\/app\/components\/ui\/popover"/);
+  assert.match(combobox, /role="combobox"/);
+  assert.match(combobox, /role="listbox"/);
+  assert.match(combobox, /role="option"/);
+  assert.match(combobox, /aria-activedescendant/);
+  assert.match(combobox, /max-h-72 overflow-y-auto/);
+  assert.match(combobox, /modal/);
+  assert.match(combobox, /listbox\.scrollTop \+= event\.deltaY/);
+  assert.match(popover, /PopoverPrimitive\.Portal/);
+  assert.match(popover, /z-110/);
 });
 
 test("botões sem estilo também removem a dimensão padrão do primitive", async () => {
@@ -222,25 +270,25 @@ test("contexto do ticket ocupa a página sem recriar uma listagem lateral", asyn
   assert.match(categories, /grid-cols-\[68px_minmax\(0,1fr\)\]/);
 });
 
-test("superfícies densas preservam a investigação e os gráficos responsivos", async () => {
-  const [room, charts] = await Promise.all([
-    readFile(new URL("../app/features/tickets/components/investigation-room.tsx", import.meta.url), "utf8"),
+test("Threadmark AI abre compacto, expande sem bloquear a tela e preserva gráficos responsivos", async () => {
+  const [assistant, charts] = await Promise.all([
+    readFile(new URL("../app/features/threadmark-ai/threadmark-ai.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/features/dashboard/components/dashboard-charts.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(room, /sm:max-w-\[calc\(100vw-2rem\)\]/);
-  assert.match(room, /grid-rows-\[auto_auto_minmax\(0,1fr\)\]/);
+  assert.match(assistant, /sm:w-\[400px\]/);
+  assert.match(assistant, /sm:w-\[min\(920px,calc\(100vw-2\.5rem\)\)\]/);
+  assert.match(assistant, /aria-label=\{expanded \? "Recolher Threadmark AI" : "Expandir Threadmark AI"\}/);
+  assert.match(assistant, /aria-modal="false"/);
+  assert.doesNotMatch(assistant, /SheetContent|from "@\/app\/components\/ui\/sheet"/);
+  assert.match(assistant, /min-h-0 flex-1/);
   assert.match(charts, /const \[activeIndex, setActiveIndex\] = useState/);
   assert.match(charts, /activeItem\?\.value \?\? total/);
 });
 
 test("primitives não impõem layout legado nem deixam menus atrás de drawers", async () => {
-  const [button, nativeSelect, select, dropdownMenu, nodeConfigSheet, css] = await Promise.all([
+  const [button, select, dropdownMenu, nodeConfigSheet, css] = await Promise.all([
     readFile(new URL("../app/components/ui/button.tsx", import.meta.url), "utf8"),
-    readFile(
-      new URL("../app/components/ui/native-select.tsx", import.meta.url),
-      "utf8",
-    ),
     readFile(new URL("../app/components/ui/select.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/ui/dropdown-menu.tsx", import.meta.url), "utf8"),
     readFile(
@@ -254,8 +302,6 @@ test("primitives não impõem layout legado nem deixam menus atrás de drawers",
   assert.match(button, /variant = "default"/);
   assert.match(button, /size = "default"/);
   assert.match(button, /unstyled: ""/);
-  assert.match(nativeSelect, /<ChevronDownIcon/);
-  assert.match(nativeSelect, /className=\{cn\([\s\S]*className/);
   assert.match(select, /Select as SelectPrimitive/);
   assert.match(select, /data-slot="select-trigger"/);
   assert.match(select, /data-slot="select-content"/);

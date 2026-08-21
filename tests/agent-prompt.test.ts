@@ -224,6 +224,15 @@ test("prompt aprofundado encadeia ferramentas e mantém um mapa de trabalho dur�
   assert.match(prompt, /somente leitura/i);
   assert.match(prompt, /respostas enviadas sao fatos historicos, nunca templates/i);
   assert.match(prompt, /suggestedResponse=null/i);
+  assert.match(prompt, /prepare_ticket_draft/i);
+  assert.match(prompt, /create_ticket_from_draft/i);
+  assert.match(prompt, /nunca crie o ticket no mesmo turno/i);
+  assert.match(prompt, /get_automation_capabilities/i);
+  assert.match(prompt, /prepare_automation_draft/i);
+  assert.match(prompt, /apply_automation_draft/i);
+  assert.match(prompt, /Uma criacao aplicada nasce em rascunho/i);
+  assert.match(prompt, /Ativar, pausar ou excluir uma automacao e uma decisao separada/i);
+  assert.match(prompt, /dry-run valida o fluxo sem executar acoes/i);
   assert.match(prompt, /REFERENCIAS_AUDITAVEIS_PERMITIDAS/);
   assert.match(prompt, /message-allowed-1/);
   assert.match(prompt, /Nunca use nome, telefone, externalId/i);
@@ -285,6 +294,94 @@ test("prompt aprofundado mantém instruções estáveis antes dos exemplos e do 
   assert.match(prompt, /Exemplo B: resultado insuficiente/i);
   assert.match(prompt, /Exemplo C: conclusao sustentada/i);
   assert.match(prompt, /Nao copie seus placeholders/i);
+});
+
+test("prompt aprofundado não oferece leitura de skill como evidência auditável", () => {
+  const prompt = buildInvestigationThreadPrompt({
+    threadId: "thread-skill-reference",
+    currentOperatorMessageId: "operator-skill-reference",
+    durableSummary: "Validar referências técnicas.",
+    recentMessages: [],
+    ticket: {
+      ticketId: "ticket-skill-reference",
+      accountName: "Grupo",
+      accountType: "unknown",
+      groupName: "Grupo",
+      knownEcommerces: [],
+      conversationState: {
+        lastExternalMessageAt: null,
+        lastSentResponseAt: null,
+        unansweredExternalMessageIds: [],
+        hasUnansweredExternalMessages: false,
+      },
+      messages: [],
+      sentResponses: [],
+      openTickets: [],
+      resolvedPrecedents: [],
+    },
+    automaticInvestigation: null,
+    availableTools: [
+      {
+        id: "skill-tool",
+        name: "Skill · Adstart Debugger",
+        type: "debugger_skill",
+        description: null,
+        scope: "readonly",
+        operations: [{
+          name: "read_skill",
+          description: "Lê a metodologia.",
+          argumentsExample: "{}",
+        }],
+      },
+      {
+        id: "aws-tool",
+        name: "AWS · WhatsApp Inbound",
+        type: "aws_cloudwatch",
+        description: null,
+        scope: "readonly",
+        operations: [{
+          name: "query_logs",
+          description: "Consulta logs.",
+          argumentsExample: "{}",
+        }],
+      },
+    ],
+    toolResults: [
+      {
+        requestId: "skill-request",
+        toolId: "skill-tool",
+        toolName: "Skill · Adstart Debugger",
+        operation: "read_skill",
+        argumentsJson: "{}",
+        purpose: "Orientar a investigação.",
+        status: "success",
+        summary: "Skill lida.",
+        content: "Metodologia.",
+        reference: "skill-reference-must-not-be-evidence",
+        executedAt: "2026-08-20T16:00:00.000Z",
+      },
+      {
+        requestId: "aws-request",
+        toolId: "aws-tool",
+        toolName: "AWS · WhatsApp Inbound",
+        operation: "query_logs",
+        argumentsJson: "{}",
+        purpose: "Validar o evento.",
+        status: "success",
+        summary: "Logs consultados.",
+        content: "Evento encontrado.",
+        reference: "aws-reference-must-be-evidence",
+        executedAt: "2026-08-20T16:00:01.000Z",
+      },
+    ],
+  });
+
+  const references = prompt.match(
+    /<REFERENCIAS_AUDITAVEIS_PERMITIDAS>\n([\s\S]*?)\n<\/REFERENCIAS_AUDITAVEIS_PERMITIDAS>/,
+  )?.[1] ?? "";
+
+  assert.doesNotMatch(references, /skill-reference-must-not-be-evidence/);
+  assert.match(references, /aws-reference-must-be-evidence/);
 });
 
 test("schema rejeita confianca fora do intervalo", () => {

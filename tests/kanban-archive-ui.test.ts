@@ -35,6 +35,9 @@ test("Kanban separa tickets ativos dos arquivados sem contaminar a carga global"
   assert.match(view, /if \(nextMode === "archived" && !archivedLoaded\) void loadArchived\(true\)/);
   assert.match(view, /archivedTickets\.length < archivedTotal/);
   assert.match(view, /Carregar mais \(\$\{visibleArchivedTickets\.length\} de \$\{archivedTotal\}\)/);
+  assert.match(view, /label: "Cancelados"/);
+  assert.match(view, /statuses: \["cancelled"\]/);
+  assert.match(view, /visibleCancelledTickets/);
 });
 
 test("Kanban pesquisa cards por título, grupo ou solicitante em cada visão", async () => {
@@ -78,7 +81,7 @@ test("Kanban oferece seleção acessível em lote, arquivo e restauração sem e
   assert.match(view, /role="tabpanel"/);
   assert.match(view, /aria-pressed=\{selectable \? selected : undefined\}/);
   assert.match(view, /Selecionar todos os visíveis/);
-  assert.match(view, /Selecionar resolvidos/);
+  assert.match(view, /Selecionar encerrados/);
   assert.match(view, /Selecionar para restaurar/);
   assert.match(view, /KANBAN_BULK_SELECTION_LIMIT/);
   assert.match(view, /Arquivar \$\{selectedVisibleIds\.length \|\| ""\}/);
@@ -89,7 +92,7 @@ test("Kanban oferece seleção acessível em lote, arquivo e restauração sem e
   assert.match(app, /status === "archived" \? unchanged : \[\.\.\.updated, \.\.\.unchanged\]/);
   assert.match(app, /setSelectedId\(\(current\) => current && changedIds\.has\(current\) \? null : current\)/);
   assert.match(app, /Nenhum dado foi excluído/);
-  assert.match(app, /tickets restaurados"\} para Resolvidos/);
+  assert.match(app, /tickets restaurados"\} ao estado anterior/);
 });
 
 test("helper de seleção nunca permite mais de 500 tickets", () => {
@@ -136,9 +139,10 @@ test("arquivo e restauração mantêm total e página própria de Resolvidos coe
   );
 
   assert.match(view, /setResolvedTickets\(\(current\) =>\s*current\.filter/);
-  assert.match(view, /setResolvedTotal\(\(current\) => Math\.max\(0, current - updated\.length\)\)/);
-  assert.match(view, /sortTickets\(mergeTickets\(current, updated, true\), "active", "done"\)/);
-  assert.match(view, /setResolvedTotal\(\(current\) => current \+ updated\.length\)/);
+  assert.match(view, /setResolvedTotal\(\(current\) => Math\.max\(0, current - selectedResolvedCount\)\)/);
+  assert.match(view, /const restoredResolved = updated\.filter/);
+  assert.match(view, /mergeTickets\(current, restoredResolved, true\)/);
+  assert.match(view, /setResolvedTotal\(\(current\) => current \+ restoredResolved\.length\)/);
   assert.match(view, /void loadResolved\(true\)/);
   assert.match(view, /void loadResolved\(false\)/);
   assert.match(view, /resolvedRequestRef\.current !== requestId/);
@@ -186,13 +190,14 @@ test("Kanban ordena e identifica resolvidos e arquivados pelas datas corretas", 
   assert.match(view, /ticket\.resolvedAt \?\? ticket\.updatedAt/);
   assert.match(view, /return `Arquivado \$\{relative\}`/);
   assert.match(view, /return `Resolvido \$\{relative\}`/);
+  assert.match(view, /return `Cancelado \$\{relative\}`/);
   assert.match(
     view,
     /sortTickets\([\s\S]*new Date\(getKanbanTicketTimestamp\(right/,
   );
 });
 
-test("detalhe aberto de um arquivado apresenta o status sem permitir transição inválida", async () => {
+test("detalhe aberto de um arquivado permite restaurar o ticket", async () => {
   const [detail, statusPill] = await Promise.all([
     readFile(
       new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
@@ -204,10 +209,12 @@ test("detalhe aberto de um arquivado apresenta o status sem permitir transição
     ),
   ]);
 
-  assert.match(detail, /updatingStatus \|\| ticket\.status === "archived"/);
-  assert.match(detail, /<option value="archived">\{statusLabels\.archived\}<\/option>/);
-  assert.match(detail, /ticket\.status !== "resolved" && ticket\.status !== "archived"/);
-  assert.match(detail, /Status arquivado, restaure pelo Kanban/);
+  assert.match(detail, /ticket\.status === "archived" \? \(/);
+  assert.match(detail, /onClick=\{\(\) => onStatusChange\("resolved"\)\}/);
+  assert.match(detail, /Restaurar ticket/);
+  assert.match(detail, /ArchiveRestore/);
+  assert.match(detail, /ticket\.status !== "resolved" && ticket\.status !== "cancelled" && ticket\.status !== "archived"/);
+  assert.doesNotMatch(detail, /Status arquivado, restaure pelo Kanban/);
   assert.match(statusPill, /archived/);
   assert.match(statusPill, /archived: "bg-muted text-muted-foreground"/);
 });
@@ -221,7 +228,7 @@ test("controles e grade de arquivados se adaptam a telas estreitas", async () =>
 
   assert.match(view, /flex min-w-0 flex-wrap items-center gap-2/);
   assert.match(view, /grid-cols-\[repeat\(auto-fill,minmax\(245px,1fr\)\)\]/);
-  assert.match(view, /grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-4/);
+  assert.match(view, /grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5/);
   assert.doesNotMatch(view, /min-w-\[920px\]/);
   assert.match(card, /selected && "border-primary\/70 bg-primary\/5 ring-2 ring-primary\/10"/);
   assert.match(card, /focus-visible:ring-2 focus-visible:ring-primary\/35/);

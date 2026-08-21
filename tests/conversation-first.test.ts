@@ -555,7 +555,7 @@ test("API lista conversa completa paginada e cria ticket em lote", async () => {
   const linkedTicketsBody = (await linkedTickets.json()) as {
     items: Array<{ id: string; status: string }>;
     total: number;
-    summary: { all: number; active: number; resolved: number; archived: number };
+    summary: { all: number; active: number; resolved: number; cancelled: number; archived: number };
     nextCursor: string | null;
     hasMore: boolean;
   };
@@ -566,6 +566,7 @@ test("API lista conversa completa paginada e cria ticket em lote", async () => {
     all: 1,
     active: 1,
     resolved: 0,
+    cancelled: 0,
     archived: 0,
   });
   assert.equal(linkedTicketsBody.nextCursor, null);

@@ -188,6 +188,36 @@ test("store arquiva e restaura tickets resolvidos em uma única transação", ()
   );
 });
 
+test("arquivamento em lote aceita cancelados e restaura cada estado anterior", () => {
+  const { store, resolvedA, open } = bulkFixture();
+  const cancelled = store.updateTicketStatus(open.id, {
+    status: "cancelled",
+    actor: "Operador",
+  });
+  assert.equal(cancelled.status, "cancelled");
+
+  const archived = store.updateTicketStatusesInBulk({
+    ticketIds: [resolvedA.id, cancelled.id],
+    status: "archived",
+    actor: "Operador",
+  });
+  assert.deepEqual(
+    archived.tickets.map((ticket) => ticket.status),
+    ["archived", "archived"],
+  );
+
+  const restored = store.updateTicketStatusesInBulk({
+    ticketIds: [resolvedA.id, cancelled.id],
+    status: "resolved",
+    actor: "Operador",
+  });
+  assert.deepEqual(
+    restored.tickets.map((ticket) => ticket.status),
+    ["resolved", "cancelled"],
+  );
+  assert.equal(restored.tickets[1]?.resolvedAt, null);
+});
+
 test("store rejeita duplicados, ausentes e status incompatível sem alteração parcial", () => {
   const { database, store, resolvedA, resolvedB, open } = bulkFixture();
   const eventCountBefore = (

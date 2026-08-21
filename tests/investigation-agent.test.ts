@@ -63,7 +63,8 @@ const validTurn = {
 
 test("prompt conversacional mantém WhatsApp inbound e fontes técnicas readonly", () => {
   const prompt = buildInvestigationThreadPrompt(input());
-  assert.match(prompt, /sala privada de investigacao/i);
+  assert.match(prompt, /Threadmark AI/i);
+  assert.match(prompt, /historico completo permanece no SQLite/i);
   assert.match(prompt, /WhatsApp e estritamente inbound/i);
   assert.match(prompt, /Nunca envie mensagem/i);
   assert.match(prompt, /durableSummary/i);

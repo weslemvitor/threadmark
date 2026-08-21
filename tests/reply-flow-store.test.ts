@@ -574,6 +574,51 @@ test("anexo em lote pela conversa registra resposta sem enfileirar análise auto
   );
 });
 
+test("ticket resolvido aceita contexto adicional até ser arquivado", () => {
+  const current = fixture();
+  const ticket = current.ticket({
+    id: "reply-flow-resolved-attachment-ticket",
+    occurredAt: "2025-07-21T11:40:00.000Z",
+  });
+  current.store.updateTicketStatus(ticket.id, {
+    status: "resolved",
+    actor: "Operador",
+    resolution: {
+      summary: "A demanda original foi concluída.",
+      validatedBy: "Operador",
+    },
+  });
+  const resolvedFollowUp = current.message({
+    occurredAt: "2025-07-21T11:41:00.000Z",
+    text: "Informação complementar relacionada ao mesmo atendimento.",
+  });
+
+  const attached = current.store.attachConversationMessages(current.group.id, {
+    messageIds: [resolvedFollowUp.id],
+    ticketId: ticket.id,
+    clientRequestId: "reply-flow-resolved-attachment",
+    actor: "Operador",
+  });
+
+  assert.equal(attached.ticket?.status, "resolved");
+  assert.equal(attached.ticket?.messageCount, 2);
+
+  current.store.updateTicketStatus(ticket.id, { status: "archived" });
+  const archivedFollowUp = current.message({
+    occurredAt: "2025-07-21T11:42:00.000Z",
+    text: "Esta mensagem não pode alterar um ticket arquivado.",
+  });
+  assert.throws(
+    () => current.store.attachConversationMessages(current.group.id, {
+      messageIds: [archivedFollowUp.id],
+      ticketId: ticket.id,
+      clientRequestId: "reply-flow-archived-attachment",
+      actor: "Operador",
+    }),
+    /ticket arquivado/i,
+  );
+});
+
 test("captura repetida da mesma resposta não cria rerun e não altera captured_at", () => {
   const current = fixture();
   const ticket = current.ticket({

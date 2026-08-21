@@ -9,7 +9,7 @@ const bundledEntryFiles = new Set([
   "kanban-view.tsx",
   "settings-view.tsx",
   "ticket-detail.tsx",
-  "investigation-room.tsx",
+  "threadmark-ai.tsx",
 ]);
 
 function belongsToEntry(entryFile: string, relatedFile: string): boolean {
@@ -25,16 +25,8 @@ function belongsToEntry(entryFile: string, relatedFile: string): boolean {
   }
   if (entryFile === "ticket-detail.tsx") {
     return (
-      (name.startsWith("ticket-") ||
-        name === "investigation-room-launcher.tsx") &&
+      name.startsWith("ticket-") &&
       !name.startsWith("ticket-list")
-    );
-  }
-  if (entryFile === "investigation-room.tsx") {
-    return (
-      name.startsWith("investigation-room") ||
-      name === "ticket-conversation.tsx" ||
-      name === "ticket-notes.tsx"
     );
   }
   return true;

@@ -43,7 +43,7 @@ test("timeline descreve mudanças de status e ações do Codex", () => {
         data: { phase: "needs_information", confidence: 0.81 },
       }),
     ),
-    "Codex executou a investigação aprofundada · Mais informações necessárias · 81% de confiança",
+    "Threadmark AI concluiu uma análise · Mais informações necessárias · 81% de confiança",
   );
 });
 

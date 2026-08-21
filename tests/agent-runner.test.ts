@@ -144,6 +144,74 @@ test("runner anexa somente imagens dentro da raiz local confiavel", async () => 
   }
 });
 
+test("runner Codex anexa imagem aprovada pelo operador na investigação profunda", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-codex-image-"));
+  const attachmentsRoot = path.join(temporary, "attachments");
+  const trustedImage = path.join(attachmentsRoot, "operator.png");
+  await mkdir(attachmentsRoot, { recursive: true });
+  await writeFile(trustedImage, "operator-image");
+  let receivedArgv: string[] = [];
+  const runner = new CodexSupportAgent(
+    {
+      cwd: temporary,
+      dataDir: path.join(temporary, "runs"),
+      attachmentsRoot,
+    },
+    async ({ argv }) => {
+      receivedArgv = argv;
+      const outputFlag = argv.indexOf("--output-last-message");
+      await writeFile(argv[outputFlag + 1] as string, JSON.stringify(validTurn));
+      return { exitCode: 0, stderr: "" };
+    },
+  );
+  const input: InvestigationThreadInput = {
+    threadId: "thread-image",
+    currentOperatorMessageId: "operator-image-message",
+    durableSummary: "",
+    recentMessages: [{
+      id: "operator-image-message",
+      role: "operator",
+      body: "Analise o print.",
+      phase: null,
+      createdAt: "2026-08-20T16:00:00.000Z",
+    }],
+    images: [{
+      id: "thread-image-1",
+      messageId: "operator-image-message",
+      fileName: "operator.png",
+      mimeType: "image/png",
+      localPath: trustedImage,
+      sizeBytes: 14,
+    }],
+    imageAnalysisApproved: true,
+    ticket: {
+      accountName: "Cliente",
+      accountType: "ecommerce",
+      groupName: "Suporte Cliente",
+      knownEcommerces: [],
+      ...emptyReplyContext(),
+      openTickets: [],
+      messages: [{
+        id: "message-thread",
+        author: "Cliente",
+        role: "external",
+        timestampUtc: "2026-08-20T15:59:00.000Z",
+        text: "Veja o print.",
+        attachments: [],
+        quotedMessageId: null,
+      }],
+    },
+    automaticInvestigation: null,
+  };
+
+  try {
+    await runner.investigateThread(input);
+    assert.equal(receivedArgv.filter((value) => value === "--image").length, 1);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("runner isola análise automática e investigação profunda do ambiente pessoal", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "support-agent-env-"));
   const invocations: Array<{
@@ -151,6 +219,7 @@ test("runner isola análise automática e investigação profunda do ambiente pe
     cwd: string;
     env: Record<string, string | undefined>;
     schema: string;
+    timeoutMs: number | null;
   }> = [];
   const sourceEnvironment: Record<string, string | undefined> = {
     HOME: "/Users/tester",
@@ -169,10 +238,10 @@ test("runner isola análise automática e investigação profunda do ambiente pe
       attachmentsRoot: path.join(temporary, "attachments"),
       environment: sourceEnvironment,
     },
-    async ({ argv, cwd, env }) => {
+    async ({ argv, cwd, env, timeoutMs }) => {
       const schemaFlag = argv.indexOf("--output-schema");
       const schema = argv[schemaFlag + 1] as string;
-      invocations.push({ argv, cwd, env, schema });
+      invocations.push({ argv, cwd, env, schema, timeoutMs });
       const outputFlag = argv.indexOf("--output-last-message");
       await writeFile(
         argv[outputFlag + 1] as string,
@@ -271,6 +340,8 @@ test("runner isola análise automática e investigação profunda do ambiente pe
     assert.equal(automatic.env.AWS_PROFILE, undefined);
     assert.notEqual(deep.cwd, temporary);
     assert.match(deep.cwd, /threadmark-codex-/);
+    assert.equal(automatic.timeoutMs, 300_000);
+    assert.equal(deep.timeoutMs, null);
     assert.ok(deep.argv.includes("--ignore-user-config"));
     assert.ok(deep.argv.includes("--ignore-rules"));
     assert.ok(deep.argv.includes("--skip-git-repo-check"));

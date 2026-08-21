@@ -113,7 +113,7 @@ test("worker ignora a fila automática legada e processa somente a sala manual",
   assert.equal(await worker.runOne(), false);
 });
 
-test("falha do Codex fica persistida no turno sem perder a mensagem do operador", async () => {
+test("falha do Codex tenta novamente antes de bloquear sem perder mensagem ou auditoria", async () => {
   const current = workerFixture();
   const agent = {
     async analyse() {
@@ -143,11 +143,16 @@ test("falha do Codex fica persistida no turno sem perder a mensagem do operador"
   current.store.addInvestigationThreadMessage(thread.id, { body: "Investigue os logs." });
 
   assert.equal(await worker.runOne(), true);
+  assert.equal(current.store.getInvestigationThread(thread.id).activeTurnState, "queued");
+  assert.equal(await worker.runOne(), true);
+  assert.equal(current.store.getInvestigationThread(thread.id).activeTurnState, "queued");
+  assert.equal(await worker.runOne(), true);
   const failed = current.store.getInvestigationThread(thread.id);
   assert.equal(failed.messages.length, 1);
   assert.equal(failed.messages[0]?.toolExecutions.length, 1);
   assert.equal(failed.messages[0]?.toolExecutions[0]?.operation, "search_files");
   assert.equal(failed.turns[0]?.state, "failed");
+  assert.equal(failed.turns[0]?.attemptCount, 3);
   assert.equal(failed.turns[0]?.toolExecutions.length, 1);
   assert.match(failed.turns[0]?.error ?? "", /readonly indisponível/);
 });

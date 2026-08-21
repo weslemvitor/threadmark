@@ -18,6 +18,8 @@ test("configurações fazem parte da navegação e preservam fronteira local-fir
   assert.match(sidebar, /id: "settings"/);
   assert.match(app, /case "settings"/);
   assert.match(settings, /Integração estritamente somente leitura/);
+  assert.match(settings, /overflow-x-auto overflow-y-hidden/);
+  assert.match(settings, /\[scrollbar-width:none\] \[&::\-webkit-scrollbar\]:hidden/);
   assert.match(settings, /renewWhatsappQr/);
   assert.match(settings, /Gerar QR code/);
   assert.match(settings, /Gerando QR code/);
@@ -38,7 +40,7 @@ test("configurações fazem parte da navegação e preservam fronteira local-fir
   assert.match(settings, /updateTriageAiSettings/);
   assert.match(settings, /silenceWindowSeconds/);
   assert.doesNotMatch(settings, /Análise automática/);
-  assert.match(settings, /Investigação aprofundada/);
+  assert.match(settings, /Threadmark AI/);
   assert.match(settings, /Padrão da conta Codex/);
   assert.match(settings, /Atualizar modelos/);
   assert.match(aiSection, /className="absolute -top-1 right-0"/);

@@ -78,6 +78,256 @@ function settingsForDeepAgent(agent: SupportAgent): AiProviderSettingsService {
   } as unknown as AiProviderSettingsService;
 }
 
+test("app conectado exige confirmação explícita da mensagem atual antes da execução", async () => {
+  const database = createDatabase(":memory:");
+  let turns = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      turns += 1;
+      if (turns === 1) {
+        return {
+          assistantMessage: "Vou publicar o artigo.",
+          phase: "analysis" as const,
+          threadSummary: "Publicação solicitada sem confirmação válida.",
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Publicar no Intercom.",
+          confidence: 0.7,
+          toolRequests: [{
+            requestId: "intercom-with-stale-confirmation",
+            toolId: "connected-app:intercom",
+            operation: "create_article",
+            argumentsJson: JSON.stringify({
+              confirmationMessageId: "operator-antigo",
+              title: "Artigo",
+              description: "Resumo",
+              body: "<p>Conteúdo</p>",
+              authorId: "admin-1",
+              collectionId: "collection-1",
+            }),
+            purpose: "Criar documentação.",
+          }],
+        };
+      }
+      assert.equal(current.toolResults?.[0]?.status, "error");
+      assert.match(current.toolResults?.[0]?.summary ?? "", /mensagem atual/i);
+      return {
+        assistantMessage: "Não executei a ação porque falta uma solicitação explícita nesta mensagem.",
+        phase: "conclusion" as const,
+        threadSummary: "Ação externa bloqueada com segurança.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Peça explicitamente a criação do artigo.",
+        confidence: 0.9,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  let brokerExecutions = 0;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors() {
+      return [{
+        id: "connected-app:intercom",
+        name: "Intercom",
+        type: "connected_app",
+        description: "Intercom autorizado",
+        scope: "API externa",
+        operations: [{
+          name: "create_article",
+          description: "Cria um artigo",
+          argumentsExample: "{}",
+        }],
+      }];
+    },
+    async executeMany() {
+      brokerExecutions += 1;
+      return [];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(turns, 2);
+    assert.equal(brokerExecutions, 0);
+    assert.equal(result.toolExecutions?.[0]?.status, "error");
+  } finally {
+    database.close();
+  }
+});
+
+test("mutação de automação rejeita confirmação de uma mensagem anterior", async () => {
+  const database = createDatabase(":memory:");
+  let turns = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      turns += 1;
+      if (turns === 1) {
+        return {
+          assistantMessage: "Vou ativar o fluxo.",
+          phase: "analysis" as const,
+          threadSummary: "Ativação solicitada com confirmação antiga.",
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Ativar automação.",
+          confidence: 0.7,
+          toolRequests: [{
+            requestId: "automation-stale-confirmation",
+            toolId: "threadmark-automations",
+            operation: "set_automation_status",
+            argumentsJson: JSON.stringify({
+              confirmationMessageId: "operator-antigo",
+              automationId: "workflow-1",
+              status: "active",
+            }),
+            purpose: "Ativar a automação.",
+          }],
+        };
+      }
+      assert.equal(current.toolResults?.[0]?.status, "error");
+      assert.match(current.toolResults?.[0]?.summary ?? "", /mensagem atual/i);
+      return {
+        assistantMessage: "Não ativei o fluxo porque a confirmação não veio desta mensagem.",
+        phase: "conclusion" as const,
+        threadSummary: "Mutação interna bloqueada com segurança.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Peça explicitamente a ativação.",
+        confidence: 0.9,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  let brokerExecutions = 0;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors() {
+      return [{
+        id: "threadmark-automations",
+        name: "Automações do Threadmark",
+        type: "knowledge",
+        description: "Fluxos internos",
+        scope: "SQLite local",
+        operations: [{
+          name: "set_automation_status",
+          description: "Ativa ou pausa",
+          argumentsExample: "{}",
+        }],
+      }];
+    },
+    async executeMany() {
+      brokerExecutions += 1;
+      return [];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(turns, 2);
+    assert.equal(brokerExecutions, 0);
+    assert.equal(result.toolExecutions?.[0]?.status, "error");
+  } finally {
+    database.close();
+  }
+});
+
+test("leitura nativa do Intercom não exige confirmação de mutação", async () => {
+  const database = createDatabase(":memory:");
+  let turns = 0;
+  let brokerExecutions = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      turns += 1;
+      if (turns === 1) {
+        return {
+          assistantMessage: "Vou localizar a conversa.",
+          phase: "analysis" as const,
+          threadSummary: "Busca readonly pendente.",
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Consultar o Intercom.",
+          confidence: 0.5,
+          toolRequests: [{
+            requestId: "intercom-read-without-confirmation",
+            toolId: "connected-app:intercom",
+            operation: "search_conversations",
+            argumentsJson: JSON.stringify({ query: "Bruno Alves", limit: 5 }),
+            purpose: "Localizar conversa recente.",
+          }],
+        };
+      }
+      assert.equal(current.toolResults?.[0]?.status, "success");
+      return {
+        assistantMessage: "Conversa localizada.",
+        phase: "conclusion" as const,
+        threadSummary: "Conversa localizada em leitura readonly.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Revisar a conversa.",
+        confidence: 0.9,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors() {
+      return [{
+        id: "connected-app:intercom",
+        name: "Intercom",
+        type: "connected_app",
+        description: "Intercom autorizado",
+        scope: "API externa readonly",
+        operations: [{
+          name: "search_conversations",
+          description: "Busca conversas",
+          argumentsExample: "{}",
+        }],
+      }];
+    },
+    async executeMany(requests) {
+      brokerExecutions += 1;
+      return [{
+        requestId: requests[0]!.requestId,
+        toolId: requests[0]!.toolId,
+        toolName: "Intercom",
+        operation: requests[0]!.operation,
+        argumentsJson: requests[0]!.argumentsJson,
+        purpose: requests[0]!.purpose,
+        status: "success",
+        summary: "Uma conversa localizada.",
+        content: '{"conversations":[{"id":"987"}]}',
+        reference: "tool:connected-app:intercom:search_conversations:request:read-1",
+        executedAt: "2026-08-20T12:00:01.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(result.assistantMessage, "Conversa localizada.");
+    assert.equal(turns, 2);
+    assert.equal(brokerExecutions, 1);
+  } finally {
+    database.close();
+  }
+});
+
 test("roteador executa pedido tipado fora do modelo e devolve o resultado no turno seguinte", async () => {
   const database = createDatabase(":memory:");
   const modelInputs: InvestigationThreadInput[] = [];

@@ -165,6 +165,98 @@ test("catálogo nunca oferece WhatsApp como ação de automação", () => {
   );
 });
 
+test("Intercom nativo fica disponível ao Threadmark AI sem expor uma ação incompleta no editor", () => {
+  const catalog = catalogWithConnectedApps([{
+    id: "intercom-1",
+    type: "intercom",
+    name: "Intercom do suporte",
+    description: null,
+    status: "active",
+    aiEnabled: true,
+    secretConfigured: true,
+    endpointPreview: "https://api.intercom.io/",
+    lastTestAt: null,
+    lastTestSucceeded: true,
+    updatedAt: "2026-08-20T12:00:00.000Z",
+  }]);
+
+  assert.equal(
+    catalog.some((item) => item.id.includes("intercom") || item.baseConfig?.appId === "intercom"),
+    false,
+  );
+});
+
+test("catálogo transforma somente ferramentas MCP autorizadas em etapas configuráveis", () => {
+  const catalog = catalogWithConnectedApps([{
+    id: "mcp-1",
+    type: "mcp_remote",
+    name: "Projetos MCP",
+    description: null,
+    status: "active",
+    aiEnabled: true,
+    secretConfigured: true,
+    endpointPreview: "https://mcp.example.com/mcp",
+    lastTestAt: "2026-08-20T12:00:00.000Z",
+    lastTestSucceeded: true,
+    updatedAt: "2026-08-20T12:00:00.000Z",
+    actions: [{
+      id: "create_issue",
+      name: "Criar issue",
+      description: "Cria uma issue no projeto selecionado.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", title: "Título" },
+          priority: { type: "string", enum: ["low", "high"] },
+          notify: { type: "boolean", title: "Notificar" },
+          metadata: { type: "object", title: "Metadados" },
+        },
+        required: ["title"],
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+      aiEnabled: true,
+      automationEnabled: true,
+      confirmationRequired: true,
+    }, {
+      id: "delete_issue",
+      name: "Excluir issue",
+      description: "Exclui uma issue.",
+      automationEnabled: false,
+    }, {
+      id: "compound_action",
+      name: "Ação composta",
+      description: "Usa um schema composto.",
+      inputSchema: { oneOf: [{ type: "object" }, { type: "object" }] },
+      automationEnabled: true,
+    }],
+  }]);
+
+  const node = catalog.find((item) => item.id === "app-connection.mcp-1.create_issue");
+  assert.ok(node);
+  assert.equal(node.baseConfig?.appId, "mcp-remote");
+  assert.equal(node.baseConfig?.connectionId, "mcp-1");
+  assert.equal(node.baseConfig?.actionId, "create_issue");
+  assert.deepEqual(
+    node.fields.map((field) => [field.key, field.type, field.required]),
+    [
+      ["input.title", "text", true],
+      ["input.priority", "select", false],
+      ["input.notify", "boolean", false],
+      ["input.metadata", "textarea", false],
+    ],
+  );
+  assert.equal(catalog.some((item) => item.id.includes("delete_issue")), false);
+  assert.deepEqual(
+    catalog.find((item) => item.id.includes("compound_action"))?.fields.map((field) => field.key),
+    ["input.__argumentsJson"],
+  );
+});
+
 test("espera aceita minutos, horas e dias sem alterar o formato do motor", () => {
   const wait = defaultAutomationNodeCatalog.find((item) => item.id === "flow.wait");
   assert.ok(wait);
@@ -312,6 +404,7 @@ test("catálogo cria uma ação para cada instância ativa de app conectado", ()
       name: "Alertas do suporte",
       description: null,
       status: "active",
+      aiEnabled: false,
       secretConfigured: true,
       endpointPreview: "https://hooks.slack.com/••••",
       lastTestAt: null,
@@ -324,6 +417,7 @@ test("catálogo cria uma ação para cada instância ativa de app conectado", ()
       name: "API pausada",
       description: null,
       status: "disabled",
+      aiEnabled: false,
       secretConfigured: true,
       endpointPreview: "https://example.com/••••",
       lastTestAt: null,

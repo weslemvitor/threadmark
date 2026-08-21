@@ -33,7 +33,7 @@ test("seed de apresentação cria ambiente rico sem executar o Codex", async () 
             (SELECT COUNT(*) FROM participants) AS participants,
             (SELECT COUNT(*) FROM messages) AS messages,
             (SELECT COUNT(*) FROM tickets) AS tickets,
-            (SELECT COUNT(*) FROM tickets WHERE status NOT IN ('resolved', 'archived')) AS open_tickets,
+            (SELECT COUNT(*) FROM tickets WHERE status NOT IN ('resolved', 'cancelled', 'archived')) AS open_tickets,
             (SELECT COUNT(*) FROM tickets WHERE status = 'resolved') AS resolved_tickets,
             (SELECT COUNT(*) FROM investigation_jobs) AS investigations,
             (SELECT COUNT(*) FROM investigation_threads) AS threads,

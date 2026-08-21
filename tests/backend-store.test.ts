@@ -1257,6 +1257,92 @@ test("transições de status preservam o ciclo manual e rejeitam saltos inválid
   assert.equal(after.count, before.count);
 });
 
+test("ticket arquivado pode ser restaurado para resolvido sem perder a resolução", () => {
+  const current = fixture();
+  const ticket = current.store.createTicket({
+    id: "ticket-restore-from-archive",
+    groupId: current.groupId,
+    sourceMessageId: current.externalMessageId,
+    title: "Atendimento precisa continuar",
+    summary: "O cliente enviou novo contexto após o arquivamento.",
+  });
+  const resolved = current.store.updateTicketStatus(ticket.id, {
+    status: "resolved",
+    actor: "Operador",
+    resolution: { summary: "Primeira conclusão registrada." },
+  });
+  const archived = current.store.updateTicketStatus(ticket.id, {
+    status: "archived",
+    actor: "Operador",
+  });
+
+  const restored = current.store.updateTicketStatus(ticket.id, {
+    status: "resolved",
+    actor: "Operador",
+  });
+
+  assert.equal(restored.status, "resolved");
+  assert.equal(restored.archivedAt, null);
+  assert.equal(restored.resolvedAt, resolved.resolvedAt);
+  assert.equal(restored.resolution?.summary, "Primeira conclusão registrada.");
+  assert.ok(archived.archivedAt);
+  const restoreEvent = current.database
+    .prepare(
+      `SELECT from_status, to_status
+       FROM ticket_events
+       WHERE ticket_id = ? AND from_status = 'archived'
+       ORDER BY occurred_at DESC
+       LIMIT 1`,
+    )
+    .get(ticket.id) as { from_status: string; to_status: string };
+  assert.deepEqual(restoreEvent, {
+    from_status: "archived",
+    to_status: "resolved",
+  });
+});
+
+test("ticket cancelado é terminal, aparece no dashboard e restaura como cancelado", () => {
+  const current = fixture();
+  const ticket = current.store.createTicket({
+    id: "ticket-cancelled",
+    groupId: current.groupId,
+    sourceMessageId: current.externalMessageId,
+    title: "Demanda cancelada",
+    summary: "O solicitante desistiu antes da execução.",
+  });
+
+  const cancelled = current.store.updateTicketStatus(ticket.id, {
+    status: "cancelled",
+    actor: "Operador",
+    reason: "Solicitante desistiu da demanda.",
+  });
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.resolvedAt, null);
+  assert.equal(cancelled.resolution, null);
+
+  const dashboard = current.store.getDashboard();
+  assert.equal(dashboard.totals.open, 0);
+  assert.equal(
+    dashboard.statusCounts.find((item) => item.status === "cancelled")?.count,
+    1,
+  );
+
+  const archived = current.store.updateTicketStatus(ticket.id, {
+    status: "archived",
+    actor: "Operador",
+  });
+  assert.equal(archived.status, "archived");
+  assert.ok(archived.archivedAt);
+
+  const restored = current.store.updateTicketStatus(ticket.id, {
+    status: "resolved",
+    actor: "Operador",
+  });
+  assert.equal(restored.status, "cancelled");
+  assert.equal(restored.archivedAt, null);
+  assert.equal(restored.resolvedAt, null);
+});
+
 test("ticket reaberto pode reutilizar ou editar a resolução existente sem duplicá-la", () => {
   const current = fixture();
   const ticket = current.store.createTicket({
