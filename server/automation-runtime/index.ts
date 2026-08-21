@@ -46,6 +46,7 @@ export interface AutomationRuntimeOptions {
   pollIntervalMs?: number;
   logger?: Pick<Console, "error">;
   notifications?: NotificationService;
+  connectedApps?: ConnectedAppService;
 }
 
 /**
@@ -74,7 +75,7 @@ export class AutomationRuntime {
     this.logger = options.logger ?? console;
     this.notifications = options.notifications;
     this.workflows = new AutomationStore(database);
-    this.connectedApps = new ConnectedAppService(database, vault);
+    this.connectedApps = options.connectedApps ?? new ConnectedAppService(database, vault);
     this.engine = new AutomationEngine(
       this.workflows,
       this.createActionHandlers(),
@@ -471,8 +472,34 @@ export class AutomationRuntime {
       if (!result.ok) throw new Error(`API respondeu com status ${result.status}.`);
       return result;
     }
+    if (connected.providerId === "mcp-remote") {
+      const result = await this.connectedApps.callMcpTool(
+        connectedAppId,
+        actionId,
+        mcpAutomationArguments(rendered),
+        "automation",
+        context.signal,
+      );
+      return result.structuredContent ?? result.content;
+    }
     throw new Error("A ação escolhida não pertence ao app conectado.");
   }
+}
+
+function mcpAutomationArguments(value: Record<string, unknown>): Record<string, unknown> {
+  const raw = value.__argumentsJson;
+  if (raw === undefined || raw === null || raw === "") return value;
+  if (typeof raw !== "string") throw new Error("Os argumentos MCP precisam ser um JSON válido.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("Os argumentos MCP precisam ser um JSON válido.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Os argumentos MCP precisam formar um objeto JSON.");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function eventTypesFor(row: TicketEventRow, data: Record<string, unknown>): string[] {

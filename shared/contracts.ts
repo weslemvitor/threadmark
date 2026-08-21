@@ -5,6 +5,7 @@ export const TICKET_STATUSES = [
   "waiting_customer",
   "blocked",
   "resolved",
+  "cancelled",
   "archived",
 ] as const;
 
@@ -316,6 +317,7 @@ export interface ConversationTicketListResponse {
     all: number;
     active: number;
     resolved: number;
+    cancelled: number;
     archived: number;
   };
   nextCursor: string | null;
@@ -1001,6 +1003,17 @@ export const INVESTIGATION_OUTCOMES = [
 export type InvestigationOutcome = (typeof INVESTIGATION_OUTCOMES)[number];
 
 export const INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH = 24_000;
+export const THREADMARK_AI_IMAGE_MAX_COUNT = 5;
+export const THREADMARK_AI_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const THREADMARK_AI_IMAGE_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+export const THREADMARK_AI_IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
+export type ThreadmarkAiImageMimeType =
+  (typeof THREADMARK_AI_IMAGE_MIME_TYPES)[number];
 
 export interface InvestigationEvidenceDto {
   source: string;
@@ -1088,7 +1101,24 @@ export interface InvestigationThreadMessageDto {
   suggestedResponse: string | null;
   nextAction: string | null;
   toolExecutions: InvestigationToolExecutionDto[];
+  attachments: ThreadmarkAiImageAttachmentDto[];
+  /** Snapshot of the product context visible when the operator sent this message. */
+  context?: ThreadmarkAiContextDto | null;
   createdAt: string;
+}
+
+export interface ThreadmarkAiImageAttachmentDto {
+  id: string;
+  fileName: string;
+  mimeType: ThreadmarkAiImageMimeType;
+  sizeBytes: number;
+  url: string;
+}
+
+export interface ThreadmarkAiImageUploadInput {
+  fileName: string;
+  mimeType: ThreadmarkAiImageMimeType;
+  dataBase64: string;
 }
 
 export interface InvestigationTurnResultDto {
@@ -1120,7 +1150,10 @@ export interface InvestigationThreadTurnDto {
 }
 
 export interface InvestigationThreadDto extends InvestigationThreadSummaryDto {
-  ticketId: string;
+  ticketId: string | null;
+  scope?: "ticket" | "workspace";
+  title?: string;
+  context?: ThreadmarkAiContextDto | null;
   summary: string;
   createdAt: string;
   messages: InvestigationThreadMessageDto[];
@@ -1130,7 +1163,53 @@ export interface InvestigationThreadDto extends InvestigationThreadSummaryDto {
 export interface AddInvestigationThreadMessageInput {
   body: string;
   clientMessageId?: string;
+  context?: ThreadmarkAiContextDto | null;
+  attachments?: ThreadmarkAiImageUploadInput[];
+  /** Explicit operator consent to process attached images with the configured AI provider. */
+  allowImageAnalysis?: boolean;
 }
+
+export interface ThreadmarkAiContextDto {
+  route: string | null;
+  label: string | null;
+  ticketId: string | null;
+  ticketNumber: number | null;
+  groupId: string | null;
+  groupName: string | null;
+}
+
+export interface ThreadmarkAiThreadDto extends InvestigationThreadSummaryDto {
+  id: string;
+  scope: "workspace";
+  ticketId: null;
+  title: string;
+  context: ThreadmarkAiContextDto | null;
+  summary: string;
+  createdAt: string;
+  messages: InvestigationThreadMessageDto[];
+  turns: InvestigationThreadTurnDto[];
+}
+
+export interface ThreadmarkAiThreadListResponse {
+  items: Array<
+    Pick<
+      ThreadmarkAiThreadDto,
+      | "id"
+      | "title"
+      | "status"
+      | "updatedAt"
+      | "lastAssistantMessageAt"
+      | "activeTurnState"
+    >
+  >;
+}
+
+export interface CreateThreadmarkAiThreadInput {
+  title?: string;
+  context?: ThreadmarkAiContextDto | null;
+}
+
+export type AddThreadmarkAiMessageInput = AddInvestigationThreadMessageInput;
 
 export interface RuntimeQrResponse {
   available: boolean;

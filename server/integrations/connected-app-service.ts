@@ -7,11 +7,33 @@ import { LocalSecretVault } from "../runtime/secret-vault.js";
 import { customHttpConfigSchema } from "./connectors/custom-http.js";
 import { slackWebhookConfigSchema } from "./connectors/slack-webhook.js";
 import { assertResolvedDestinationAllowed } from "./http-executor.js";
+import {
+  McpRemoteClient,
+  type McpDiscoveredTool,
+  type McpToolCallResult,
+} from "./mcp-client.js";
 import { publicHeaderSchema, safeHttpUrlSchema } from "./validation.js";
 
-export const CONNECTED_APP_TYPES = ["slack_webhook", "custom_http"] as const;
+export const CONNECTED_APP_TYPES = [
+  "slack_webhook",
+  "intercom",
+  "custom_http",
+  "mcp_remote",
+] as const;
 export type ConnectedAppType = (typeof CONNECTED_APP_TYPES)[number];
 export type ConnectedAppStatus = "active" | "disabled" | "error";
+export type ConnectedAppNativeProvider = "intercom";
+
+export type ConnectedAppMcpTool = McpDiscoveredTool & {
+  aiEnabled: boolean;
+  automationEnabled: boolean;
+  confirmationRequired: boolean;
+};
+
+export type ConnectedAppMcpToolPermission = Pick<
+  ConnectedAppMcpTool,
+  "name" | "aiEnabled" | "automationEnabled" | "confirmationRequired"
+>;
 
 export interface ConnectedAppDto {
   id: string;
@@ -19,11 +41,15 @@ export interface ConnectedAppDto {
   name: string;
   description: string | null;
   status: ConnectedAppStatus;
+  /** Explicit workspace authorization for external actions requested in Threadmark AI. */
+  aiEnabled: boolean;
   secretConfigured: boolean;
   endpointPreview: string | null;
+  allowPrivateNetwork: boolean;
   lastTestAt: string | null;
   lastTestSucceeded: boolean | null;
   lastTestMessage: string | null;
+  mcpTools: ConnectedAppMcpTool[];
   createdAt: string;
   updatedAt: string;
 }
@@ -33,15 +59,18 @@ export interface ConnectedAppWriteInput {
   name: string;
   description?: string | null;
   enabled?: boolean;
+  aiEnabled?: boolean;
   endpoint: string;
   secret?: string;
   headers?: Record<string, string>;
+  allowPrivateNetwork?: boolean;
+  mcpTools?: ConnectedAppMcpToolPermission[];
 }
 
 export interface ResolvedConnectedApp {
   id: string;
   type: ConnectedAppType;
-  providerId: "slack-webhook" | "custom-http";
+  providerId: "slack-webhook" | "intercom" | "custom-http" | "mcp-remote";
   config: Record<string, unknown>;
 }
 
@@ -51,6 +80,7 @@ type ConnectedAppRow = {
   name: string;
   description: string | null;
   enabled: number;
+  ai_enabled: number;
   config_json: string;
   secret_ref: string | null;
   secret_configured: number;
@@ -65,7 +95,16 @@ type StoredConfig = {
   endpoint?: string;
   endpointPreview: string;
   publicHeaders: Array<{ name: string; value: string }>;
+  allowPrivateNetwork: boolean;
+  mcpTools: ConnectedAppMcpTool[];
 };
+
+const mcpToolPermissionSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  aiEnabled: z.boolean(),
+  automationEnabled: z.boolean(),
+  confirmationRequired: z.boolean(),
+}).strict();
 
 const writeSchema = z
   .object({
@@ -73,9 +112,12 @@ const writeSchema = z
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().max(1_000).nullable().optional(),
     enabled: z.boolean().default(true),
+    aiEnabled: z.boolean().optional(),
     endpoint: z.string().trim().min(1).max(2_000),
     secret: z.string().trim().max(16_384).optional(),
     headers: z.record(z.string(), z.string().max(8_192)).default({}),
+    allowPrivateNetwork: z.boolean().default(false),
+    mcpTools: z.array(mcpToolPermissionSchema).max(200).optional(),
   })
   .strict();
 
@@ -99,6 +141,11 @@ export class ConnectedAppService {
   constructor(
     private readonly database: SupportDatabase,
     private readonly secrets: LocalSecretVault,
+    private readonly fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+    private readonly lookup: (hostname: string) => Promise<Array<{ address: string }>> = async (hostname) => {
+      const { lookup } = await import("node:dns/promises");
+      return lookup(hostname, { all: true, verbatim: true });
+    },
   ) {}
 
   list(): ConnectedAppDto[] {
@@ -108,12 +155,36 @@ export class ConnectedAppService {
     ).map(toDto);
   }
 
+  listEnabledForAi(): ConnectedAppDto[] {
+    return this.rows(
+      `SELECT * FROM connected_apps
+       WHERE enabled = 1 AND ai_enabled = 1
+       ORDER BY name COLLATE NOCASE, id`,
+    ).map(toDto);
+  }
+
   get(id: string): ConnectedAppDto {
     return toDto(this.requireRow(id));
   }
 
+  nativeProvider(id: string): ConnectedAppNativeProvider | null {
+    const row = this.requireRow(id);
+    if (row.provider_type === "intercom") return "intercom";
+    if (row.provider_type !== "custom_http") return null;
+    const endpoint = parseStoredConfig(row.config_json).endpoint;
+    if (!endpoint) return null;
+    try {
+      return isIntercomApiHost(new URL(endpoint).hostname) ? "intercom" : null;
+    } catch {
+      return null;
+    }
+  }
+
   async create(input: ConnectedAppWriteInput, actor: string): Promise<ConnectedAppDto> {
     const parsed = this.parseWrite(input);
+    if (parsed.type === "intercom" && !parsed.secret?.trim()) {
+      throw new ConnectedAppSettingsError("Informe o access token da API do Intercom.");
+    }
     const id = randomUUID();
     const secretRef = `connected-app:${id}:credential`;
     const stored = await this.prepareStoredConfig(id, parsed, secretRef, false);
@@ -122,10 +193,10 @@ export class ConnectedAppService {
       this.database
         .prepare(
           `INSERT INTO connected_apps (
-             id, provider_type, name, description, enabled, config_json,
+             id, provider_type, name, description, enabled, ai_enabled, config_json,
              secret_ref, secret_configured, created_by, updated_by,
              created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -133,6 +204,7 @@ export class ConnectedAppService {
           parsed.name,
           parsed.description ?? null,
           parsed.enabled ? 1 : 0,
+          parsed.aiEnabled ? 1 : 0,
           JSON.stringify(stored.config),
           stored.secretConfigured ? secretRef : null,
           stored.secretConfigured ? 1 : 0,
@@ -178,12 +250,13 @@ export class ConnectedAppService {
       parsed,
       secretRef,
       Boolean(existing.secret_configured),
+      existingConfig,
     );
     const now = new Date().toISOString();
     this.database
       .prepare(
         `UPDATE connected_apps
-         SET name = ?, description = ?, enabled = ?, config_json = ?,
+         SET name = ?, description = ?, enabled = ?, ai_enabled = ?, config_json = ?,
              secret_ref = ?, secret_configured = ?, updated_by = ?, updated_at = ?,
              last_tested_at = NULL, last_test_status = NULL, last_test_message = NULL
          WHERE id = ?`,
@@ -192,6 +265,7 @@ export class ConnectedAppService {
         parsed.name,
         parsed.description ?? null,
         parsed.enabled ? 1 : 0,
+        parsed.aiEnabled === undefined ? existing.ai_enabled : parsed.aiEnabled ? 1 : 0,
         JSON.stringify(stored.config),
         stored.secretConfigured ? secretRef : null,
         stored.secretConfigured ? 1 : 0,
@@ -232,13 +306,14 @@ export class ConnectedAppService {
       await assertResolvedDestinationAllowed(
         url,
         Boolean(resolved.config.allowPrivateNetwork),
-        async (hostname) => {
-          const { lookup } = await import("node:dns/promises");
-          return lookup(hostname, { all: true, verbatim: true });
-        },
+        this.lookup,
       );
       const now = new Date().toISOString();
-      const message = "Configuração e destino validados; nenhuma ação externa foi executada.";
+      const message = row.provider_type === "mcp_remote"
+        ? await this.refreshMcpTools(row)
+        : this.nativeProvider(id) === "intercom"
+          ? await this.validateIntercomAccess(row, url.origin)
+          : "Configuração e destino validados; nenhuma ação externa foi executada.";
       this.recordTest(id, true, message, now);
       return { ok: true, message };
     } catch (error) {
@@ -262,6 +337,18 @@ export class ConnectedAppService {
       });
       return { id, type: row.provider_type, providerId: "slack-webhook", config: parsed };
     }
+    if (row.provider_type === "mcp_remote") {
+      return {
+        id,
+        type: row.provider_type,
+        providerId: "mcp-remote",
+        config: {
+          endpoint: config.endpoint,
+          allowPrivateNetwork: config.allowPrivateNetwork,
+          tools: config.mcpTools,
+        },
+      };
+    }
     const secretHeaders = row.secret_ref
       ? [{ name: "Authorization", secretRef: row.secret_ref }]
       : [];
@@ -275,7 +362,52 @@ export class ConnectedAppService {
       timeoutMs: 10_000,
       allowPrivateNetwork: false,
     });
-    return { id, type: row.provider_type, providerId: "custom-http", config: parsed };
+    return {
+      id,
+      type: row.provider_type,
+      providerId: row.provider_type === "intercom" ? "intercom" : "custom-http",
+      config: parsed,
+    };
+  }
+
+  async callMcpTool(
+    id: string,
+    toolName: string,
+    argumentsValue: Record<string, unknown>,
+    mode: "ai" | "automation",
+    signal?: AbortSignal,
+  ): Promise<McpToolCallResult> {
+    const row = this.requireRow(id);
+    if (!row.enabled || row.provider_type !== "mcp_remote") {
+      throw new ConnectedAppSettingsError("A conexão MCP está indisponível.", "conflict");
+    }
+    const config = parseStoredConfig(row.config_json);
+    const tool = config.mcpTools.find((candidate) => candidate.name === toolName);
+    if (!tool || (mode === "ai" ? !tool.aiEnabled : !tool.automationEnabled)) {
+      throw new ConnectedAppSettingsError(
+        `A ferramenta MCP “${toolName}” não foi autorizada para ${mode === "ai" ? "o Threadmark AI" : "automações"}.`,
+        "conflict",
+      );
+    }
+    const token = row.secret_ref ? await this.secrets.get(row.secret_ref) : null;
+    const client = new McpRemoteClient({ fetchImpl: this.fetchImpl, lookup: this.lookup });
+    const result = await client.callTool(
+      {
+        endpoint: requireEndpoint(config),
+        bearerToken: token,
+        allowPrivateNetwork: config.allowPrivateNetwork,
+      },
+      tool.name,
+      normalizeMcpArguments(tool.inputSchema, argumentsValue),
+      signal,
+    );
+    if (result.isError) {
+      throw new ConnectedAppSettingsError(
+        `A ferramenta MCP “${tool.title}” devolveu um erro.`,
+        "unavailable",
+      );
+    }
+    return result;
   }
 
   private parseWrite(input: ConnectedAppWriteInput) {
@@ -284,6 +416,14 @@ export class ConnectedAppService {
       const endpoint = safeHttpUrlSchema.parse(parsed.endpoint);
       if (parsed.type === "slack_webhook" && endpoint.protocol !== "https:") {
         throw new ConnectedAppSettingsError("O webhook do Slack precisa usar HTTPS.");
+      }
+      if (parsed.type === "intercom") {
+        if (endpoint.protocol !== "https:" || !isIntercomApiHost(endpoint.hostname)) {
+          throw new ConnectedAppSettingsError("Selecione uma região válida da API do Intercom.");
+        }
+        endpoint.pathname = "/";
+        endpoint.search = "";
+        endpoint.hash = "";
       }
       for (const [name, value] of Object.entries(parsed.headers)) {
         publicHeaderSchema.parse({ name, value });
@@ -302,6 +442,7 @@ export class ConnectedAppService {
     input: ReturnType<ConnectedAppService["parseWrite"]>,
     secretRef: string,
     hadSecret: boolean,
+    existingConfig?: StoredConfig,
   ): Promise<{ config: StoredConfig; secretConfigured: boolean }> {
     const secret = input.secret?.trim();
     if (input.type === "slack_webhook") {
@@ -310,19 +451,53 @@ export class ConnectedAppService {
         config: {
           endpointPreview: maskEndpoint(input.endpoint),
           publicHeaders: [],
+          allowPrivateNetwork: false,
+          mcpTools: [],
         },
         secretConfigured: true,
       };
     }
     if (secret) await this.secrets.set(secretRef, normalizeAuthorization(secret));
+    const permissions = new Map(input.mcpTools?.map((tool) => [tool.name, tool]));
+    const existingTools = input.type === "mcp_remote" ? existingConfig?.mcpTools ?? [] : [];
     return {
       config: {
         endpoint: input.endpoint,
         endpointPreview: previewEndpoint(input.endpoint),
         publicHeaders: Object.entries(input.headers).map(([name, value]) => ({ name, value })),
+        allowPrivateNetwork: input.type === "mcp_remote" && input.allowPrivateNetwork,
+        mcpTools: existingTools.map((tool) => {
+          const permission = permissions.get(tool.name);
+          return permission ? { ...tool, ...permission } : tool;
+        }),
       },
       secretConfigured: Boolean(secret || hadSecret),
     };
+  }
+
+  private async refreshMcpTools(row: ConnectedAppRow): Promise<string> {
+    const config = parseStoredConfig(row.config_json);
+    const token = row.secret_ref ? await this.secrets.get(row.secret_ref) : null;
+    const client = new McpRemoteClient({ fetchImpl: this.fetchImpl, lookup: this.lookup });
+    const discovered = await client.listTools({
+      endpoint: requireEndpoint(config),
+      bearerToken: token,
+      allowPrivateNetwork: config.allowPrivateNetwork,
+    });
+    const previous = new Map(config.mcpTools.map((tool) => [tool.name, tool]));
+    config.mcpTools = discovered.map((tool) => {
+      const saved = previous.get(tool.name);
+      return {
+        ...tool,
+        aiEnabled: saved?.aiEnabled ?? false,
+        automationEnabled: saved?.automationEnabled ?? false,
+        confirmationRequired: saved?.confirmationRequired ?? !tool.annotations.readOnlyHint,
+      };
+    });
+    this.database
+      .prepare("UPDATE connected_apps SET config_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(config), new Date().toISOString(), row.id);
+    return `Servidor MCP conectado: ${config.mcpTools.length} ferramenta(s) descoberta(s). Revise quais podem ser usadas pela IA e por automações.`;
   }
 
   private recordTest(id: string, succeeded: boolean, message: string, at: string): void {
@@ -333,6 +508,41 @@ export class ConnectedAppService {
          WHERE id = ?`,
       )
       .run(at, succeeded ? "success" : "failed", message.slice(0, 1_000), id);
+  }
+
+  private async validateIntercomAccess(
+    row: ConnectedAppRow,
+    origin: string,
+  ): Promise<string> {
+    const authorization = row.secret_ref ? await this.secrets.get(row.secret_ref) : null;
+    if (!authorization) {
+      throw new ConnectedAppSettingsError("Informe o access token da API do Intercom.");
+    }
+    const headers = {
+      Accept: "application/json",
+      Authorization: authorization,
+      "Intercom-Version": "2.16",
+    };
+    const checks = [
+      { label: "conversas", path: "/conversations?per_page=1" },
+      { label: "autor", path: "/me" },
+      { label: "coleções", path: "/help_center/collections?per_page=1" },
+    ];
+    for (const check of checks) {
+      const response = await this.fetchImpl(new URL(check.path, origin), {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        throw new ConnectedAppSettingsError(
+          `O token do Intercom não possui acesso a ${check.label} (HTTP ${response.status}).`,
+          "unavailable",
+        );
+      }
+      await response.body?.cancel().catch(() => undefined);
+    }
+    return "Intercom conectado: conversas, autor e coleções estão acessíveis. Artigos serão criados somente como rascunho após confirmação.";
   }
 
   private requireRow(id: string): ConnectedAppRow {
@@ -382,12 +592,15 @@ function toDto(row: ConnectedAppRow): ConnectedAppDto {
     name: row.name,
     description: row.description,
     status: row.enabled ? (row.last_test_status === "failed" ? "error" : "active") : "disabled",
+    aiEnabled: Boolean(row.ai_enabled),
     secretConfigured: Boolean(row.secret_configured),
     endpointPreview: config.endpointPreview || null,
+    allowPrivateNetwork: config.allowPrivateNetwork,
     lastTestAt: row.last_tested_at,
     lastTestSucceeded:
       row.last_test_status === null ? null : row.last_test_status === "success",
     lastTestMessage: row.last_test_message,
+    mcpTools: config.mcpTools,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -400,6 +613,10 @@ function parseStoredConfig(value: string): StoredConfig {
       ...(parsed.endpoint ? { endpoint: parsed.endpoint } : {}),
       endpointPreview: parsed.endpointPreview ?? "",
       publicHeaders: Array.isArray(parsed.publicHeaders) ? parsed.publicHeaders : [],
+      allowPrivateNetwork: parsed.allowPrivateNetwork === true,
+      mcpTools: Array.isArray(parsed.mcpTools)
+        ? parsed.mcpTools.filter(isStoredMcpTool).slice(0, 200)
+        : [],
     };
   } catch {
     throw new ConnectedAppSettingsError("Configuração persistida do app é inválida.", "invalid");
@@ -410,6 +627,10 @@ function requiredActor(value: string): string {
   const actor = value.trim();
   if (!actor || actor.length > 200) throw new ConnectedAppSettingsError("Responsável inválido.");
   return actor;
+}
+
+function isIntercomApiHost(hostname: string): boolean {
+  return /^(?:api|api\.eu|api\.au)\.intercom\.io$/i.test(hostname);
 }
 
 function normalizeAuthorization(value: string): string {
@@ -425,4 +646,50 @@ function previewEndpoint(value: string): string {
 function maskEndpoint(value: string): string {
   const url = new URL(value);
   return `${url.origin}/••••••••`;
+}
+
+function requireEndpoint(config: StoredConfig): string {
+  if (!config.endpoint) {
+    throw new ConnectedAppSettingsError("O endpoint MCP não está disponível.", "invalid");
+  }
+  return config.endpoint;
+}
+
+function isStoredMcpTool(value: unknown): value is ConnectedAppMcpTool {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const tool = value as Partial<ConnectedAppMcpTool>;
+  return (
+    typeof tool.name === "string" &&
+    typeof tool.title === "string" &&
+    typeof tool.description === "string" &&
+    Boolean(tool.inputSchema) &&
+    typeof tool.inputSchema === "object" &&
+    Boolean(tool.annotations) &&
+    typeof tool.annotations === "object" &&
+    typeof tool.aiEnabled === "boolean" &&
+    typeof tool.automationEnabled === "boolean" &&
+    typeof tool.confirmationRequired === "boolean"
+  );
+}
+
+function normalizeMcpArguments(
+  schema: Record<string, unknown>,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = schema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return value;
+  const result = { ...value };
+  for (const [name, property] of Object.entries(properties)) {
+    if (!property || typeof property !== "object" || Array.isArray(property)) continue;
+    const current = result[name];
+    const type = (property as { type?: unknown }).type;
+    if ((type === "object" || type === "array") && typeof current === "string") {
+      try {
+        result[name] = JSON.parse(current) as unknown;
+      } catch {
+        throw new ConnectedAppSettingsError(`O campo MCP “${name}” precisa conter JSON válido.`);
+      }
+    }
+  }
+  return result;
 }

@@ -28,6 +28,7 @@ const TECHNICAL_EVIDENCE_SOURCES = new Set([
   "aws",
   "code",
   "deployment",
+  "external_app",
 ]);
 
 const TOOL_EVIDENCE_SOURCE = {
@@ -37,6 +38,7 @@ const TOOL_EVIDENCE_SOURCE = {
   clickhouse_readonly: "clickhouse",
   aws_cloudwatch: "aws",
   vercel: "deployment",
+  connected_app: "external_app",
 } as const;
 
 export interface DeepInvestigationToolBroker {
@@ -191,6 +193,14 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           continue;
         }
         observedRequests.add(fingerprint);
+        const descriptor = availableTools.find((tool) => tool.id === request.toolId);
+        if (
+          requiresCurrentOperatorConfirmation(descriptor, request) &&
+          !hasCurrentOperatorConfirmation(request, input.currentOperatorMessageId)
+        ) {
+          await appendToolResult(connectedAppConfirmationRequiredResult(request));
+          continue;
+        }
         pending.push(request);
       }
 
@@ -233,6 +243,59 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       )
       .run(summary, new Date().toISOString(), threadId);
   }
+}
+
+function hasCurrentOperatorConfirmation(
+  request: InvestigationToolRequest,
+  currentOperatorMessageId: string,
+): boolean {
+  try {
+    const parsed = JSON.parse(request.argumentsJson) as { confirmationMessageId?: unknown };
+    return parsed.confirmationMessageId === currentOperatorMessageId;
+  } catch {
+    return false;
+  }
+}
+
+function requiresCurrentOperatorConfirmation(
+  descriptor: InvestigationToolDescriptor | undefined,
+  request: InvestigationToolRequest,
+): boolean {
+  if (request.toolId === "threadmark-context") {
+    return request.operation === "create_ticket_from_draft";
+  }
+  if (request.toolId === "threadmark-automations") {
+    return [
+      "apply_automation_draft",
+      "set_automation_status",
+      "delete_automation",
+    ].includes(request.operation);
+  }
+  if (descriptor?.type !== "connected_app") return false;
+  return ["execute_request", "send_message", "create_article"].includes(request.operation);
+}
+
+function connectedAppConfirmationRequiredResult(
+  request: InvestigationToolRequest,
+): InvestigationToolResult {
+  const message =
+    "A ação não foi executada: confirmationMessageId deve ser o ID da mensagem atual do operador que pediu explicitamente esta ação.";
+  return {
+    requestId: request.requestId,
+    toolId: request.toolId,
+    toolName:
+      request.toolId === "threadmark-automations"
+        ? "Automações do Threadmark"
+        : "App conectado",
+    operation: request.operation,
+    argumentsJson: request.argumentsJson,
+    purpose: request.purpose,
+    status: "error",
+    summary: message,
+    content: message,
+    reference: null,
+    executedAt: new Date().toISOString(),
+  };
 }
 
 function checkpointSummary(value: string): string {

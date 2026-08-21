@@ -183,7 +183,7 @@ export class LocalToolService {
     const row = this.requireRow(id);
     if (!row.enabled || !row.deep_enabled) {
       throw new LocalToolSettingsError(
-        "A ferramenta não está ativa para investigação aprofundada.",
+        "A ferramenta não está ativa para o Threadmark AI.",
         "conflict",
       );
     }
@@ -535,7 +535,7 @@ function assertUsefulDeepScope(
 ): void {
   if (deepEnabled && operations.length === 0) {
     throw new LocalToolSettingsError(
-      "Selecione pelo menos uma operação para habilitar a ferramenta na investigação profunda.",
+      "Selecione pelo menos uma operação para habilitar a ferramenta no Threadmark AI.",
     );
   }
 }

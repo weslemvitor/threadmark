@@ -116,13 +116,20 @@ export class StructuredSupportAgent implements SupportAgent {
     const boundedInput: InvestigationThreadInput = {
       ...input,
       ticket: boundProviderSupportInput(input.ticket),
+      relatedTickets: (input.relatedTickets ?? [])
+        .slice(0, 4)
+        .map((ticket) => boundProviderSupportInput(ticket)),
     };
     const raw = await this.client.generateJson({
       prompt: buildInvestigationThreadPrompt(boundedInput),
       schemaName: "investigation_turn",
       schema: INVESTIGATION_TURN_JSON_SCHEMA,
       model: this.model,
-      images: await this.collectTrustedImages(input.ticket.messages),
+      images: await this.collectTrustedImages(
+        input.imageAnalysisApproved
+          ? approvedInvestigationImageMessages(input)
+          : input.ticket.messages,
+      ),
       signal,
     });
     return parseInvestigationTurnResult(raw, boundedInput);
@@ -274,6 +281,31 @@ export class CodexProviderAdapter implements SupportAgent {
   ): Promise<DocumentationDraftResult> {
     return this.agent.generateDocumentation(input, this.model, signal);
   }
+}
+
+function approvedInvestigationImageMessages(
+  input: InvestigationThreadInput,
+): AnalysisMessage[] {
+  const operatorMessage = input.recentMessages.find(
+    (message) => message.id === input.currentOperatorMessageId,
+  );
+  const approvedImages: AnalysisMessage = {
+    id: input.currentOperatorMessageId,
+    author: "Operador local",
+    role: "staff",
+    timestampUtc: operatorMessage?.createdAt ?? new Date(0).toISOString(),
+    text: operatorMessage?.body ?? null,
+    attachments: (input.images ?? []).map((image) => ({
+      id: image.id,
+      kind: "image",
+      fileName: image.fileName,
+      mimeType: image.mimeType,
+      localPath: image.localPath,
+      extractedText: null,
+    })),
+    quotedMessageId: null,
+  };
+  return [approvedImages, ...input.ticket.messages];
 }
 
 function requireNonEmpty(value: string, field: string): string {

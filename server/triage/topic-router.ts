@@ -54,7 +54,7 @@ export interface TopicRoutingDecision {
   scores: TopicCandidateScore[];
 }
 
-const closedStatuses = new Set(["resolved", "archived"]);
+const closedStatuses = new Set(["resolved", "cancelled", "archived"]);
 const continuationSignals = /\b(tambem|ainda|continua|continuando|sobre isso|sobre esse|sobre essa|nesse caso|neste caso|segue|segue o anexo|conforme|complementando|mais detalhes|mais um print|mesmo problema|resolvido|resolveu|funcionou|deu certo|voltou|normalizou)\b/i;
 const topicFamilies: ReadonlyArray<readonly [string, RegExp]> = [
   ["customer_metrics", /\b(clientes?|recorrentes?|novos? clientes?|total de clientes|ltv|coorte)\b/i],

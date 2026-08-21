@@ -12,6 +12,9 @@ import { z } from "zod";
 import {
   CATEGORY_FACETS,
   INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH,
+  THREADMARK_AI_IMAGE_MAX_BYTES,
+  THREADMARK_AI_IMAGE_MAX_COUNT,
+  THREADMARK_AI_IMAGE_MIME_TYPES,
   CLIENT_KINDS,
   PRODUCT_FORWARDING_DESCRIPTION_MAX_LENGTH,
   PRODUCT_FORWARDING_EXTERNAL_REFERENCE_MAX_LENGTH,
@@ -85,6 +88,10 @@ import { DeepToolExecutor } from "./tools/deep-tool-executor.js";
 import { TRIAGE_PROMPT_VERSION } from "./triage/index.js";
 import { LegacyLocalToolImportService } from "./tools/legacy-tool-import.js";
 import { AudioTranscriptionService } from "./transcription/index.js";
+import {
+  cleanupStoredThreadmarkAiImages,
+  storeThreadmarkAiImages,
+} from "./media/threadmark-ai-images.js";
 import { AutomationRuntime } from "./automation-runtime/index.js";
 import {
   AutomationApiError,
@@ -137,6 +144,7 @@ export interface StartApiServerOptions {
   audioTranscription?: AudioTranscriptionService;
   automationRuntime?: AutomationRuntime;
   notifications?: NotificationService;
+  attachmentsDirectory?: string;
 }
 
 type RequestIdentity =
@@ -174,6 +182,7 @@ interface ApiServices {
   audioTranscription?: AudioTranscriptionService;
   automations?: AutomationApiService;
   notifications?: NotificationService;
+  attachmentsDirectory?: string;
 }
 
 const SESSION_COOKIE = "threadmark_session";
@@ -391,6 +400,18 @@ const triageAiSettingsInputSchema = z
   })
   .strict();
 
+const threadmarkAiContextInputSchema = z
+  .object({
+    route: z.string().trim().max(500).nullable(),
+    label: z.string().trim().max(300).nullable(),
+    ticketId: z.string().trim().max(200).nullable(),
+    ticketNumber: z.number().int().positive().nullable(),
+    groupId: z.string().trim().max(200).nullable(),
+    groupName: z.string().trim().max(300).nullable(),
+  })
+  .strict()
+  .nullable();
+
 const investigationThreadMessageInputSchema = z
   .object({
     body: z
@@ -399,6 +420,38 @@ const investigationThreadMessageInputSchema = z
       .min(1)
       .max(INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH),
     clientMessageId: z.string().trim().min(1).max(200).optional(),
+    context: threadmarkAiContextInputSchema.optional(),
+  })
+  .strict();
+
+const threadmarkAiMessageInputSchema = investigationThreadMessageInputSchema
+  .extend({
+    attachments: z
+      .array(
+        z.object({
+          fileName: z.string().trim().min(1).max(200),
+          mimeType: z.enum(THREADMARK_AI_IMAGE_MIME_TYPES),
+          dataBase64: z.string().min(1).max(Math.ceil(THREADMARK_AI_IMAGE_MAX_BYTES * 4 / 3) + 8),
+        }).strict(),
+      )
+      .max(THREADMARK_AI_IMAGE_MAX_COUNT)
+      .optional(),
+    allowImageAnalysis: z.boolean().optional(),
+  })
+  .superRefine((input, context) => {
+    if (input.attachments?.length && input.allowImageAnalysis !== true) {
+      context.addIssue({
+        code: "custom",
+        path: ["allowImageAnalysis"],
+        message: "Confirme o processamento das imagens pelo provedor de IA configurado.",
+      });
+    }
+  });
+
+const threadmarkAiThreadInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    context: threadmarkAiContextInputSchema.optional(),
   })
   .strict();
 
@@ -971,6 +1024,19 @@ function actorFor(
     unauthenticatedFallback?.trim() ??
     "Operador local"
   );
+}
+
+function investigationMessageActorFor(
+  context: Context<ApiEnvironment>,
+): { userId: string | null; role: AuthRole } {
+  const identity = context.get("identity");
+  if (!identity) {
+    throw new AuthError("authentication_required", "Entre para continuar.");
+  }
+  return {
+    userId: identity.kind === "user" ? identity.user.id : null,
+    role: identity.user.role,
+  };
 }
 
 function localMachineIdentity(): Extract<RequestIdentity, { kind: "local" }> {
@@ -2499,6 +2565,87 @@ function createApiAppInternal(
     ),
   );
 
+  app.get("/api/threadmark-ai/threads", (context) =>
+    context.json(store.listThreadmarkAiThreads()),
+  );
+
+  app.post("/api/threadmark-ai/threads", async (context) => {
+    const raw = await context.req.text();
+    const input = threadmarkAiThreadInputSchema.parse(raw ? JSON.parse(raw) : {});
+    return context.json(
+      store.createThreadmarkAiThread(input, actorFor(context)),
+      201,
+    );
+  });
+
+  app.post("/api/threadmark-ai/current", async (context) => {
+    const raw = await context.req.text();
+    const input = threadmarkAiThreadInputSchema.parse(raw ? JSON.parse(raw) : {});
+    return context.json(
+      store.getOrCreateThreadmarkAiThread(
+        actorFor(context),
+        input.context ?? null,
+      ),
+    );
+  });
+
+  app.get("/api/threadmark-ai/threads/:id", (context) =>
+    context.json(store.getThreadmarkAiThread(context.req.param("id"))),
+  );
+
+  app.post("/api/threadmark-ai/threads/:id/messages", async (context) => {
+    const input = threadmarkAiMessageInputSchema.parse(
+      await context.req.json(),
+    );
+    const threadId = context.req.param("id");
+    store.getThreadmarkAiThread(threadId);
+    if (
+      input.clientMessageId &&
+      store.hasInvestigationThreadClientMessage(threadId, input.clientMessageId)
+    ) {
+      return context.json(store.getThreadmarkAiThread(threadId), 202);
+    }
+
+    const storedImages = input.attachments?.length
+      ? await storeThreadmarkAiImages(
+          services.attachmentsDirectory ?? config.attachmentsDir,
+          input.attachments,
+        )
+      : [];
+    try {
+      const updated = store.addThreadmarkAiMessage(
+        threadId,
+        {
+          body: input.body,
+          clientMessageId: input.clientMessageId,
+          context: input.context,
+        },
+        storedImages,
+        input.allowImageAnalysis === true,
+        investigationMessageActorFor(context),
+      );
+      return context.json(updated, 202);
+    } catch (error) {
+      await cleanupStoredThreadmarkAiImages(storedImages);
+      throw error;
+    }
+  });
+
+  app.post("/api/threadmark-ai/threads/:id/cancel", (context) => {
+    const cancellation = store.cancelInvestigationThread(
+      context.req.param("id"),
+      actorFor(context),
+    );
+    if (cancellation.cancelledJobId) {
+      services.investigationExecutions?.cancel(cancellation.cancelledJobId);
+    }
+    return context.json(store.getThreadmarkAiThread(context.req.param("id")));
+  });
+
+  app.post("/api/threadmark-ai/threads/:id/retry", (context) =>
+    context.json(store.retryThreadmarkAiTurn(context.req.param("id")), 202),
+  );
+
   app.get("/api/investigation-threads/:id", (context) =>
     context.json(store.getInvestigationThread(context.req.param("id"))),
   );
@@ -2545,6 +2692,46 @@ function createApiAppInternal(
         actor: actorFor(context, input.actor),
       }),
     );
+  });
+
+  app.get("/api/threadmark-ai/attachments/:id", async (context) => {
+    const attachment = store.database
+      .prepare(
+        `SELECT local_path, mime_type, file_name
+         FROM investigation_thread_message_attachments WHERE id = ?`,
+      )
+      .get(context.req.param("id")) as
+      | { local_path: string; mime_type: string; file_name: string }
+      | undefined;
+    if (!attachment) {
+      throw new DomainError("Anexo não encontrado", "not_found", 404);
+    }
+
+    let trustedRoot: string;
+    let filePath: string;
+    try {
+      [trustedRoot, filePath] = await Promise.all([
+        realpath(services.attachmentsDirectory ?? config.attachmentsDir),
+        realpath(attachment.local_path),
+      ]);
+    } catch {
+      throw new DomainError("Arquivo do anexo indisponível", "not_found", 404);
+    }
+    const pathWithinRoot = relative(trustedRoot, filePath);
+    if (pathWithinRoot.startsWith("..") || isAbsolute(pathWithinRoot)) {
+      throw new DomainError("Caminho do anexo inválido", "not_found", 404);
+    }
+
+    const bytes = await readFile(filePath);
+    return new Response(new Uint8Array(bytes), {
+      headers: {
+        "Cache-Control": "private, no-store, max-age=0",
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.file_name)}`,
+        "Content-Security-Policy": "sandbox",
+        "Content-Type": attachment.mime_type,
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
   });
 
   app.get("/api/attachments/:id", async (context) => {
@@ -2787,6 +2974,7 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
     whatsappQrController: options.whatsappQrController,
     automations: automationApi,
     notifications,
+    attachmentsDirectory: options.attachmentsDirectory ?? config.attachmentsDir,
   });
   const host = options.host ?? config.apiHost;
   const port = options.port ?? config.apiPort;

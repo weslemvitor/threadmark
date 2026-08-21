@@ -3,13 +3,14 @@ import type { TicketStatus } from "../../shared/contracts.js";
 import { ConflictError } from "./errors.js";
 
 const ALLOWED_TRANSITIONS: Record<TicketStatus, ReadonlySet<TicketStatus>> = {
-  new: new Set(["triage", "in_progress", "resolved"]),
-  triage: new Set(["new", "in_progress", "resolved"]),
-  in_progress: new Set(["triage", "waiting_customer", "blocked", "resolved"]),
-  waiting_customer: new Set(["in_progress", "blocked", "resolved"]),
-  blocked: new Set(["in_progress", "waiting_customer", "resolved"]),
+  new: new Set(["triage", "in_progress", "resolved", "cancelled"]),
+  triage: new Set(["new", "in_progress", "resolved", "cancelled"]),
+  in_progress: new Set(["triage", "waiting_customer", "blocked", "resolved", "cancelled"]),
+  waiting_customer: new Set(["in_progress", "blocked", "resolved", "cancelled"]),
+  blocked: new Set(["in_progress", "waiting_customer", "resolved", "cancelled"]),
   resolved: new Set(["in_progress", "archived"]),
-  archived: new Set(["resolved"]),
+  cancelled: new Set(["in_progress", "archived"]),
+  archived: new Set(["resolved", "cancelled"]),
 };
 
 export function assertStatusTransition(

@@ -50,6 +50,11 @@ import type {
   InvestigationThreadSummaryDto,
   InvestigationThreadTurnDto,
   InvestigationTurnResultDto,
+  ThreadmarkAiContextDto,
+  ThreadmarkAiImageMimeType,
+  ThreadmarkAiThreadDto,
+  ThreadmarkAiThreadListResponse,
+  CreateThreadmarkAiThreadInput,
   InvestigateTicketResponse,
   LatestInvestigationDto,
   OperationalGroupDto,
@@ -85,12 +90,14 @@ import type {
   UpdateTriageAiSettingsInput,
   UpsertTicketProductForwardingInput,
 } from "../../shared/contracts.js";
+
 import {
   DASHBOARD_TIME_ZONE,
   INVESTIGATION_OUTCOMES,
   INVESTIGATION_JOB_STATES,
   INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH,
   INVESTIGATION_TURN_PHASES,
+  THREADMARK_AI_IMAGE_MAX_COUNT,
   PRODUCT_FORWARDING_DESCRIPTION_MAX_LENGTH,
   PRODUCT_FORWARDING_EXTERNAL_REFERENCE_MAX_LENGTH,
   PRODUCT_FORWARDING_TITLE_MAX_LENGTH,
@@ -144,6 +151,11 @@ import {
   preferredParticipantDisplayName,
 } from "./participant-identity.js";
 import { assertStatusTransition } from "./status.js";
+
+interface InvestigationMessageActor {
+  userId: string | null;
+  role: AuthRole;
+}
 
 const DEFAULT_TRIAGE_AI_MODEL = "gpt-5.4-mini";
 const DEFAULT_TRIAGE_SILENCE_WINDOW_SECONDS = 180;
@@ -258,6 +270,15 @@ export interface UpsertAttachmentInput {
   sourceKey?: string | null;
   extractedText?: string | null;
   available?: boolean;
+}
+
+export interface InvestigationThreadImageInput {
+  id: string;
+  fileName: string;
+  mimeType: ThreadmarkAiImageMimeType;
+  localPath: string;
+  sizeBytes: number;
+  sha256: string;
 }
 
 interface AttachmentMaterialState {
@@ -474,8 +495,9 @@ export interface ClaimedInvestigationJob {
 export interface ClaimedInvestigationThreadJob {
   id: string;
   threadId: string;
-  ticketId: string;
+  ticketId: string | null;
   operatorMessageId: string;
+  attemptCount: number;
 }
 
 export type ClaimedAgentJob =
@@ -548,6 +570,7 @@ const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
   waiting_customer: "Aguardando cliente",
   blocked: "Bloqueado",
   resolved: "Resolvido",
+  cancelled: "Cancelado",
   archived: "Arquivado",
 };
 
@@ -593,17 +616,17 @@ function describeTicketEvent(input: {
     case "investigation_failed":
       return "A investigação automática da IA falhou.";
     case "investigation_thread_created":
-      return "Sala de investigação aprofundada criada.";
+      return "Conversa do Threadmark AI criada.";
     case "investigation_thread_message_queued":
-      return "Mensagem do operador enviada à IA para investigação aprofundada.";
+      return "Mensagem do operador enviada ao Threadmark AI.";
     case "investigation_thread_turn_started":
-      return "A IA iniciou a investigação aprofundada.";
+      return "O Threadmark AI iniciou a análise.";
     case "investigation_thread_turn_completed":
-      return "A IA concluiu a investigação aprofundada.";
+      return "O Threadmark AI concluiu a análise.";
     case "investigation_thread_turn_failed":
-      return "A investigação aprofundada da IA falhou.";
+      return "A análise do Threadmark AI falhou.";
     case "investigation_thread_turn_cancelled":
-      return `A investigação aprofundada foi interrompida por ${input.actor}.`;
+      return `A análise do Threadmark AI foi interrompida por ${input.actor}.`;
     case "ticket_category_added":
       return "Categoria vinculada ao ticket.";
     case "ticket_category_removed":
@@ -760,7 +783,7 @@ function nowUtc(): string {
 }
 
 function isTerminalTicketStatus(status: TicketStatus): boolean {
-  return status === "resolved" || status === "archived";
+  return status === "resolved" || status === "cancelled" || status === "archived";
 }
 
 function attachmentMateriallyDiffers(
@@ -960,6 +983,39 @@ function parseJson<T>(json: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizeThreadmarkAiContext(
+  value: ThreadmarkAiContextDto | null | undefined,
+): ThreadmarkAiContextDto | null {
+  if (!value) return null;
+  const context: ThreadmarkAiContextDto = {
+    route: normalizedNullableText(value.route)?.slice(0, 500) ?? null,
+    label: normalizedNullableText(value.label)?.slice(0, 300) ?? null,
+    ticketId: normalizedNullableText(value.ticketId)?.slice(0, 200) ?? null,
+    ticketNumber:
+      Number.isInteger(value.ticketNumber) && (value.ticketNumber ?? 0) > 0
+        ? value.ticketNumber
+        : null,
+    groupId: normalizedNullableText(value.groupId)?.slice(0, 200) ?? null,
+    groupName: normalizedNullableText(value.groupName)?.slice(0, 300) ?? null,
+  };
+  return Object.values(context).some((item) => item !== null) ? context : null;
+}
+
+function parseThreadmarkAiContext(json: string | null): ThreadmarkAiContextDto | null {
+  const parsed = parseJson<unknown>(json, null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const value = parsed as Partial<ThreadmarkAiContextDto>;
+  return normalizeThreadmarkAiContext({
+    route: typeof value.route === "string" ? value.route : null,
+    label: typeof value.label === "string" ? value.label : null,
+    ticketId: typeof value.ticketId === "string" ? value.ticketId : null,
+    ticketNumber:
+      typeof value.ticketNumber === "number" ? value.ticketNumber : null,
+    groupId: typeof value.groupId === "string" ? value.groupId : null,
+    groupName: typeof value.groupName === "string" ? value.groupName : null,
+  });
 }
 
 function databaseHasTable(database: SupportDatabase, table: string): boolean {
@@ -1627,7 +1683,7 @@ export class SupportStore {
            WHERE g.client_id = ?) AS attachments,
           (SELECT COUNT(*) FROM tickets t WHERE t.client_id = ?) AS tickets,
           (SELECT COUNT(*) FROM tickets t
-           WHERE t.client_id = ? AND t.status NOT IN ('resolved', 'archived')) AS open_tickets`,
+           WHERE t.client_id = ? AND t.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_tickets`,
       )
       .get(clientId, clientId, clientId, clientId, clientId) as {
       groups: number;
@@ -3358,8 +3414,8 @@ export class SupportStore {
       if (ticket.group_id !== groupId) {
         throw new ValidationError("O ticket pertence a outra conversa");
       }
-      if (ticket.status === "resolved" || ticket.status === "archived") {
-        throw new ConflictError("Não é possível anexar mensagens a um ticket encerrado");
+      if (ticket.status === "archived") {
+        throw new ConflictError("Não é possível anexar mensagens a um ticket arquivado");
       }
       const messages = this.loadConversationActionMessages(groupId, input.messageIds);
       this.assertMessagesBelongOnlyToTicket(
@@ -6090,7 +6146,7 @@ export class SupportStore {
         `SELECT id, title, summary, status
          FROM tickets
          WHERE group_id = ?
-           AND status NOT IN ('resolved', 'archived')
+           AND status NOT IN ('resolved', 'cancelled', 'archived')
            AND merged_into_ticket_id IS NULL
          ORDER BY last_message_at DESC
          LIMIT 30`,
@@ -6421,7 +6477,7 @@ export class SupportStore {
       .prepare(
         `SELECT id FROM tickets
          WHERE id = ? AND group_id = ?
-           AND status NOT IN ('resolved', 'archived')
+           AND status NOT IN ('resolved', 'cancelled', 'archived')
            AND merged_into_ticket_id IS NULL`,
       )
       .get(ticketId, groupId) as { id: string } | undefined;
@@ -6947,7 +7003,7 @@ export class SupportStore {
       .prepare(
         `${this.ticketSelect()}
          WHERE t.group_id = ?
-           AND t.status NOT IN ('resolved', 'archived')
+           AND t.status NOT IN ('resolved', 'cancelled', 'archived')
            AND (? IS NULL OR t.last_message_at >= ?)
          ORDER BY t.last_message_at DESC, t.updated_at DESC
          LIMIT 1`,
@@ -7004,7 +7060,10 @@ export class SupportStore {
       last_message_at: string;
     }>;
     const openRows = rows.filter(
-      (row) => row.status !== "resolved" && row.status !== "archived",
+      (row) =>
+        row.status !== "resolved" &&
+        row.status !== "cancelled" &&
+        row.status !== "archived",
     );
     if (openRows.length === 1) {
       return { id: openRows[0]!.id, status: openRows[0]!.status };
@@ -7024,7 +7083,7 @@ export class SupportStore {
         `SELECT id, status, last_message_at, affected_store_id, title, summary
          FROM tickets
          WHERE group_id = ?
-           AND status NOT IN ('resolved', 'archived')
+           AND status NOT IN ('resolved', 'cancelled', 'archived')
            AND last_message_at >= ?
            AND last_message_at <= ?
          ORDER BY last_message_at DESC, updated_at DESC, id
@@ -7226,8 +7285,13 @@ export class SupportStore {
         throw new NotFoundError("Ticket", ticketId);
       }
 
-      assertStatusTransition(ticket.status, input.status);
-      if (ticket.status === input.status) {
+      const nextStatus =
+        ticket.status === "archived" && input.status === "resolved"
+          ? this.getArchivedRestoreStatus(ticketId)
+          : input.status;
+
+      assertStatusTransition(ticket.status, nextStatus);
+      if (ticket.status === nextStatus) {
         if (input.resolution) {
           this.recordResolution({
             ticketId,
@@ -7237,20 +7301,20 @@ export class SupportStore {
             validatedBy: input.resolution.validatedBy ?? input.actor ?? "Operador local",
           });
         }
-        if (isTerminalTicketStatus(input.status)) {
+        if (isTerminalTicketStatus(nextStatus)) {
           this.closeAutomaticInvestigationLifecycle(
             ticketId,
             nowUtc(),
-            `Ticket ${input.status === "resolved" ? "resolvido" : "arquivado"}; investigação automática cancelada.`,
+            `Ticket ${TICKET_STATUS_LABELS[nextStatus].toLocaleLowerCase("pt-BR")}; investigação automática cancelada.`,
           );
         }
         return this.getTicketDetail(ticketId);
       }
       const existingResolution =
-        input.status === "resolved" && !input.resolution
+        nextStatus === "resolved" && !input.resolution
           ? this.getResolution(ticketId)
           : null;
-      if (input.status === "resolved" && !input.resolution && !existingResolution) {
+      if (nextStatus === "resolved" && !input.resolution && !existingResolution) {
         throw new ValidationError(
           "Informe um resumo da resolução antes de concluir o ticket",
         );
@@ -7272,12 +7336,12 @@ export class SupportStore {
            WHERE id = ?`,
         )
         .run(
-          input.status,
-          input.status,
-          input.status,
+          nextStatus,
+          nextStatus,
+          nextStatus,
           timestamp,
-          input.status,
-          input.status,
+          nextStatus,
+          nextStatus,
           timestamp,
           timestamp,
           ticketId,
@@ -7294,11 +7358,11 @@ export class SupportStore {
         });
       }
 
-      if (isTerminalTicketStatus(input.status)) {
+      if (isTerminalTicketStatus(nextStatus)) {
         this.closeAutomaticInvestigationLifecycle(
           ticketId,
           timestamp,
-          `Ticket ${input.status === "resolved" ? "resolvido" : "arquivado"}; investigação automática cancelada.`,
+          `Ticket ${TICKET_STATUS_LABELS[nextStatus].toLocaleLowerCase("pt-BR")}; investigação automática cancelada.`,
         );
       }
 
@@ -7307,13 +7371,29 @@ export class SupportStore {
         eventType: "status_changed",
         actor: input.actor ?? "Operador local",
         fromStatus: ticket.status,
-        toStatus: input.status,
+        toStatus: nextStatus,
         data: input.reason ? { reason: input.reason } : {},
         occurredAt: timestamp,
       });
 
       return this.getTicketDetail(ticketId);
     })();
+  }
+
+  private getArchivedRestoreStatus(ticketId: string): "resolved" | "cancelled" {
+    const previous = this.database
+      .prepare(
+        `SELECT from_status
+         FROM ticket_events
+         WHERE ticket_id = ?
+           AND event_type = 'status_changed'
+           AND to_status = 'archived'
+           AND from_status IN ('resolved', 'cancelled')
+         ORDER BY COALESCE(ingestion_sequence, 0) DESC, occurred_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(ticketId) as { from_status: "resolved" | "cancelled" } | undefined;
+    return previous?.from_status ?? "resolved";
   }
 
   updateTicketStatusesInBulk(
@@ -7372,18 +7452,26 @@ export class SupportStore {
 
       const action: TicketBulkStatusResponse["action"] =
         input.status === "archived" ? "archive" : "restore";
-      const requiredStatus: TicketStatus =
-        action === "archive" ? "resolved" : "archived";
       const incompatible = ticketIds
         .map((ticketId) => byId.get(ticketId) as (typeof rows)[number])
-        .filter((ticket) => ticket.status !== requiredStatus)
+        .filter((ticket) =>
+          action === "archive"
+            ? ticket.status !== "resolved" && ticket.status !== "cancelled"
+            : ticket.status !== "archived"
+        )
         .map((ticket) => ({ ticketId: ticket.id, status: ticket.status }));
       if (incompatible.length) {
         throw new ConflictError(
           action === "archive"
-            ? "Somente tickets resolvidos podem ser arquivados em lote"
+            ? "Somente tickets resolvidos ou cancelados podem ser arquivados em lote"
             : "Somente tickets arquivados podem ser restaurados em lote",
-          { action, requiredStatus, incompatible },
+          {
+            action,
+            requiredStatuses: action === "archive"
+              ? ["resolved", "cancelled"]
+              : ["archived"],
+            incompatible,
+          },
         );
       }
 
@@ -7397,30 +7485,49 @@ export class SupportStore {
       const reason = input.reason
         ? normalizedBoundedText(input.reason, "Motivo", 1_000)
         : null;
-      const update = this.database.prepare(
-        action === "archive"
-          ? `UPDATE tickets
-             SET status = 'archived', archived_at = ?, updated_at = ?
-             WHERE id = ?`
-          : `UPDATE tickets
-             SET status = 'resolved', archived_at = NULL,
-                 resolved_at = COALESCE(resolved_at, ?), updated_at = ?
-             WHERE id = ?`,
+      const archiveTicket = this.database.prepare(
+        `UPDATE tickets
+         SET status = 'archived', archived_at = ?, updated_at = ?
+         WHERE id = ?`,
+      );
+      const restoreTicket = this.database.prepare(
+        `UPDATE tickets
+         SET status = ?, archived_at = NULL,
+             resolved_at = CASE
+               WHEN ? = 'resolved' THEN COALESCE(resolved_at, ?)
+               ELSE NULL
+             END,
+             updated_at = ?
+         WHERE id = ?`,
       );
 
       for (const ticketId of ticketIds) {
-        update.run(timestamp, timestamp, ticketId);
+        const ticket = byId.get(ticketId) as (typeof rows)[number];
+        const targetStatus = action === "archive"
+          ? "archived"
+          : this.getArchivedRestoreStatus(ticketId);
+        if (action === "archive") {
+          archiveTicket.run(timestamp, timestamp, ticketId);
+        } else {
+          restoreTicket.run(
+            targetStatus,
+            targetStatus,
+            timestamp,
+            timestamp,
+            ticketId,
+          );
+        }
         this.closeAutomaticInvestigationLifecycle(
           ticketId,
           timestamp,
-          `Ticket ${input.status === "resolved" ? "resolvido" : "arquivado"}; investigação automática cancelada.`,
+          `Ticket ${TICKET_STATUS_LABELS[targetStatus].toLocaleLowerCase("pt-BR")}; investigação automática cancelada.`,
         );
         this.insertTicketEvent({
           ticketId,
           eventType: "status_changed",
           actor,
-          fromStatus: requiredStatus,
-          toStatus: input.status,
+          fromStatus: ticket.status,
+          toStatus: targetStatus,
           data: {
             batchId,
             batchAction: action,
@@ -7429,7 +7536,7 @@ export class SupportStore {
             description:
               action === "archive"
                 ? `Ticket arquivado em lote por ${actor}.`
-                : `Ticket restaurado em lote para Resolvido por ${actor}.`,
+                : `Ticket restaurado em lote para ${TICKET_STATUS_LABELS[targetStatus]} por ${actor}.`,
           },
           occurredAt: timestamp,
         });
@@ -7677,7 +7784,7 @@ export class SupportStore {
            JOIN tickets t ON t.id = j.ticket_id
            JOIN clients c ON c.id = t.client_id
            WHERE c.ignored_at IS NULL
-             AND t.status NOT IN ('resolved', 'archived')
+             AND t.status NOT IN ('resolved', 'cancelled', 'archived')
              AND (
                j.state = 'queued'
                OR (j.state = 'running' AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at <= ?)
@@ -7742,9 +7849,9 @@ export class SupportStore {
                     j.lease_expires_at, 0 AS queue_priority
              FROM investigation_thread_jobs j
              JOIN investigation_threads thread ON thread.id = j.thread_id
-             JOIN tickets t ON t.id = thread.ticket_id
-             JOIN clients c ON c.id = t.client_id
-             WHERE c.ignored_at IS NULL
+             LEFT JOIN tickets t ON t.id = thread.ticket_id
+             LEFT JOIN clients c ON c.id = t.client_id
+             WHERE (thread.ticket_id IS NULL OR c.ignored_at IS NULL)
                AND (
                  j.state = 'queued'
                  OR (j.state = 'running' AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at <= ?)
@@ -7869,35 +7976,38 @@ export class SupportStore {
         | {
             id: string;
             thread_id: string;
-            ticket_id: string;
+            ticket_id: string | null;
             operator_message_id: string;
             attempt_count: number;
           }
         | undefined;
       if (!row) return null;
-      this.insertTicketEvent({
-        ticketId: row.ticket_id,
-        eventType: "investigation_thread_turn_started",
-        actor: "Agente de IA",
-        fromStatus: null,
-        toStatus: null,
-        data: {
-          threadId: row.thread_id,
-          jobId: row.id,
-          operatorMessageId: row.operator_message_id,
-          jobKind: "thread_turn",
-          attempt: row.attempt_count,
-          mode: "readonly",
-          sourceScope: ["code", "postgres", "clickhouse", "aws"],
-        },
-        occurredAt: claimedAt,
-      });
+      if (row.ticket_id) {
+        this.insertTicketEvent({
+          ticketId: row.ticket_id,
+          eventType: "investigation_thread_turn_started",
+          actor: "Agente de IA",
+          fromStatus: null,
+          toStatus: null,
+          data: {
+            threadId: row.thread_id,
+            jobId: row.id,
+            operatorMessageId: row.operator_message_id,
+            jobKind: "thread_turn",
+            attempt: row.attempt_count,
+            mode: "readonly",
+            sourceScope: ["code", "postgres", "clickhouse", "aws"],
+          },
+          occurredAt: claimedAt,
+        });
+      }
       return {
         kind: "thread_turn" as const,
         id: row.id,
         threadId: row.thread_id,
         ticketId: row.ticket_id,
         operatorMessageId: row.operator_message_id,
+        attemptCount: row.attempt_count,
       };
     })();
   }
@@ -7951,7 +8061,7 @@ export class SupportStore {
         .prepare("SELECT id FROM investigation_threads WHERE ticket_id = ?")
         .get(ticketId) as EntityRecord | undefined;
       if (!row) {
-        throw new Error("Não foi possível localizar ou criar a sala de investigação");
+        throw new Error("Não foi possível localizar ou criar a conversa do Threadmark AI");
       }
       if (inserted.changes > 0) {
         this.insertTicketEvent({
@@ -7971,13 +8081,17 @@ export class SupportStore {
   getInvestigationThread(threadId: string): InvestigationThreadDto {
     const row = this.database
       .prepare(
-        `SELECT id, ticket_id, status, summary, created_at, updated_at
+        `SELECT id, ticket_id, scope, title, context_json, status, summary,
+                created_at, updated_at
          FROM investigation_threads WHERE id = ?`,
       )
       .get(threadId) as
       | {
           id: string;
-          ticket_id: string;
+          ticket_id: string | null;
+          scope: "ticket" | "workspace";
+          title: string;
+          context_json: string;
           status: InvestigationThreadDto["status"];
           summary: string;
           created_at: string;
@@ -7985,7 +8099,7 @@ export class SupportStore {
         }
       | undefined;
     if (!row) {
-      throw new NotFoundError("Sala de investigação", threadId);
+      throw new NotFoundError("Conversa do Threadmark AI", threadId);
     }
 
     const messages = this.getInvestigationThreadMessages(threadId);
@@ -8004,6 +8118,9 @@ export class SupportStore {
     return {
       id: row.id,
       ticketId: row.ticket_id,
+      scope: row.scope,
+      title: row.title,
+      context: parseThreadmarkAiContext(row.context_json),
       status: row.status,
       summary: row.summary,
       createdAt: row.created_at,
@@ -8012,6 +8129,99 @@ export class SupportStore {
       activeTurnState: activeTurn?.state ?? null,
       messages,
       turns,
+    };
+  }
+
+  listThreadmarkAiThreads(): ThreadmarkAiThreadListResponse {
+    const rows = this.database
+      .prepare(
+        `SELECT thread.id, thread.title, thread.status, thread.updated_at,
+                (SELECT MAX(message.created_at)
+                 FROM investigation_thread_messages message
+                 WHERE message.thread_id = thread.id
+                   AND message.role = 'assistant') AS last_assistant_message_at,
+                (SELECT job.state
+                 FROM investigation_thread_jobs job
+                 WHERE job.thread_id = thread.id
+                   AND job.state IN ('queued', 'running')
+                 ORDER BY job.requested_at DESC, job.rowid DESC LIMIT 1) AS active_turn_state
+         FROM investigation_threads thread
+         WHERE thread.scope = 'workspace'
+         ORDER BY thread.updated_at DESC, thread.id DESC`,
+      )
+      .all() as Array<{
+      id: string;
+      title: string;
+      status: InvestigationThreadDto["status"];
+      updated_at: string;
+      last_assistant_message_at: string | null;
+      active_turn_state: InvestigationJobState | null;
+    }>;
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        updatedAt: row.updated_at,
+        lastAssistantMessageAt: row.last_assistant_message_at,
+        activeTurnState: row.active_turn_state,
+      })),
+    };
+  }
+
+  createThreadmarkAiThread(
+    input: CreateThreadmarkAiThreadInput = {},
+    actor = "Operador local",
+  ): ThreadmarkAiThreadDto {
+    const timestamp = nowUtc();
+    const id = randomUUID();
+    const title = normalizedNullableText(input.title)?.slice(0, 160) || "Nova conversa";
+    const context = normalizeThreadmarkAiContext(input.context);
+    this.database
+      .prepare(
+        `INSERT INTO investigation_threads
+          (id, ticket_id, scope, title, context_json, created_by, status,
+           summary, created_at, updated_at)
+         VALUES (?, NULL, 'workspace', ?, ?, ?, 'active', '', ?, ?)`,
+      )
+      .run(
+        id,
+        title,
+        JSON.stringify(context ?? {}),
+        normalizedText(actor, "Responsável").slice(0, 200),
+        timestamp,
+        timestamp,
+      );
+    return this.getThreadmarkAiThread(id);
+  }
+
+  getOrCreateThreadmarkAiThread(
+    actor = "Operador local",
+    context: ThreadmarkAiContextDto | null = null,
+  ): ThreadmarkAiThreadDto {
+    const active = this.database
+      .prepare(
+        `SELECT id FROM investigation_threads
+         WHERE scope = 'workspace'
+         ORDER BY updated_at DESC, id DESC LIMIT 1`,
+      )
+      .get() as EntityRecord | undefined;
+    return active
+      ? this.getThreadmarkAiThread(active.id)
+      : this.createThreadmarkAiThread({ context }, actor);
+  }
+
+  getThreadmarkAiThread(threadId: string): ThreadmarkAiThreadDto {
+    const thread = this.getInvestigationThread(threadId);
+    if (thread.scope !== "workspace" || thread.ticketId !== null) {
+      throw new NotFoundError("Conversa do Threadmark AI", threadId);
+    }
+    return {
+      ...thread,
+      scope: "workspace",
+      ticketId: null,
+      title: thread.title || "Nova conversa",
+      context: thread.context ?? null,
     };
   }
 
@@ -8024,9 +8234,9 @@ export class SupportStore {
     return this.database.transaction(() => {
       const thread = this.database
         .prepare("SELECT ticket_id FROM investigation_threads WHERE id = ?")
-        .get(threadId) as { ticket_id: string } | undefined;
+        .get(threadId) as { ticket_id: string | null } | undefined;
       if (!thread) {
-        throw new NotFoundError("Sala de investigação", threadId);
+        throw new NotFoundError("Conversa do Threadmark AI", threadId);
       }
 
       const active = this.database
@@ -8084,20 +8294,22 @@ export class SupportStore {
            SET status = 'active', updated_at = ? WHERE id = ?`,
         )
         .run(timestamp, threadId);
-      this.insertTicketEvent({
-        ticketId: thread.ticket_id,
-        eventType: "investigation_thread_turn_cancelled",
-        actor: cancelledBy,
-        fromStatus: null,
-        toStatus: null,
-        data: {
-          threadId,
-          jobId: active.id,
-          jobKind: "thread_turn",
-          previousState: active.state,
-        },
-        occurredAt: timestamp,
-      });
+      if (thread.ticket_id) {
+        this.insertTicketEvent({
+          ticketId: thread.ticket_id,
+          eventType: "investigation_thread_turn_cancelled",
+          actor: cancelledBy,
+          fromStatus: null,
+          toStatus: null,
+          data: {
+            threadId,
+            jobId: active.id,
+            jobKind: "thread_turn",
+            previousState: active.state,
+          },
+          occurredAt: timestamp,
+        });
+      }
 
       return {
         thread: this.getInvestigationThread(threadId),
@@ -8119,6 +8331,9 @@ export class SupportStore {
   addInvestigationThreadMessage(
     threadId: string,
     input: AddInvestigationThreadMessageInput,
+    attachments: readonly InvestigationThreadImageInput[] = [],
+    imageAnalysisApproved = false,
+    messageActor: InvestigationMessageActor | null = null,
   ): InvestigationThreadDto {
     const body = normalizedText(input.body, "Mensagem");
     if (body.length > INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH) {
@@ -8130,13 +8345,19 @@ export class SupportStore {
       0,
       200,
     );
+    const messageContext = normalizeThreadmarkAiContext(input.context);
 
     return this.database.transaction(() => {
       const thread = this.database
-        .prepare("SELECT id, ticket_id FROM investigation_threads WHERE id = ?")
-        .get(threadId) as { id: string; ticket_id: string } | undefined;
+        .prepare("SELECT id, ticket_id, scope, title FROM investigation_threads WHERE id = ?")
+        .get(threadId) as {
+          id: string;
+          ticket_id: string | null;
+          scope: "ticket" | "workspace";
+          title: string;
+        } | undefined;
       if (!thread) {
-        throw new NotFoundError("Sala de investigação", threadId);
+        throw new NotFoundError("Conversa do Threadmark AI", threadId);
       }
 
       if (clientMessageId) {
@@ -8168,10 +8389,39 @@ export class SupportStore {
       this.database
         .prepare(
           `INSERT INTO investigation_thread_messages
-            (id, thread_id, role, body, client_message_id, created_at)
-           VALUES (?, ?, 'operator', ?, ?, ?)`,
+            (id, thread_id, role, body, context_json, client_message_id,
+             actor_user_id, actor_role, created_at)
+           VALUES (?, ?, 'operator', ?, ?, ?, ?, ?, ?)`,
         )
-        .run(messageId, threadId, body, clientMessageId, timestamp);
+        .run(
+          messageId,
+          threadId,
+          body,
+          JSON.stringify(messageContext ?? {}),
+          clientMessageId,
+          messageActor?.userId ?? null,
+          messageActor?.role ?? null,
+          timestamp,
+        );
+      const insertAttachment = this.database.prepare(
+        `INSERT INTO investigation_thread_message_attachments (
+           id, message_id, kind, mime_type, file_name, local_path,
+           size_bytes, sha256, ai_analysis_approved, created_at
+         ) VALUES (?, ?, 'image', ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const attachment of attachments) {
+        insertAttachment.run(
+          attachment.id,
+          messageId,
+          attachment.mimeType,
+          attachment.fileName,
+          attachment.localPath,
+          attachment.sizeBytes,
+          attachment.sha256,
+          imageAnalysisApproved ? 1 : 0,
+          timestamp,
+        );
+      }
       this.database
         .prepare(
           `INSERT INTO investigation_thread_jobs
@@ -8182,20 +8432,68 @@ export class SupportStore {
       this.database
         .prepare(
           `UPDATE investigation_threads
-           SET status = 'active', updated_at = ? WHERE id = ?`,
+           SET status = 'active',
+               context_json = CASE WHEN ? = '{}' THEN context_json ELSE ? END,
+               title = CASE
+                 WHEN scope = 'workspace' AND title = 'Nova conversa'
+                   THEN substr(?, 1, 80)
+                 ELSE title
+               END,
+               updated_at = ?
+           WHERE id = ?`,
         )
-        .run(timestamp, threadId);
-      this.insertTicketEvent({
-        ticketId: thread.ticket_id,
-        eventType: "investigation_thread_message_queued",
-        actor: "Operador local",
-        fromStatus: null,
-        toStatus: null,
-        data: { threadId, messageId, jobId },
-        occurredAt: timestamp,
-      });
+        .run(
+          JSON.stringify(messageContext ?? {}),
+          JSON.stringify(messageContext ?? {}),
+          body.replace(/\s+/g, " ").trim(),
+          timestamp,
+          threadId,
+        );
+      if (thread.ticket_id) {
+        this.insertTicketEvent({
+          ticketId: thread.ticket_id,
+          eventType: "investigation_thread_message_queued",
+          actor: "Operador local",
+          fromStatus: null,
+          toStatus: null,
+          data: { threadId, messageId, jobId },
+          occurredAt: timestamp,
+        });
+      }
       return this.getInvestigationThread(threadId);
     })();
+  }
+
+  addThreadmarkAiMessage(
+    threadId: string,
+    input: AddInvestigationThreadMessageInput,
+    attachments: readonly InvestigationThreadImageInput[] = [],
+    imageAnalysisApproved = false,
+    messageActor: InvestigationMessageActor | null = null,
+  ): ThreadmarkAiThreadDto {
+    const thread = this.getThreadmarkAiThread(threadId);
+    this.addInvestigationThreadMessage(
+      thread.id,
+      input,
+      attachments,
+      imageAnalysisApproved,
+      messageActor,
+    );
+    return this.getThreadmarkAiThread(thread.id);
+  }
+
+  hasInvestigationThreadClientMessage(
+    threadId: string,
+    clientMessageId: string,
+  ): boolean {
+    return Boolean(
+      this.database
+        .prepare(
+          `SELECT 1 FROM investigation_thread_messages
+           WHERE thread_id = ? AND client_message_id = ?`,
+        )
+        .get(threadId, clientMessageId),
+    );
   }
 
   private getSupportConversationState(
@@ -8971,7 +9269,7 @@ export class SupportStore {
          FROM tickets
          WHERE client_id = ?
            AND id != ?
-           AND status NOT IN ('resolved', 'archived')
+           AND status NOT IN ('resolved', 'cancelled', 'archived')
          ORDER BY updated_at DESC
          LIMIT 30`,
       )
@@ -9036,7 +9334,8 @@ export class SupportStore {
   getInvestigationThreadContext(jobId: string): InvestigationThreadInput {
     const job = this.database
       .prepare(
-        `SELECT j.id, j.thread_id, j.operator_message_id, t.ticket_id, t.summary
+        `SELECT j.id, j.thread_id, j.operator_message_id, t.ticket_id, t.scope,
+                t.context_json, t.summary
          FROM investigation_thread_jobs j
          JOIN investigation_threads t ON t.id = j.thread_id
          WHERE j.id = ?`,
@@ -9046,12 +9345,14 @@ export class SupportStore {
           id: string;
           thread_id: string;
           operator_message_id: string;
-          ticket_id: string;
+          ticket_id: string | null;
+          scope: "ticket" | "workspace";
+          context_json: string;
           summary: string;
         }
       | undefined;
     if (!job) {
-      throw new NotFoundError("Turno da sala de investigação", jobId);
+      throw new NotFoundError("Turno do Threadmark AI", jobId);
     }
 
     const recentMessagesDescending = this.database
@@ -9076,18 +9377,88 @@ export class SupportStore {
       phase: message.phase,
       createdAt: message.created_at,
     }));
-    const ticket = this.getInvestigationContext(
-      job.ticket_id,
-      THREAD_PROMPT_TICKET_MESSAGE_LIMIT,
-    );
-
-    const automaticRow = this.database
+    const operatorMessage = this.database
       .prepare(
-        `SELECT result_json FROM investigation_jobs
-         WHERE ticket_id = ? AND state = 'completed' AND result_json IS NOT NULL
-         ORDER BY finished_at DESC, requested_at DESC, rowid DESC LIMIT 1`,
+        `SELECT body, context_json
+         FROM investigation_thread_messages
+         WHERE id = ? AND thread_id = ?`,
       )
-      .get(job.ticket_id) as { result_json: string } | undefined;
+      .get(job.operator_message_id, job.thread_id) as
+      | { body: string; context_json: string }
+      | undefined;
+    const images = this.database
+      .prepare(
+        `SELECT attachment.id, attachment.message_id, attachment.file_name,
+                attachment.mime_type, attachment.local_path,
+                attachment.size_bytes
+         FROM investigation_thread_message_attachments attachment
+         JOIN investigation_thread_messages message
+           ON message.id = attachment.message_id
+         WHERE message.thread_id = ?
+           AND attachment.ai_analysis_approved = 1
+         ORDER BY CASE WHEN message.id = ? THEN 0 ELSE 1 END,
+                  message.created_at DESC, attachment.created_at, attachment.id
+         LIMIT ?`,
+      )
+      .all(
+        job.thread_id,
+        job.operator_message_id,
+        THREADMARK_AI_IMAGE_MAX_COUNT,
+      ) as Array<{
+      id: string;
+      message_id: string;
+      file_name: string;
+      mime_type: ThreadmarkAiImageMimeType;
+      local_path: string;
+      size_bytes: number;
+    }>;
+    const currentContext =
+      parseThreadmarkAiContext(operatorMessage?.context_json ?? null) ??
+      parseThreadmarkAiContext(job.context_json);
+    const referencedTicketIds = new Set<string>();
+    if (job.ticket_id) referencedTicketIds.add(job.ticket_id);
+    if (currentContext?.ticketId) {
+      const exists = this.database
+        .prepare("SELECT id FROM tickets WHERE id = ?")
+        .get(currentContext.ticketId) as EntityRecord | undefined;
+      if (exists) referencedTicketIds.add(exists.id);
+    }
+    const ticketNumbers = new Set<number>();
+    if (currentContext?.ticketNumber) ticketNumbers.add(currentContext.ticketNumber);
+    for (const match of (operatorMessage?.body ?? "").matchAll(/#(\d{1,9})\b/g)) {
+      ticketNumbers.add(Number(match[1]));
+    }
+    for (const number of ticketNumbers) {
+      const referenced = this.database
+        .prepare("SELECT id FROM tickets WHERE number = ?")
+        .get(number) as EntityRecord | undefined;
+      if (referenced) referencedTicketIds.add(referenced.id);
+    }
+    if (!referencedTicketIds.size && currentContext?.groupId) {
+      const latest = this.database
+        .prepare(
+          `SELECT id FROM tickets WHERE group_id = ?
+           ORDER BY updated_at DESC, id DESC LIMIT 1`,
+        )
+        .get(currentContext.groupId) as EntityRecord | undefined;
+      if (latest) referencedTicketIds.add(latest.id);
+    }
+    const ticketContexts = [...referencedTicketIds]
+      .slice(0, 5)
+      .map((ticketId) =>
+        this.getInvestigationContext(ticketId, THREAD_PROMPT_TICKET_MESSAGE_LIMIT),
+      );
+    const ticket = ticketContexts[0] ?? this.getThreadmarkAiWorkspaceOverview();
+
+    const automaticRow = ticket.ticketId
+      ? (this.database
+          .prepare(
+            `SELECT result_json FROM investigation_jobs
+             WHERE ticket_id = ? AND state = 'completed' AND result_json IS NOT NULL
+             ORDER BY finished_at DESC, requested_at DESC, rowid DESC LIMIT 1`,
+          )
+          .get(ticket.ticketId) as { result_json: string } | undefined)
+      : undefined;
     const automaticResult = parseJson<unknown>(
       automaticRow?.result_json ?? null,
       null,
@@ -9095,14 +9466,58 @@ export class SupportStore {
 
     return {
       threadId: job.thread_id,
+      mode: job.scope,
       currentOperatorMessageId: job.operator_message_id,
       durableSummary: job.summary,
       recentMessages: limitRecentThreadMessages(recentMessages),
+      images: images.map((image) => ({
+        id: image.id,
+        messageId: image.message_id,
+        fileName: image.file_name,
+        mimeType: image.mime_type,
+        localPath: image.local_path,
+        sizeBytes: image.size_bytes,
+      })),
+      imageAnalysisApproved: images.length > 0,
       ticket,
+      relatedTickets: ticketContexts.slice(1),
+      currentContext,
       automaticInvestigation: isRecord(automaticResult)
         ? (automaticResult as unknown as SupportAnalysis)
         : null,
       toolResults: this.getInvestigationThreadToolExecutions(job.id),
+    };
+  }
+
+  private getThreadmarkAiWorkspaceOverview(): SupportAnalysisInput {
+    const openTickets = this.database
+      .prepare(
+        `SELECT id, title, summary, status
+         FROM tickets
+         WHERE status NOT IN ('resolved', 'cancelled', 'archived')
+         ORDER BY updated_at DESC, id DESC LIMIT 30`,
+      )
+      .all() as SupportAnalysisInput["openTickets"];
+    return {
+      accountName: "Workspace Threadmark",
+      accountType: "unknown",
+      groupName: "Contexto global",
+      knownEcommerces: [],
+      categoryCatalog: this.getAnalysisCategoryCatalog(),
+      conversationState: {
+        lastExternalMessageAt: null,
+        lastSentResponseAt: null,
+        unansweredExternalMessageIds: [],
+        hasUnansweredExternalMessages: false,
+      },
+      messages: [],
+      sentResponses: [],
+      openTickets: openTickets.map((item) => ({
+        ...item,
+        title: truncatePromptText(item.title, 500),
+        summary: truncatePromptText(item.summary, 2_000),
+      })),
+      resolvedPrecedents: [],
     };
   }
 
@@ -9119,7 +9534,7 @@ export class SupportStore {
       .prepare("SELECT id FROM investigation_thread_jobs WHERE id = ?")
       .get(jobId);
     if (!job) {
-      throw new NotFoundError("Turno da sala de investigação", jobId);
+      throw new NotFoundError("Turno do Threadmark AI", jobId);
     }
 
     const normalized = this.normalizeInvestigationToolExecution(execution);
@@ -9167,18 +9582,19 @@ export class SupportStore {
           `SELECT j.id, j.thread_id, j.state, j.operator_message_id,
                   j.assistant_message_id, j.requested_at, j.started_at,
                   j.ai_model,
-                  t.ticket_id, t.summary AS thread_summary,
+                  t.ticket_id, t.scope, t.summary AS thread_summary,
                   ticket.status AS ticket_status
            FROM investigation_thread_jobs j
            JOIN investigation_threads t ON t.id = j.thread_id
-           JOIN tickets ticket ON ticket.id = t.ticket_id
+           LEFT JOIN tickets ticket ON ticket.id = t.ticket_id
            WHERE j.id = ?`,
         )
         .get(jobId) as
         | {
             id: string;
             thread_id: string;
-            ticket_id: string;
+            ticket_id: string | null;
+            scope: "ticket" | "workspace";
             state: InvestigationJobState;
             operator_message_id: string;
             assistant_message_id: string | null;
@@ -9186,11 +9602,11 @@ export class SupportStore {
             started_at: string | null;
             ai_model: string | null;
             thread_summary: string;
-            ticket_status: TicketStatus;
+            ticket_status: TicketStatus | null;
           }
         | undefined;
       if (!job) {
-        throw new NotFoundError("Turno da sala de investigação", jobId);
+        throw new NotFoundError("Turno do Threadmark AI", jobId);
       }
       if (job.state === "completed") {
         return this.getInvestigationThread(job.thread_id);
@@ -9226,11 +9642,15 @@ export class SupportStore {
       const proposedResponse = normalizedNullableText(
         result.suggestedResponse,
       );
-      const staleCompletion = this.investigationContextChangedSince(
-        job.ticket_id,
-        job.started_at ?? job.requested_at,
-      );
-      const terminalCompletion = isTerminalTicketStatus(job.ticket_status);
+      const staleCompletion = job.ticket_id
+        ? this.investigationContextChangedSince(
+            job.ticket_id,
+            job.started_at ?? job.requested_at,
+          )
+        : false;
+      const terminalCompletion = job.ticket_status
+        ? isTerminalTicketStatus(job.ticket_status)
+        : false;
       const assistantMessage = staleCompletion
         ? "O contexto do ticket mudou durante esta investigação. A conclusão anterior foi descartada; continue a análise considerando as mensagens, respostas e anexos atuais."
         : proposedAssistantMessage;
@@ -9238,10 +9658,9 @@ export class SupportStore {
         ? job.thread_summary
         : proposedThreadSummary;
       const evidence = staleCompletion ? [] : result.evidence;
-      const responseAlreadySent = this.isSuggestedResponseAlreadySent(
-        job.ticket_id,
-        proposedResponse,
-      );
+      const responseAlreadySent = job.ticket_id
+        ? this.isSuggestedResponseAlreadySent(job.ticket_id, proposedResponse)
+        : false;
       const suggestedResponse = staleCompletion || terminalCompletion || responseAlreadySent
         ? null
         : proposedResponse;
@@ -9284,6 +9703,7 @@ export class SupportStore {
         );
 
       if (
+        job.ticket_id &&
         !staleCompletion &&
         !terminalCompletion &&
         (responseAlreadySent ||
@@ -9293,7 +9713,7 @@ export class SupportStore {
       ) {
         this.supersedeCandidateSuggestions(job.ticket_id, timestamp);
       }
-      if (suggestedResponse) {
+      if (suggestedResponse && job.ticket_id) {
         this.addSuggestion({
           ticketId: job.ticket_id,
           body: suggestedResponse,
@@ -9309,7 +9729,7 @@ export class SupportStore {
         });
       }
 
-      if (!terminalCompletion) {
+      if (job.ticket_id && !terminalCompletion) {
         this.database
           .prepare(
             `UPDATE tickets
@@ -9324,7 +9744,9 @@ export class SupportStore {
            SET status = ?, summary = ?, updated_at = ? WHERE id = ?`,
         )
         .run(
-          persistedPhase === "conclusion" ? "concluded" : "active",
+          job.scope === "workspace"
+            ? "active"
+            : persistedPhase === "conclusion" ? "concluded" : "active",
           threadSummary,
           timestamp,
           job.thread_id,
@@ -9343,25 +9765,27 @@ export class SupportStore {
           JSON.stringify(persistedResult),
           jobId,
         );
-      this.insertTicketEvent({
-        ticketId: job.ticket_id,
-        eventType: "investigation_thread_turn_completed",
-        actor: "Agente de IA",
-        fromStatus: null,
-        toStatus: null,
-        data: {
-          threadId: job.thread_id,
-          jobId,
-          jobKind: "thread_turn",
-          phase: persistedPhase,
-          originalPhase: result.phase,
-          confidence,
-          toolExecutionCount: toolExecutions.length,
-          suggestionCreated: Boolean(suggestedResponse),
-          staleCompletion,
-        },
-        occurredAt: timestamp,
-      });
+      if (job.ticket_id) {
+        this.insertTicketEvent({
+          ticketId: job.ticket_id,
+          eventType: "investigation_thread_turn_completed",
+          actor: "Agente de IA",
+          fromStatus: null,
+          toStatus: null,
+          data: {
+            threadId: job.thread_id,
+            jobId,
+            jobKind: "thread_turn",
+            phase: persistedPhase,
+            originalPhase: result.phase,
+            confidence,
+            toolExecutionCount: toolExecutions.length,
+            suggestionCreated: Boolean(suggestedResponse),
+            staleCompletion,
+          },
+          occurredAt: timestamp,
+        });
+      }
 
       return this.getInvestigationThread(job.thread_id);
     })();
@@ -9386,7 +9810,7 @@ export class SupportStore {
           .prepare("SELECT id FROM investigation_thread_jobs WHERE id = ?")
           .get(jobId);
         if (!job) {
-          throw new NotFoundError("Turno da sala de investigação", jobId);
+          throw new NotFoundError("Turno do Threadmark AI", jobId);
         }
         return;
       }
@@ -9397,8 +9821,8 @@ export class SupportStore {
         .run(timestamp, result.thread_id);
       const thread = this.database
         .prepare("SELECT ticket_id FROM investigation_threads WHERE id = ?")
-        .get(result.thread_id) as { ticket_id: string } | undefined;
-      if (thread) {
+        .get(result.thread_id) as { ticket_id: string | null } | undefined;
+      if (thread?.ticket_id) {
         this.insertTicketEvent({
           ticketId: thread.ticket_id,
           eventType: "investigation_thread_turn_failed",
@@ -9415,6 +9839,66 @@ export class SupportStore {
         });
       }
     })();
+  }
+
+  requeueInvestigationThreadJob(
+    jobId: string,
+    error: string,
+    options: { resetAttempts?: boolean } = {},
+  ): void {
+    const result = this.database
+      .prepare(
+        `UPDATE investigation_thread_jobs
+         SET state = 'queued', started_at = NULL, claimed_at = NULL,
+             lease_expires_at = NULL, finished_at = NULL,
+             error = ?,
+             attempt_count = CASE WHEN ? THEN 0 ELSE attempt_count END
+         WHERE id = ? AND state IN ('running', 'failed')
+           AND cancelled_at IS NULL
+         RETURNING thread_id`,
+      )
+      .get(error.slice(0, 4_000), options.resetAttempts ? 1 : 0, jobId) as
+      | { thread_id: string }
+      | undefined;
+    if (!result) {
+      const job = this.database
+        .prepare("SELECT id FROM investigation_thread_jobs WHERE id = ?")
+        .get(jobId);
+      if (!job) throw new NotFoundError("Turno do Threadmark AI", jobId);
+      throw new ConflictError("Este turno não pode ser retomado.", { jobId });
+    }
+    this.database
+      .prepare(
+        "UPDATE investigation_threads SET status = 'active', updated_at = ? WHERE id = ?",
+      )
+      .run(nowUtc(), result.thread_id);
+  }
+
+  retryThreadmarkAiTurn(threadId: string): ThreadmarkAiThreadDto {
+    const thread = this.getThreadmarkAiThread(threadId);
+    if (thread.activeTurnState === "queued" || thread.activeTurnState === "running") {
+      throw new ConflictError("O Threadmark AI já está trabalhando neste turno.", {
+        threadId,
+      });
+    }
+    const failed = this.database
+      .prepare(
+        `SELECT id FROM investigation_thread_jobs
+         WHERE thread_id = ? AND state = 'failed' AND cancelled_at IS NULL
+         ORDER BY requested_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(threadId) as EntityRecord | undefined;
+    if (!failed) {
+      throw new ConflictError("Não existe um turno com falha para tentar novamente.", {
+        threadId,
+      });
+    }
+    this.requeueInvestigationThreadJob(
+      failed.id,
+      "Nova tentativa solicitada pelo operador.",
+      { resetAttempts: true },
+    );
+    return this.getThreadmarkAiThread(threadId);
   }
 
   completeInvestigationJob(jobId: string, analysis: SupportAnalysis): TicketDetailDto {
@@ -9456,7 +9940,7 @@ export class SupportStore {
         this.closeAutomaticInvestigationLifecycle(
           job.ticket_id,
           timestamp,
-          `Resultado descartado porque o ticket está ${ticket.status === "resolved" ? "resolvido" : "arquivado"}.`,
+          `Resultado descartado porque o ticket está ${TICKET_STATUS_LABELS[ticket.status].toLocaleLowerCase("pt-BR")}.`,
         );
         return this.getTicketDetail(job.ticket_id);
       }
@@ -9893,8 +10377,9 @@ export class SupportStore {
       .prepare(
         `SELECT
            COUNT(*) AS all_count,
-           SUM(CASE WHEN t.status NOT IN ('resolved', 'archived') THEN 1 ELSE 0 END) AS active_count,
+           SUM(CASE WHEN t.status NOT IN ('resolved', 'cancelled', 'archived') THEN 1 ELSE 0 END) AS active_count,
            SUM(CASE WHEN t.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count,
+           SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
            SUM(CASE WHEN t.status = 'archived' THEN 1 ELSE 0 END) AS archived_count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
@@ -9904,6 +10389,7 @@ export class SupportStore {
         all_count: number;
         active_count: number | null;
         resolved_count: number | null;
+        cancelled_count: number | null;
         archived_count: number | null;
       };
 
@@ -9919,6 +10405,7 @@ export class SupportStore {
         all: summary.all_count,
         active: summary.active_count ?? 0,
         resolved: summary.resolved_count ?? 0,
+        cancelled: summary.cancelled_count ?? 0,
         archived: summary.archived_count ?? 0,
       },
       nextCursor:
@@ -10263,7 +10750,7 @@ export class SupportStore {
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL
-           AND t.status NOT IN ('resolved', 'archived')${createdScopeSql}`,
+           AND t.status NOT IN ('resolved', 'cancelled', 'archived')${createdScopeSql}`,
       )
       .get(...createdScopeParameters) as { count: number };
     const reviewTotal = this.database
@@ -10273,7 +10760,7 @@ export class SupportStore {
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL
            AND t.needs_review = 1
-           AND t.status NOT IN ('resolved', 'archived')${createdScopeSql}`,
+           AND t.status NOT IN ('resolved', 'cancelled', 'archived')${createdScopeSql}`,
       )
       .get(...createdScopeParameters) as { count: number };
     const resolvedTotal = this.database
@@ -10610,7 +11097,7 @@ export class SupportStore {
                  FROM ticket_events previous
                  WHERE previous.ticket_id = event.ticket_id
                    AND previous.occurred_at < event.occurred_at
-                   AND previous.to_status NOT IN ('resolved', 'archived')
+                   AND previous.to_status NOT IN ('resolved', 'cancelled', 'archived')
                ),
                t.created_at
              ) AS started_at
@@ -10649,7 +11136,7 @@ export class SupportStore {
       WHERE c.ignored_at IS NULL
         AND event.event_type = 'status_changed'
         AND event.from_status = 'resolved'
-        AND event.to_status NOT IN ('resolved', 'archived')
+        AND event.to_status NOT IN ('resolved', 'cancelled', 'archived')
         ${resolutionRangeSql}${assigneeSql}
     `).get(...resolutionRangeParameters, ...assigneeParameters) as { count: number }).count;
 
@@ -10729,7 +11216,7 @@ export class SupportStore {
       )
       SELECT created_at, assignee_user_id
       FROM ticket_state_at_cutoff
-      WHERE effective_status NOT IN ('resolved', 'archived')
+      WHERE effective_status NOT IN ('resolved', 'cancelled', 'archived')
     `).all(cutoff, cutoff, ...assigneeParameters) as Array<{
       created_at: string;
       assignee_user_id: string | null;
@@ -10767,7 +11254,7 @@ export class SupportStore {
       SELECT
         t.assignee_user_id AS assignee_id,
         COUNT(*) AS created,
-        SUM(CASE WHEN t.status NOT IN ('resolved', 'archived') THEN 1 ELSE 0 END) AS open
+        SUM(CASE WHEN t.status NOT IN ('resolved', 'cancelled', 'archived') THEN 1 ELSE 0 END) AS open
       FROM tickets t
       JOIN clients c ON c.id = t.client_id
       WHERE c.ignored_at IS NULL${createdRangeSql}
@@ -11018,7 +11505,7 @@ export class SupportStore {
           c.kind AS client_kind,
           (SELECT COUNT(*) FROM messages m WHERE m.group_id = g.id) AS message_count,
           (SELECT COUNT(*) FROM tickets t
-           WHERE t.group_id = g.id AND t.status NOT IN ('resolved', 'archived')) AS open_ticket_count,
+           WHERE t.group_id = g.id AND t.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
           (SELECT MAX(m.occurred_at) FROM messages m WHERE m.group_id = g.id) AS last_message_at
          FROM whatsapp_groups g
          JOIN clients c ON c.id = g.client_id
@@ -11180,7 +11667,7 @@ export class SupportStore {
              AND gp.active = 1) AS participant_count,
           (SELECT COUNT(*) FROM tickets t WHERE t.client_id = c.id) AS ticket_count,
           (SELECT COUNT(*) FROM tickets t
-           WHERE t.client_id = c.id AND t.status NOT IN ('resolved', 'archived')) AS open_ticket_count,
+           WHERE t.client_id = c.id AND t.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
           (SELECT MAX(m.occurred_at)
            FROM whatsapp_groups activity_group
            JOIN messages m ON m.group_id = activity_group.id
@@ -11523,7 +12010,7 @@ export class SupportStore {
            JOIN tickets ticket ON ticket.id = ticket_message.ticket_id
            WHERE quoted.group_id = ?
              AND quoted.provider_message_id = ?
-             AND ticket.status NOT IN ('resolved', 'archived')
+             AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')
            LIMIT 2`,
         )
         .all(message.group_id, message.quoted_external_id) as Array<{
@@ -11673,7 +12160,7 @@ export class SupportStore {
          JOIN staff_members staff
            ON staff.participant_id = message.sender_id AND staff.active = 1
          WHERE ticket_message.message_id = ?
-           AND ticket.status NOT IN ('resolved', 'archived')
+           AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')
            AND (message.text IS NULL OR trim(message.text) = '')
            AND EXISTS (
              SELECT 1 FROM attachments attachment
@@ -11701,7 +12188,7 @@ export class SupportStore {
          FROM ticket_messages ticket_message
          JOIN tickets ticket ON ticket.id = ticket_message.ticket_id
          WHERE ticket_message.message_id = ?
-           AND ticket.status NOT IN ('resolved', 'archived')`,
+           AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')`,
       )
       .all(messageId) as EntityRecord[];
     for (const ticket of tickets) {
@@ -12453,11 +12940,43 @@ export class SupportStore {
   private getInvestigationThreadMessages(
     threadId: string,
   ): InvestigationThreadMessageDto[] {
+    const attachmentRows = this.database
+      .prepare(
+        `SELECT attachment.id, attachment.message_id, attachment.mime_type,
+                attachment.file_name, attachment.size_bytes
+         FROM investigation_thread_message_attachments attachment
+         JOIN investigation_thread_messages message
+           ON message.id = attachment.message_id
+         WHERE message.thread_id = ?
+         ORDER BY attachment.created_at, attachment.id`,
+      )
+      .all(threadId) as Array<{
+      id: string;
+      message_id: string;
+      mime_type: InvestigationThreadMessageDto["attachments"][number]["mimeType"];
+      file_name: string;
+      size_bytes: number;
+    }>;
+    const attachmentsByMessage = new Map<
+      string,
+      InvestigationThreadMessageDto["attachments"]
+    >();
+    for (const attachment of attachmentRows) {
+      const current = attachmentsByMessage.get(attachment.message_id) ?? [];
+      current.push({
+        id: attachment.id,
+        fileName: attachment.file_name,
+        mimeType: attachment.mime_type,
+        sizeBytes: attachment.size_bytes,
+        url: `/api/threadmark-ai/attachments/${encodeURIComponent(attachment.id)}`,
+      });
+      attachmentsByMessage.set(attachment.message_id, current);
+    }
     const rows = this.database
       .prepare(
         `SELECT message.id, message.role, message.body, message.phase,
                 message.evidence_json, message.suggested_response,
-                message.next_action, message.created_at,
+                message.next_action, message.context_json, message.created_at,
                 assistant_job.result_json,
                 COALESCE(assistant_job.id, unfinished_job.id) AS execution_job_id
          FROM investigation_thread_messages message
@@ -12476,6 +12995,7 @@ export class SupportStore {
       evidence_json: string;
       suggested_response: string | null;
       next_action: string | null;
+      context_json: string;
       created_at: string;
       result_json: string | null;
       execution_job_id: string | null;
@@ -12492,6 +13012,8 @@ export class SupportStore {
         evidence: this.parseInvestigationEvidence(row.evidence_json),
         suggestedResponse: row.suggested_response,
         nextAction: row.next_action,
+        attachments: attachmentsByMessage.get(row.id) ?? [],
+        context: parseThreadmarkAiContext(row.context_json),
         toolExecutions: audited.length
           ? audited
           : this.parseInvestigationToolExecutions(row.result_json),
@@ -13407,7 +13929,7 @@ export class SupportStore {
             WHERE ticket.group_id = conversation.id) AS ticket_count,
            (SELECT COUNT(*) FROM tickets ticket
             WHERE ticket.group_id = conversation.id
-              AND ticket.status NOT IN ('resolved', 'archived')) AS open_ticket_count,
+              AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
            (SELECT message.occurred_at FROM messages message
             WHERE message.group_id = conversation.id
               AND message.message_type NOT IN ('reactionMessage', 'protocolMessage')

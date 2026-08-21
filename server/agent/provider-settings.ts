@@ -548,7 +548,7 @@ function taskLabel(task: AiTaskKind): string {
     : task === "automatic"
       ? "A investigação automática"
       : task === "deep"
-        ? "A investigação profunda"
+        ? "O Threadmark AI"
         : "A geração de documentação";
 }
 

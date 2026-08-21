@@ -66,6 +66,7 @@
   "dependencies": {
     "@hono/node-server": "^2.0.10",
     "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "@xyflow/react": "^12.11.3",

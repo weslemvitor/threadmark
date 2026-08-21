@@ -9,6 +9,7 @@ import { AiProviderSettingsService } from "./agent/provider-settings.js";
 import { createDatabase } from "./db/index.js";
 import { SupportStore } from "./domain/index.js";
 import { createSqliteInboundSink } from "./ingestion/sqlite-sink.js";
+import { ConnectedAppService } from "./integrations/index.js";
 import { startApiServer } from "./index.js";
 import { loadConfig } from "./runtime/config.js";
 import { waitForDaemonReady } from "./runtime/daemon-control.js";
@@ -217,6 +218,11 @@ async function main(): Promise<void> {
     });
     const deepTools = new DeepToolExecutor(
       new LocalToolService(database, secretVault),
+      {
+        database,
+        connectedApps: new ConnectedAppService(database, secretVault),
+        integrationVault: secretVault,
+      },
     );
     const agent = new ConfiguredSupportAgent(
       database,

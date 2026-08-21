@@ -122,7 +122,7 @@ export class DirectoryStore {
             WHERE ticket.group_id = group_row.id) AS ticket_count,
            (SELECT COUNT(*) FROM tickets ticket
             WHERE ticket.group_id = group_row.id
-              AND ticket.status NOT IN ('resolved', 'archived')) AS open_ticket_count,
+              AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
            (SELECT MAX(message.occurred_at) FROM messages message
             WHERE message.group_id = group_row.id) AS last_activity_at
          FROM whatsapp_groups group_row

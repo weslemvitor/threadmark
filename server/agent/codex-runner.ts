@@ -58,6 +58,11 @@ export interface CodexRunnerOptions {
   documentationSchemaPath?: string;
   attachmentsRoot?: string;
   timeoutMs?: number;
+  /**
+   * Threadmark AI turns are intentionally unbounded by default. They remain
+   * cancellable through the explicit AbortSignal owned by the worker.
+   */
+  deepTimeoutMs?: number | null;
   triageTimeoutMs?: number;
   environment?: CodexEnvironment;
 }
@@ -72,7 +77,7 @@ type ProcessExecutor = (args: {
   argv: string[];
   stdin: string;
   cwd: string;
-  timeoutMs: number;
+  timeoutMs: number | null;
   env: CodexEnvironment;
   signal?: AbortSignal;
 }) => Promise<ProcessResult>;
@@ -557,8 +562,9 @@ const defaultProcessExecutor: ProcessExecutor = ({
       stdio: ["pipe", "ignore", "pipe"],
     });
     let stderr = "";
+    let timer: NodeJS.Timeout | null = null;
     const finish = () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     };
     const onAbort = () => {
@@ -566,11 +572,13 @@ const defaultProcessExecutor: ProcessExecutor = ({
       finish();
       reject(new CodexRunAbortedError());
     };
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish();
-      reject(new Error(`Codex excedeu o limite de ${timeoutMs}ms.`));
-    }, timeoutMs);
+    if (timeoutMs !== null && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        finish();
+        reject(new Error(`Codex excedeu o limite de ${timeoutMs}ms.`));
+      }, timeoutMs);
+    }
     if (signal?.aborted) {
       onAbort();
       return;
@@ -614,6 +622,7 @@ export class CodexSupportAgent {
       attachmentsRoot:
         options.attachmentsRoot ?? path.join(cwd, ".data", "attachments"),
       timeoutMs: options.timeoutMs ?? 300_000,
+      deepTimeoutMs: options.deepTimeoutMs ?? null,
       triageTimeoutMs: options.triageTimeoutMs ?? 90_000,
       environment: options.environment ?? process.env,
     };
@@ -645,10 +654,13 @@ export class CodexSupportAgent {
     const boundedInput: InvestigationThreadInput = {
       ...input,
       ticket: boundSupportInput(input.ticket, "deep"),
+      relatedTickets: (input.relatedTickets ?? [])
+        .slice(0, 4)
+        .map((ticket) => boundSupportInput(ticket, "deep")),
     };
     const raw = await this.executeStructuredRun({
       input: boundedInput.ticket,
-      imageInput: input.ticket,
+      imageInput: approvedInvestigationImageInput(input),
       prompt: buildInvestigationThreadPrompt(boundedInput),
       schemaPath: this.options.turnSchemaPath,
       mode: "deep",
@@ -771,7 +783,9 @@ export class CodexSupportAgent {
         timeoutMs:
           input.mode === "triage"
             ? this.options.triageTimeoutMs
-            : this.options.timeoutMs,
+            : input.mode === "deep"
+              ? this.options.deepTimeoutMs
+              : this.options.timeoutMs,
         env: childEnvironment,
         signal: input.signal,
       });
@@ -872,6 +886,38 @@ export class CodexSupportAgent {
     }
     return prepared;
   }
+}
+
+function approvedInvestigationImageInput(
+  input: InvestigationThreadInput,
+): { messages: AnalysisMessage[] } {
+  if (!input.imageAnalysisApproved || !input.images?.length) {
+    return { messages: input.ticket.messages };
+  }
+  const operatorMessage = input.recentMessages.find(
+    (message) => message.id === input.currentOperatorMessageId,
+  );
+  return {
+    messages: [
+      {
+        id: input.currentOperatorMessageId,
+        author: "Operador local",
+        role: "staff",
+        timestampUtc: operatorMessage?.createdAt ?? new Date(0).toISOString(),
+        text: operatorMessage?.body ?? null,
+        attachments: input.images.map((image) => ({
+          id: image.id,
+          kind: "image",
+          fileName: image.fileName,
+          mimeType: image.mimeType,
+          localPath: image.localPath,
+          extractedText: null,
+        })),
+        quotedMessageId: null,
+      },
+      ...input.ticket.messages,
+    ],
+  };
 }
 
 function normaliseCodexModel(value: string | undefined): string | null {

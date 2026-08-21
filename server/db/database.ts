@@ -101,14 +101,30 @@ export function migrateDatabase(database: SupportDatabase): void {
       continue;
     }
 
-    database.transaction(() => {
-      database.exec(migration.sql);
-      database
-        .prepare(
-          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-        )
-        .run(migration.version, migration.name, new Date().toISOString());
-    })();
+    if (migration.disableForeignKeys) database.pragma("foreign_keys = OFF");
+    try {
+      database.transaction(() => {
+        database.exec(migration.sql);
+        if (migration.disableForeignKeys) {
+          const violations = database.pragma("foreign_key_check") as unknown[];
+          if (violations.length) {
+            throw new Error(
+              `Migração ${migration.version} deixou ${violations.length} vínculo(s) inválido(s)`,
+            );
+          }
+        }
+        database
+          .prepare(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+          )
+          .run(migration.version, migration.name, new Date().toISOString());
+      })();
+    } finally {
+      if (migration.disableForeignKeys) {
+        database.pragma("legacy_alter_table = OFF");
+        database.pragma("foreign_keys = ON");
+      }
+    }
   }
 }
 

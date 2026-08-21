@@ -356,7 +356,7 @@ async function chooseConfigurationSection(): Promise<ConfigurationSection> {
   const choices: Array<{ key: string; section: ConfigurationSection; label: string }> = [
     { key: "1", section: "general", label: "Workspace e preferências" },
     { key: "2", section: "ai", label: "Provedores e modelos de IA" },
-    { key: "3", section: "tools", label: "Ferramentas da investigação profunda" },
+    { key: "3", section: "tools", label: "Ferramentas do Threadmark AI" },
     { key: "4", section: "whatsapp", label: "WhatsApp e QR Code" },
     { key: "5", section: "staff", label: "Equipe WhatsApp" },
     { key: "6", section: "data", label: "Dados e backups" },
@@ -799,7 +799,9 @@ async function runOneInvestigation(): Promise<void> {
       { codexBin: config.codexBin, attachmentsRoot: config.attachmentsDir },
     ),
     codexAgent,
-    new DeepToolExecutor(new LocalToolService(database, secretVault)),
+    new DeepToolExecutor(new LocalToolService(database, secretVault), {
+      database,
+    }),
   );
   try {
     const processed = await new InvestigationWorker(store, agent, {

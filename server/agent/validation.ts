@@ -312,6 +312,7 @@ export const investigationTurnResultSchema = z
           "aws",
           "code",
           "deployment",
+          "external_app",
         ]),
         summary: z.string().trim().min(1).max(4_000),
         reference: z.string().trim().max(4_000).nullable(),
@@ -406,11 +407,19 @@ export function parseInvestigationTurnResult(
   value: unknown,
   input: Pick<
     InvestigationThreadInput,
-    "availableTools" | "ticket" | "toolResults"
+    | "availableTools"
+    | "ticket"
+    | "relatedTickets"
+    | "recentMessages"
+    | "toolResults"
   >,
 ): InvestigationTurnResult {
+  const tickets = [input.ticket, ...(input.relatedTickets ?? [])];
   const allowedMessages = new Set(
-    input.ticket.messages.map((message) => message.id),
+    [
+      ...tickets.flatMap((ticket) => ticket.messages.map((message) => message.id)),
+      ...input.recentMessages.map((message) => message.id),
+    ],
   );
   const allowedKnowledge = new Set<string>();
   const knowledgeToolIds = new Set(
@@ -428,7 +437,9 @@ export function parseInvestigationTurnResult(
     }
   }
   const allowedPrecedents = new Set(
-    input.ticket.resolvedPrecedents.map((precedent) => precedent.ticketId),
+    tickets.flatMap((ticket) =>
+      ticket.resolvedPrecedents.map((precedent) => precedent.ticketId),
+    ),
   );
 
   const parsed = investigationTurnResultSchema.parse(

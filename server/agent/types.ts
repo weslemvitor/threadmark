@@ -221,6 +221,16 @@ export interface InvestigationThreadPromptMessage {
   createdAt: string;
 }
 
+export interface InvestigationThreadImage {
+  id: string;
+  messageId: string;
+  fileName: string;
+  mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  sizeBytes: number;
+  /** Trusted local path. Prompt builders must never serialize it. */
+  localPath: string;
+}
+
 export interface InvestigationToolDescriptor {
   id: string;
   name: string;
@@ -231,7 +241,8 @@ export interface InvestigationToolDescriptor {
     | "postgres_readonly"
     | "clickhouse_readonly"
     | "aws_cloudwatch"
-    | "vercel";
+    | "vercel"
+    | "connected_app";
   description: string | null;
   scope: string;
   operations: Array<{
@@ -267,10 +278,26 @@ export interface InvestigationToolResult {
 
 export interface InvestigationThreadInput {
   threadId: string;
+  /** `workspace` powers the global Threadmark AI; legacy ticket rooms use `ticket`. */
+  mode?: "ticket" | "workspace";
   currentOperatorMessageId: string;
   durableSummary: string;
   recentMessages: InvestigationThreadPromptMessage[];
+  /** Recent operator images, current message first, bounded by the store. */
+  images?: InvestigationThreadImage[];
+  /** Images must not leave local storage unless the operator explicitly opted in. */
+  imageAnalysisApproved?: boolean;
   ticket: SupportAnalysisInput;
+  /** Extra ticket contexts explicitly referenced by the operator. */
+  relatedTickets?: SupportAnalysisInput[];
+  currentContext?: {
+    route: string | null;
+    label: string | null;
+    ticketId: string | null;
+    ticketNumber: number | null;
+    groupId: string | null;
+    groupName: string | null;
+  } | null;
   automaticInvestigation: SupportAnalysis | null;
   /** Trusted registry metadata. Secrets and concrete credentials never enter the prompt. */
   availableTools?: InvestigationToolDescriptor[];
@@ -298,7 +325,8 @@ export interface InvestigationTurnResult {
       | "clickhouse"
       | "aws"
       | "code"
-      | "deployment";
+      | "deployment"
+      | "external_app";
     summary: string;
     reference: string | null;
   }>;

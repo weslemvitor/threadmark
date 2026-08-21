@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { opendir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -11,12 +12,27 @@ import type {
   LocalToolResolvedConfig,
   LocalToolTestResult,
 } from "../../shared/contracts.js";
+import type { SupportDatabase } from "../db/index.js";
+import { SupportStore } from "../domain/index.js";
+import {
+  ConnectedAppService,
+  createCustomHttpExecutor,
+  createSlackWebhookExecutor,
+  customHttpConfigSchema,
+  slackWebhookConfigSchema,
+  type IntegrationHostLookup,
+  type IntegrationSecretVault,
+} from "../integrations/index.js";
 import type {
   InvestigationToolDescriptor,
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
 import { LocalToolService } from "./local-tool-service.js";
+import {
+  THREADMARK_AUTOMATIONS_TOOL_ID,
+  ThreadmarkAutomationTool,
+} from "./threadmark-automation-tool.js";
 import {
   runPostgresReadonly,
   type PostgresQueryRequest,
@@ -29,6 +45,8 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_TOOL_OUTPUT_BYTES = 80_000;
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOOL_RESULTS_PER_TURN = 5;
+const THREADMARK_CONTEXT_TOOL_ID = "threadmark-context";
+const CONNECTED_APP_TOOL_PREFIX = "connected-app:";
 const SKIPPED_DIRECTORIES = new Set([
   ".aws",
   ".data",
@@ -141,6 +159,63 @@ const readVercelLogsSchema = z.object({
   deploymentId: z.string().trim().regex(/^[A-Za-z0-9._-]{1,255}$/),
 }).strict();
 
+const searchSupportContextSchema = z.object({
+  query: z.string().trim().min(2).max(300),
+  scope: z.enum(["all", "tickets", "conversations", "resolutions"]).default("all"),
+  limit: z.number().int().min(1).max(20).default(10),
+}).strict();
+
+const prepareThreadmarkTicketDraftSchema = z.object({
+  operatorMessageId: z.string().trim().min(1).max(200),
+  groupId: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(200),
+  summary: z.string().trim().min(1).max(20_000),
+  priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+  externalSource: z.object({
+    type: z.literal("intercom_conversation"),
+    id: z.string().trim().min(1).max(200),
+  }).strict().optional(),
+}).strict();
+
+const createThreadmarkTicketFromDraftSchema = z.object({
+  confirmationMessageId: z.string().trim().min(1).max(200),
+  draftId: z.string().trim().min(1).max(200),
+}).strict();
+
+const searchIntercomConversationsSchema = z.object({
+  query: z.string().trim().min(2).max(200),
+  limit: z.number().int().min(1).max(20).default(10),
+}).strict();
+
+const getIntercomConversationSchema = z.object({
+  conversationId: z.string().trim().regex(/^\d{1,30}$/),
+}).strict();
+
+const getIntercomCurrentAdminSchema = z.object({}).strict();
+
+const listIntercomCollectionsSchema = z.object({
+  limit: z.number().int().min(1).max(150).default(50),
+}).strict();
+
+const createIntercomArticleSchema = z.object({
+  confirmationMessageId: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().trim().max(500).default(""),
+  body: z.string().trim().min(1).max(100_000),
+  authorId: z.string().trim().min(1).max(200),
+  collectionId: z.string().trim().min(1).max(200),
+}).strict();
+
+const connectedAppRequestSchema = z.object({
+  confirmationMessageId: z.string().trim().min(1).max(200),
+  payload: z.record(z.string(), z.unknown()),
+}).strict();
+
+const connectedAppMessageSchema = z.object({
+  confirmationMessageId: z.string().trim().min(1).max(200),
+  text: z.string().trim().min(1).max(4_000),
+}).strict();
+
 const OPERATION_HELP: Record<LocalToolOperation, {
   description: string;
   argumentsExample: string;
@@ -193,6 +268,13 @@ export interface DeepToolExecutorOptions {
   commandRunner?: CommandRunner;
   postgresRunner?: PostgresRunner;
   now?: () => Date;
+  /** Enables the built-in bounded, readonly Threadmark context search. */
+  database?: SupportDatabase;
+  supportStore?: SupportStore;
+  /** Apps are opt-in and remain unavailable unless both registry and vault are provided. */
+  connectedApps?: ConnectedAppService;
+  integrationVault?: IntegrationSecretVault;
+  integrationLookup?: IntegrationHostLookup;
 }
 
 export interface CommandRequest {
@@ -222,6 +304,12 @@ export class DeepToolExecutor {
   private readonly commandRunner: CommandRunner;
   private readonly postgresRunner: PostgresRunner;
   private readonly now: () => Date;
+  private readonly database: SupportDatabase | null;
+  private readonly supportStore: SupportStore | null;
+  private readonly connectedApps: ConnectedAppService | null;
+  private readonly integrationVault: IntegrationSecretVault | null;
+  private readonly integrationLookup?: IntegrationHostLookup;
+  private readonly automationTool: ThreadmarkAutomationTool | null;
 
   constructor(
     private readonly tools: LocalToolService,
@@ -232,10 +320,18 @@ export class DeepToolExecutor {
     this.commandRunner = options.commandRunner ?? runCommand;
     this.postgresRunner = options.postgresRunner ?? runPostgresReadonly;
     this.now = options.now ?? (() => new Date());
+    this.database = options.database ?? null;
+    this.supportStore = options.supportStore ?? (this.database ? new SupportStore(this.database) : null);
+    this.connectedApps = options.connectedApps ?? null;
+    this.integrationVault = options.integrationVault ?? null;
+    this.integrationLookup = options.integrationLookup;
+    this.automationTool = this.database
+      ? new ThreadmarkAutomationTool(this.database, this.connectedApps)
+      : null;
   }
 
   descriptors(): InvestigationToolDescriptor[] {
-    return this.tools.listEnabledForDeep().map((tool) => ({
+    const configured = this.tools.listEnabledForDeep().map((tool) => ({
       id: tool.id,
       name: tool.name,
       type: tool.type,
@@ -246,6 +342,40 @@ export class DeepToolExecutor {
         ...OPERATION_HELP[operation],
       })),
     }));
+    const connected = this.connectedAppDescriptors();
+    if (!this.database) return [...configured, ...connected];
+    return [
+      {
+        id: THREADMARK_CONTEXT_TOOL_ID,
+        name: "Contexto do Threadmark",
+        type: "knowledge" as const,
+        description:
+          "Pesquisa tickets, resoluções e mensagens armazenados no SQLite local do Threadmark.",
+        scope: "SQLite operacional local; consultas prontas, limitadas e somente leitura.",
+        operations: [{
+          name: "search_support_context",
+          description:
+            "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução.",
+          argumentsExample:
+            '{"query":"ROAS Global","scope":"all","limit":10}',
+        }, {
+          name: "prepare_ticket_draft",
+          description:
+            "Persiste uma prévia de ticket vinculada a um grupo existente. Não cria o ticket e não exige confirmação.",
+          argumentsExample:
+            '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","externalSource":{"type":"intercom_conversation","id":"123"}}',
+        }, {
+          name: "create_ticket_from_draft",
+          description:
+            "Cria no SQLite um ticket a partir de um rascunho já apresentado. Exige confirmação explícita na mensagem atual.",
+          argumentsExample:
+            '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+        }],
+      },
+      this.automationTool!.descriptor(),
+      ...configured,
+      ...connected,
+    ];
   }
 
   async executeMany(
@@ -269,6 +399,16 @@ export class DeepToolExecutor {
   ): Promise<InvestigationToolResult> {
     signal?.throwIfAborted();
     const executedAt = this.now().toISOString();
+    if (request.toolId.startsWith(CONNECTED_APP_TOOL_PREFIX)) {
+      return this.executeConnectedApp(request, executedAt, signal);
+    }
+    if (request.toolId === THREADMARK_CONTEXT_TOOL_ID) {
+      return this.executeThreadmarkContext(request, executedAt, signal);
+    }
+    if (request.toolId === THREADMARK_AUTOMATIONS_TOOL_ID && this.automationTool) {
+      signal?.throwIfAborted();
+      return this.automationTool.execute(request, executedAt);
+    }
     const registered = this.tools
       .listEnabledForDeep()
       .find((tool) => tool.id === request.toolId);
@@ -326,6 +466,570 @@ export class DeepToolExecutor {
         registered.name,
       );
     }
+  }
+
+  private connectedAppDescriptors(): InvestigationToolDescriptor[] {
+    if (!this.connectedApps || !this.integrationVault) return [];
+    return this.connectedApps.listEnabledForAi().map((app) => {
+      const intercom = this.connectedApps?.nativeProvider(app.id) === "intercom";
+      if (app.type === "mcp_remote") {
+        const operations = app.mcpTools
+          .filter((tool) => tool.aiEnabled)
+          .map((tool) => ({
+            name: tool.name,
+            description: `${tool.description}${tool.confirmationRequired ? " Exige pedido explícito na mensagem atual do operador." : ""}`,
+            argumentsExample: JSON.stringify({
+              ...(tool.confirmationRequired
+                ? { confirmationMessageId: "<currentOperatorMessageId>" }
+                : {}),
+              input: mcpSchemaExample(tool.inputSchema),
+            }),
+          }));
+        return {
+          id: `${CONNECTED_APP_TOOL_PREFIX}${app.id}`,
+          name: app.name,
+          type: "connected_app" as const,
+          description: app.description,
+          scope: `Servidor MCP autorizado pelo proprietário; destino ${app.endpointPreview ?? "protegido"}. Somente as ferramentas selecionadas nesta conexão estão disponíveis.`,
+          operations,
+        };
+      }
+      const mutationOperations = intercom
+        ? [{
+            name: "create_article",
+            description:
+              "Cria um artigo em estado de rascunho no Help Center do Intercom. Exige autor e coleção obtidos pelas leituras autorizadas e pedido explícito na mensagem atual.",
+            argumentsExample:
+              '{"confirmationMessageId":"<currentOperatorMessageId>","title":"Título","description":"Resumo","body":"<p>Conteúdo revisado</p>","authorId":"123","collectionId":"456"}',
+          }]
+        : app.type === "slack_webhook"
+          ? [{
+            name: "send_message",
+            description:
+              "Envia uma mensagem ao Slack configurado. Use somente quando a mensagem atual do operador pedir explicitamente o envio.",
+            argumentsExample:
+              '{"confirmationMessageId":"<currentOperatorMessageId>","text":"Mensagem a enviar"}',
+          }]
+        : [{
+            name: "execute_request",
+            description:
+              "Executa a requisição externa configurada com o payload informado. Use somente quando a mensagem atual do operador pedir explicitamente a ação.",
+            argumentsExample:
+              '{"confirmationMessageId":"<currentOperatorMessageId>","payload":{"title":"Título","body":"<p>Conteúdo</p>","state":"draft"}}',
+          }];
+      const readonlyOperations = intercom ? [{
+        name: "search_conversations",
+        description:
+          "Busca conversas recentes do Intercom por nome, e-mail, assunto ou termo e devolve somente dados limitados.",
+        argumentsExample: '{"query":"Nome do cliente","limit":10}',
+      }, {
+        name: "get_conversation",
+        description:
+          "Lê uma conversa específica do Intercom em texto simples, incluindo até 100 partes recentes.",
+        argumentsExample: '{"conversationId":"123456789"}',
+      }, {
+        name: "get_current_admin",
+        description:
+          "Obtém o administrador associado ao token, incluindo o authorId válido para criar um artigo.",
+        argumentsExample: '{}',
+      }, {
+        name: "list_collections",
+        description:
+          "Lista as coleções disponíveis no Help Center, incluindo seus IDs para vincular um artigo.",
+        argumentsExample: '{"limit":50}',
+      }] : [];
+      return {
+        id: `${CONNECTED_APP_TOOL_PREFIX}${app.id}`,
+        name: app.name,
+        type: "connected_app" as const,
+        description: app.description,
+        scope: `${intercom ? "Intercom" : app.type === "slack_webhook" ? "Slack" : "API externa"} autorizado pelo proprietário; destino ${app.endpointPreview ?? "protegido"}. Leituras nativas são limitadas; ações externas exigem pedido explícito na mensagem atual.`,
+        operations: [...readonlyOperations, ...mutationOperations],
+      };
+    });
+  }
+
+  private async executeConnectedApp(
+    request: InvestigationToolRequest,
+    executedAt: string,
+    signal?: AbortSignal,
+  ): Promise<InvestigationToolResult> {
+    const appId = request.toolId.slice(CONNECTED_APP_TOOL_PREFIX.length);
+    const app = this.connectedApps?.listEnabledForAi().find((item) => item.id === appId);
+    if (!app || !this.connectedApps || !this.integrationVault) {
+      return failedResult(request, "App indisponível ou não autorizado para o Threadmark AI.", executedAt);
+    }
+    if (app.type === "mcp_remote") {
+      return this.executeMcpOperation(app.id, app.name, request, executedAt, signal);
+    }
+    if (this.connectedApps.nativeProvider(app.id) === "intercom") {
+      const operations = new Set([
+        "search_conversations",
+        "get_conversation",
+        "get_current_admin",
+        "list_collections",
+        "create_article",
+      ]);
+      if (!operations.has(request.operation)) {
+        return failedResult(request, "Operação não autorizada para o Intercom.", executedAt, app.name);
+      }
+      return this.executeIntercomOperation(app.id, app.name, request, executedAt, signal);
+    }
+    const expectedOperation = app.type === "slack_webhook" ? "send_message" : "execute_request";
+    if (request.operation !== expectedOperation) {
+      return failedResult(
+        request,
+        "Operação não autorizada para este app conectado.",
+        executedAt,
+        app.name,
+      );
+    }
+    try {
+      const rawArguments = JSON.parse(request.argumentsJson) as unknown;
+      const resolved = await this.connectedApps.resolveForExecution(app.id);
+      const context = {
+        executionId: request.requestId,
+        idempotencyKey: `threadmark-ai:${request.requestId}`,
+        automationId: "threadmark-ai",
+        nodeId: request.toolId,
+        ...(signal ? { signal } : {}),
+      };
+      const executorOptions = {
+        fetchImpl: this.fetchImpl,
+        ...(this.integrationLookup ? { lookup: this.integrationLookup } : {}),
+      };
+      const result = app.type === "slack_webhook"
+        ? await createSlackWebhookExecutor(this.integrationVault, executorOptions).execute(
+            slackWebhookConfigSchema.parse(resolved.config),
+            { text: connectedAppMessageSchema.parse(rawArguments).text },
+            context,
+          )
+        : await createCustomHttpExecutor(this.integrationVault, executorOptions).execute(
+            customHttpConfigSchema.parse(resolved.config),
+            { variables: { payload: connectedAppRequestSchema.parse(rawArguments).payload } },
+            context,
+          );
+      const content = truncateUtf8(JSON.stringify(result.output, null, 2), MAX_TOOL_OUTPUT_BYTES);
+      if (!result.ok) {
+        return {
+          requestId: request.requestId,
+          toolId: request.toolId,
+          toolName: app.name,
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "error",
+          summary: `${app.name} recusou a ação com status ${result.status}.`,
+          content,
+          reference: null,
+          executedAt,
+        };
+      }
+      return {
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: app.name,
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: `${app.name} concluiu a ação externa com status ${result.status}.`,
+        content,
+        reference: `tool:${request.toolId}:${request.operation}:request:${encodeURIComponent(request.requestId)}`,
+        executedAt,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      return failedResult(request, safeExecutionError(error), executedAt, app.name);
+    }
+  }
+
+  private async executeMcpOperation(
+    appId: string,
+    appName: string,
+    request: InvestigationToolRequest,
+    executedAt: string,
+    signal?: AbortSignal,
+  ): Promise<InvestigationToolResult> {
+    try {
+      if (!this.connectedApps) throw new Error("A conexão MCP não está disponível.");
+      const app = this.connectedApps.get(appId);
+      const tool = app.mcpTools.find(
+        (candidate) => candidate.name === request.operation && candidate.aiEnabled,
+      );
+      if (!tool) throw new Error("Ferramenta MCP não autorizada para o Threadmark AI.");
+      const raw = JSON.parse(request.argumentsJson) as unknown;
+      if (!isRecord(raw)) throw new Error("Os argumentos da ferramenta MCP devem ser um objeto.");
+      if (tool.confirmationRequired) {
+        if (!this.database) throw new Error("O contexto do operador não está disponível.");
+        const confirmationMessageId = stringValue(raw.confirmationMessageId);
+        if (!confirmationMessageId) {
+          throw new Error("A ação MCP exige a mensagem atual do operador como confirmação.");
+        }
+        const operator = findThreadmarkAiOperator(this.database, confirmationMessageId);
+        if (!isExplicitExternalActionRequest(operator.messageBody)) {
+          throw new Error("A mensagem atual não pede explicitamente esta ação externa.");
+        }
+      }
+      const input = isRecord(raw.input)
+        ? raw.input
+        : Object.fromEntries(
+            Object.entries(raw).filter(([key]) => key !== "confirmationMessageId"),
+          );
+      const result = await this.connectedApps.callMcpTool(
+        appId,
+        tool.name,
+        input,
+        "ai",
+        signal,
+      );
+      const output = result.structuredContent ?? result.content;
+      return {
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: appName,
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: `${appName} executou “${tool.title}” via MCP.`,
+        content: truncateUtf8(JSON.stringify(output, null, 2), MAX_TOOL_OUTPUT_BYTES),
+        reference: `tool:${request.toolId}:${request.operation}:request:${encodeURIComponent(request.requestId)}`,
+        executedAt,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      return failedResult(request, safeExecutionError(error), executedAt, appName);
+    }
+  }
+
+  private async executeIntercomOperation(
+    appId: string,
+    appName: string,
+    request: InvestigationToolRequest,
+    executedAt: string,
+    signal?: AbortSignal,
+  ): Promise<InvestigationToolResult> {
+    try {
+      const rawArguments = JSON.parse(request.argumentsJson) as unknown;
+      const connection = await this.resolveIntercomConnection(appId);
+      let url: URL;
+      let init: RequestInit;
+      if (request.operation === "search_conversations") {
+        const args = searchIntercomConversationsSchema.parse(rawArguments);
+        url = new URL("/conversations/search", connection.origin);
+        init = {
+          method: "POST",
+          headers: connection.headers,
+          body: JSON.stringify(buildIntercomSearch(args.query, args.limit)),
+        };
+      } else if (request.operation === "get_conversation") {
+        const args = getIntercomConversationSchema.parse(rawArguments);
+        url = new URL(`/conversations/${encodeURIComponent(args.conversationId)}`, connection.origin);
+        url.searchParams.set("display_as", "plaintext");
+        init = { method: "GET", headers: connection.headers };
+      } else if (request.operation === "get_current_admin") {
+        getIntercomCurrentAdminSchema.parse(rawArguments);
+        url = new URL("/me", connection.origin);
+        init = { method: "GET", headers: connection.headers };
+      } else if (request.operation === "list_collections") {
+        const args = listIntercomCollectionsSchema.parse(rawArguments);
+        url = new URL("/help_center/collections", connection.origin);
+        url.searchParams.set("per_page", String(args.limit));
+        init = { method: "GET", headers: connection.headers };
+      } else if (request.operation === "create_article") {
+        const args = createIntercomArticleSchema.parse(rawArguments);
+        url = new URL("/articles", connection.origin);
+        init = {
+          method: "POST",
+          headers: connection.headers,
+          body: JSON.stringify({
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            author_id: args.authorId,
+            state: "draft",
+            parent_id: args.collectionId,
+            parent_type: "collection",
+          }),
+        };
+      } else {
+        return failedResult(request, "Operação do Intercom não autorizada.", executedAt, appName);
+      }
+      const responseText = await boundedFetchText(
+        this.fetchImpl,
+        url,
+        init,
+        this.timeoutMs,
+        signal,
+      );
+      const parsed = JSON.parse(responseText) as unknown;
+      const content = request.operation === "search_conversations"
+        ? sanitizeIntercomSearchResult(parsed)
+        : request.operation === "get_conversation"
+          ? sanitizeIntercomConversation(parsed)
+          : request.operation === "get_current_admin"
+            ? sanitizeIntercomCurrentAdmin(parsed)
+            : request.operation === "list_collections"
+              ? sanitizeIntercomCollections(parsed)
+              : sanitizeIntercomArticle(parsed);
+      const count = request.operation === "search_conversations" || request.operation === "list_collections"
+        ? Number(content.totalCount ?? 0)
+        : 1;
+      return {
+        requestId: request.requestId,
+        toolId: `${CONNECTED_APP_TOOL_PREFIX}${appId}`,
+        toolName: appName,
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: request.operation === "search_conversations"
+          ? `Intercom consultado em modo somente leitura: ${count} conversa(s) encontrada(s).`
+          : request.operation === "get_conversation"
+            ? "Conversa do Intercom carregada em modo somente leitura."
+            : request.operation === "get_current_admin"
+              ? "Autor associado ao token do Intercom carregado."
+              : request.operation === "list_collections"
+                ? `${count} coleção(ões) disponível(is) no Help Center.`
+                : "Rascunho criado no Intercom e mantido fora de publicação.",
+        content: truncateUtf8(JSON.stringify(content, null, 2), MAX_TOOL_OUTPUT_BYTES),
+        reference: `tool:${CONNECTED_APP_TOOL_PREFIX}${appId}:${request.operation}:request:${encodeURIComponent(request.requestId)}`,
+        executedAt,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      return failedResult(request, safeExecutionError(error), executedAt, appName);
+    }
+  }
+
+  private async resolveIntercomConnection(appId: string): Promise<{
+    origin: string;
+    headers: Headers;
+  }> {
+    if (!this.connectedApps || !this.integrationVault) {
+      throw new Error("A conexão do Intercom não está disponível.");
+    }
+    if (this.connectedApps.nativeProvider(appId) !== "intercom") {
+      throw new Error("Este app não é uma conexão nativa do Intercom.");
+    }
+    const resolved = await this.connectedApps.resolveForExecution(appId);
+    const endpoint = new URL(String(resolved.config.endpoint ?? ""));
+    const secretHeaders = Array.isArray(resolved.config.secretHeaders)
+      ? resolved.config.secretHeaders as Array<{ name?: unknown; secretRef?: unknown }>
+      : [];
+    const authorizationHeader = secretHeaders.find(
+      (header) => String(header.name).toLowerCase() === "authorization",
+    );
+    const secretRef = typeof authorizationHeader?.secretRef === "string"
+      ? authorizationHeader.secretRef
+      : "";
+    const authorization = secretRef ? await this.integrationVault.get(secretRef) : null;
+    if (!authorization) throw new Error("A credencial do Intercom não está disponível.");
+    const headers = new Headers({
+      Accept: "application/json",
+      Authorization: authorization,
+      "Content-Type": "application/json",
+      "Intercom-Version": "2.16",
+    });
+    const publicHeaders = Array.isArray(resolved.config.publicHeaders)
+      ? resolved.config.publicHeaders as Array<{ name?: unknown; value?: unknown }>
+      : [];
+    for (const header of publicHeaders) {
+      if (typeof header.name === "string" && typeof header.value === "string") {
+        headers.set(header.name, header.value);
+      }
+    }
+    return { origin: endpoint.origin, headers };
+  }
+
+  private executeThreadmarkContext(
+    request: InvestigationToolRequest,
+    executedAt: string,
+    signal?: AbortSignal,
+  ): InvestigationToolResult {
+    if (!this.database) {
+      return failedResult(
+        request,
+        "A busca interna do Threadmark não está disponível neste processo.",
+        executedAt,
+        "Contexto do Threadmark",
+      );
+    }
+    let rawArguments: unknown;
+    try {
+      rawArguments = JSON.parse(request.argumentsJson) as unknown;
+    } catch {
+      return failedResult(
+        request,
+        "argumentsJson não contém um objeto JSON válido.",
+        executedAt,
+        "Contexto do Threadmark",
+      );
+    }
+
+    try {
+      signal?.throwIfAborted();
+      if (request.operation === "prepare_ticket_draft") {
+        return this.prepareThreadmarkTicketDraft(request, rawArguments, executedAt);
+      }
+      if (request.operation === "create_ticket_from_draft") {
+        return this.createThreadmarkTicketFromDraft(request, rawArguments, executedAt);
+      }
+      if (request.operation !== "search_support_context") {
+        return failedResult(
+          request,
+          "Operação não autorizada para o contexto do Threadmark.",
+          executedAt,
+          "Contexto do Threadmark",
+        );
+      }
+      const args = searchSupportContextSchema.parse(rawArguments);
+      const result = searchThreadmarkContext(this.database, args);
+      signal?.throwIfAborted();
+      return {
+        requestId: request.requestId,
+        toolId: THREADMARK_CONTEXT_TOOL_ID,
+        toolName: "Contexto do Threadmark",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: `Busca local concluída: ${result.tickets.length} ticket(s) e ${result.messages.length} mensagem(ns).`,
+        content: truncateUtf8(JSON.stringify(result, null, 2), MAX_TOOL_OUTPUT_BYTES),
+        reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:search:request:${encodeURIComponent(request.requestId)}`,
+        executedAt,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      return failedResult(
+        request,
+        safeExecutionError(error),
+        executedAt,
+        "Contexto do Threadmark",
+      );
+    }
+  }
+
+  private prepareThreadmarkTicketDraft(
+    request: InvestigationToolRequest,
+    rawArguments: unknown,
+    executedAt: string,
+  ): InvestigationToolResult {
+    if (!this.database) {
+      return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
+    }
+    const args = prepareThreadmarkTicketDraftSchema.parse(rawArguments);
+    const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
+    const group = findActiveTicketGroup(this.database, args.groupId);
+    const fingerprint = JSON.stringify({
+      operatorMessageId: args.operatorMessageId,
+      groupId: args.groupId,
+      title: args.title,
+      summary: args.summary,
+      priority: args.priority,
+      externalSource: args.externalSource ?? null,
+    });
+    const draftId = `threadmark-ai-draft:${createHash("sha256").update(fingerprint).digest("hex").slice(0, 32)}`;
+    this.database
+      .prepare(
+        `INSERT OR IGNORE INTO threadmark_ai_ticket_drafts (
+           id, thread_id, operator_message_id, group_id, title, summary,
+           priority, external_source_type, external_source_id, state,
+           created_ticket_id, created_by, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+      )
+      .run(
+        draftId,
+        operator.threadId,
+        args.operatorMessageId,
+        args.groupId,
+        args.title,
+        args.summary,
+        args.priority,
+        args.externalSource?.type ?? null,
+        args.externalSource?.id ?? null,
+        operator.actor,
+        executedAt,
+        executedAt,
+      );
+    const preview = {
+      draftId,
+      state: "pending",
+      title: args.title,
+      summary: args.summary,
+      priority: args.priority,
+      group: { id: group.id, name: group.subject, clientName: group.clientName },
+      externalSource: args.externalSource ?? null,
+      confirmationRequired:
+        "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a criação.",
+    };
+    return {
+      requestId: request.requestId,
+      toolId: THREADMARK_CONTEXT_TOOL_ID,
+      toolName: "Contexto do Threadmark",
+      operation: request.operation,
+      argumentsJson: request.argumentsJson,
+      purpose: request.purpose,
+      status: "success",
+      summary: `Rascunho de ticket preparado para ${group.subject}; nenhum ticket foi criado.`,
+      content: JSON.stringify(preview, null, 2),
+      reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:ticket-draft:${encodeURIComponent(draftId)}:request:${encodeURIComponent(request.requestId)}`,
+      executedAt,
+    };
+  }
+
+  private createThreadmarkTicketFromDraft(
+    request: InvestigationToolRequest,
+    rawArguments: unknown,
+    executedAt: string,
+  ): InvestigationToolResult {
+    if (!this.database || !this.supportStore) {
+      return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
+    }
+    const args = createThreadmarkTicketFromDraftSchema.parse(rawArguments);
+    const operator = findThreadmarkAiOperator(this.database, args.confirmationMessageId);
+    if (!isExplicitTicketConfirmation(operator.messageBody)) {
+      throw new Error("A mensagem atual não confirma explicitamente a criação do ticket.");
+    }
+    const draft = this.database
+      .prepare(
+        `SELECT id, thread_id, group_id, title, summary, priority, state,
+                created_ticket_id, created_by, created_at,
+                external_source_type, external_source_id
+         FROM threadmark_ai_ticket_drafts WHERE id = ?`,
+      )
+      .get(args.draftId) as ThreadmarkAiTicketDraftRow | undefined;
+    if (!draft || draft.thread_id !== operator.threadId) {
+      throw new Error("O rascunho não pertence a esta conversa do Threadmark AI.");
+    }
+    if (Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)) {
+      throw new Error("A confirmação precisa ser posterior à prévia do ticket.");
+    }
+    if (draft.state === "created" && draft.created_ticket_id) {
+      const existing = this.supportStore.getTicketDetail(draft.created_ticket_id);
+      return successfulCreatedTicketResult(request, existing, draft, executedAt, true);
+    }
+    findActiveTicketGroup(this.database, draft.group_id);
+    const ticket = this.database.transaction(() => {
+      const created = this.supportStore!.createManualTicket({
+        clientRequestId: `threadmark-ai-ticket:${draft.id}`,
+        groupId: draft.group_id,
+        title: draft.title,
+        summary: draft.summary,
+        priority: draft.priority,
+        actor: draft.created_by,
+      });
+      this.database!
+        .prepare(
+          `UPDATE threadmark_ai_ticket_drafts
+           SET state = 'created', created_ticket_id = ?, updated_at = ?
+           WHERE id = ? AND state = 'pending'`,
+        )
+        .run(created.id, executedAt, draft.id);
+      return created;
+    })();
+    return successfulCreatedTicketResult(request, ticket, draft, executedAt, false);
   }
 
   /** Performs one bounded, readonly connection probe without exposing credentials. */
@@ -390,7 +1094,7 @@ export class DeepToolExecutor {
           config.region,
           "--log-group-name-prefix",
           config.logGroupPrefixes[0]!,
-          "--max-items",
+          "--limit",
           "1",
           "--no-paginate",
           "--output",
@@ -628,7 +1332,6 @@ FORMAT JSONEachRow`;
       "--start-time", String(range.start.getTime()),
       "--end-time", String(range.end.getTime()),
       "--limit", String(args.limit),
-      "--max-items", String(args.limit),
       "--no-paginate",
       "--output", "json",
       "--no-cli-pager",
@@ -1241,6 +1944,484 @@ async function runCommand(request: CommandRequest): Promise<string> {
   });
 }
 
+interface ThreadmarkAiTicketDraftRow {
+  id: string;
+  thread_id: string;
+  group_id: string;
+  title: string;
+  summary: string;
+  priority: "low" | "normal" | "high" | "urgent";
+  state: "pending" | "created";
+  created_ticket_id: string | null;
+  created_by: string;
+  created_at: string;
+  external_source_type: "intercom_conversation" | null;
+  external_source_id: string | null;
+}
+
+function findThreadmarkAiOperator(
+  database: SupportDatabase,
+  messageId: string,
+): {
+  threadId: string;
+  actor: string;
+  messageBody: string;
+  messageCreatedAt: string;
+} {
+  const row = database
+    .prepare(
+      `SELECT message.thread_id, message.body, message.created_at,
+              COALESCE(thread.created_by, 'Operador local') AS actor
+       FROM investigation_thread_messages message
+       JOIN investigation_threads thread ON thread.id = message.thread_id
+       WHERE message.id = ? AND message.role = 'operator'
+         AND thread.scope = 'workspace'`,
+    )
+    .get(messageId) as
+    | { thread_id: string; body: string; created_at: string; actor: string }
+    | undefined;
+  if (!row) throw new Error("A mensagem do operador não pertence ao Threadmark AI.");
+  return {
+    threadId: row.thread_id,
+    actor: row.actor,
+    messageBody: row.body,
+    messageCreatedAt: row.created_at,
+  };
+}
+
+function findActiveTicketGroup(
+  database: SupportDatabase,
+  groupId: string,
+): { id: string; subject: string; clientName: string } {
+  const row = database
+    .prepare(
+      `SELECT support_group.id, support_group.subject, client.name AS client_name
+       FROM whatsapp_groups support_group
+       JOIN clients client ON client.id = support_group.client_id
+       WHERE support_group.id = ? AND client.ignored_at IS NULL`,
+    )
+    .get(groupId) as
+    | { id: string; subject: string; client_name: string }
+    | undefined;
+  if (!row) throw new Error("O grupo escolhido não existe ou foi removido da operação.");
+  return { id: row.id, subject: row.subject, clientName: row.client_name };
+}
+
+function isExplicitTicketConfirmation(message: string): boolean {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/\b(?:nao|nunca)\s+(?:crie|criar|gera|gerar)\b/.test(normalized)) return false;
+  return /\b(?:confirmo|pode\s+(?:criar|gerar)|crie|cria|gere|gera|sim,?\s+(?:crie|pode\s+criar))\b/.test(normalized);
+}
+
+function successfulCreatedTicketResult(
+  request: InvestigationToolRequest,
+  ticket: {
+    id: string;
+    number: number;
+    title: string;
+    status: string;
+    priority: string;
+    client: { name: string };
+    group: { subject: string };
+  },
+  draft: ThreadmarkAiTicketDraftRow,
+  executedAt: string,
+  idempotentReplay: boolean,
+): InvestigationToolResult {
+  const content = {
+    created: true,
+    idempotentReplay,
+    ticket: {
+      id: ticket.id,
+      number: ticket.number,
+      title: ticket.title,
+      status: ticket.status,
+      priority: ticket.priority,
+      clientName: ticket.client.name,
+      groupName: ticket.group.subject,
+      internalUrl: `/tickets/${ticket.number}`,
+    },
+    source: draft.external_source_id
+      ? { type: draft.external_source_type, id: draft.external_source_id }
+      : null,
+  };
+  return {
+    requestId: request.requestId,
+    toolId: THREADMARK_CONTEXT_TOOL_ID,
+    toolName: "Contexto do Threadmark",
+    operation: request.operation,
+    argumentsJson: request.argumentsJson,
+    purpose: request.purpose,
+    status: "success",
+    summary: idempotentReplay
+      ? `O ticket #${ticket.number} já havia sido criado por esta confirmação.`
+      : `Ticket #${ticket.number} criado no Threadmark após confirmação explícita.`,
+    content: JSON.stringify(content, null, 2),
+    reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:ticket:${encodeURIComponent(ticket.id)}:request:${encodeURIComponent(request.requestId)}`,
+    executedAt,
+  };
+}
+
+function buildIntercomSearch(query: string, limit: number): Record<string, unknown> {
+  const filters: Array<Record<string, unknown>> = [
+    { field: "source.author.name", operator: "=", value: query },
+    { field: "source.subject", operator: "=", value: query },
+  ];
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(query)) {
+    filters.push({ field: "source.author.email", operator: "=", value: query });
+  }
+  return {
+    query: filters.length === 1
+      ? filters[0]
+      : { operator: "OR", value: filters },
+    pagination: { per_page: limit },
+    sort: { field: "updated_at", order: "descending" },
+  };
+}
+
+function sanitizeIntercomSearchResult(value: unknown): Record<string, unknown> {
+  const root = asRecord(value);
+  const conversations = Array.isArray(root.conversations) ? root.conversations : [];
+  return {
+    totalCount: finiteNumber(root.total_count) ?? conversations.length,
+    conversations: conversations.slice(0, 20).map((item) => {
+      const conversation = asRecord(item);
+      const source = asRecord(conversation.source);
+      const author = asRecord(source.author);
+      return {
+        id: limitedString(conversation.id, 200),
+        title: limitedString(conversation.title, 500),
+        state: limitedString(conversation.state, 50),
+        priority: limitedString(conversation.priority, 50),
+        createdAt: intercomTimestamp(conversation.created_at),
+        updatedAt: intercomTimestamp(conversation.updated_at),
+        contact: {
+          id: limitedString(author.id, 200),
+          name: limitedString(author.name, 300),
+          email: limitedString(author.email, 320),
+        },
+        subject: limitedString(source.subject, 500),
+        preview: limitedIntercomText(source.body, 2_000),
+      };
+    }),
+  };
+}
+
+function sanitizeIntercomConversation(value: unknown): Record<string, unknown> {
+  const conversation = asRecord(value);
+  const source = asRecord(conversation.source);
+  const sourceAuthor = asRecord(source.author);
+  const partsContainer = asRecord(conversation.conversation_parts);
+  const parts = Array.isArray(partsContainer.conversation_parts)
+    ? partsContainer.conversation_parts
+    : [];
+  return {
+    id: limitedString(conversation.id, 200),
+    title: limitedString(conversation.title, 500),
+    state: limitedString(conversation.state, 50),
+    priority: limitedString(conversation.priority, 50),
+    createdAt: intercomTimestamp(conversation.created_at),
+    updatedAt: intercomTimestamp(conversation.updated_at),
+    source: {
+      id: limitedString(source.id, 200),
+      createdAt: intercomTimestamp(source.created_at ?? conversation.created_at),
+      author: {
+        id: limitedString(sourceAuthor.id, 200),
+        type: limitedString(sourceAuthor.type, 50),
+        name: limitedString(sourceAuthor.name, 300),
+        email: limitedString(sourceAuthor.email, 320),
+      },
+      body: limitedIntercomText(source.body, 8_000),
+    },
+    parts: parts.slice(-100).map((item) => {
+      const part = asRecord(item);
+      const author = asRecord(part.author);
+      return {
+        id: limitedString(part.id, 200),
+        createdAt: intercomTimestamp(part.created_at),
+        type: limitedString(part.part_type, 80),
+        author: {
+          id: limitedString(author.id, 200),
+          type: limitedString(author.type, 50),
+          name: limitedString(author.name, 300),
+          email: limitedString(author.email, 320),
+        },
+        body: limitedIntercomText(part.body, 8_000),
+      };
+    }),
+  };
+}
+
+function sanitizeIntercomCurrentAdmin(value: unknown): Record<string, unknown> {
+  const admin = asRecord(value);
+  return {
+    id: limitedString(admin.id, 200),
+    name: limitedString(admin.name, 300),
+    email: limitedString(admin.email, 320),
+    jobTitle: limitedString(admin.job_title, 300),
+    awayModeEnabled: Boolean(admin.away_mode_enabled),
+  };
+}
+
+function sanitizeIntercomCollections(value: unknown): Record<string, unknown> {
+  const root = asRecord(value);
+  const collections = Array.isArray(root.data) ? root.data : [];
+  return {
+    totalCount: finiteNumber(root.total_count) ?? collections.length,
+    collections: collections.slice(0, 150).map((item) => {
+      const collection = asRecord(item);
+      return {
+        id: limitedString(collection.id, 200),
+        name: limitedString(collection.name, 500),
+        description: limitedIntercomText(collection.description, 2_000),
+        parentId: limitedString(collection.parent_id, 200),
+        helpCenterId: limitedString(collection.help_center_id, 200),
+        updatedAt: intercomTimestamp(collection.updated_at),
+      };
+    }),
+  };
+}
+
+function sanitizeIntercomArticle(value: unknown): Record<string, unknown> {
+  const article = asRecord(value);
+  const author = asRecord(article.author);
+  return {
+    id: limitedString(article.id, 200),
+    title: limitedString(article.title, 500),
+    state: limitedString(article.state, 50),
+    url: limitedString(article.url, 2_000),
+    parentId: limitedString(article.parent_id, 200),
+    parentType: limitedString(article.parent_type, 80),
+    author: {
+      id: limitedString(author.id ?? article.author_id, 200),
+      name: limitedString(author.name, 300),
+    },
+    createdAt: intercomTimestamp(article.created_at),
+    updatedAt: intercomTimestamp(article.updated_at),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function limitedString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const normalized = String(value).trim();
+  return normalized ? truncatePlainText(normalized, maxLength) : null;
+}
+
+function limitedIntercomText(value: unknown, maxLength: number): string | null {
+  const source = limitedString(value, maxLength * 2);
+  if (!source) return null;
+  return truncatePlainText(
+    source
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    maxLength,
+  );
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function intercomTimestamp(value: unknown): string | null {
+  const seconds = finiteNumber(value);
+  return seconds === null ? null : new Date(seconds * 1_000).toISOString();
+}
+
+function searchThreadmarkContext(
+  database: SupportDatabase,
+  args: z.infer<typeof searchSupportContextSchema>,
+): {
+  query: string;
+  scope: typeof args.scope;
+  tickets: Array<Record<string, unknown>>;
+  messages: Array<Record<string, unknown>>;
+} {
+  const normalizedQuery = args.query.trim();
+  const ticketNumberMatch = normalizedQuery.match(/^#?(\d{1,9})$/);
+  const ticketNumber = ticketNumberMatch ? Number(ticketNumberMatch[1]) : null;
+  const pattern = `%${escapeSqliteLike(normalizedQuery.toLocaleLowerCase("pt-BR"))}%`;
+  const includeTickets = args.scope !== "conversations";
+  const includeMessages = args.scope === "all" || args.scope === "conversations";
+  const resolutionOnly = args.scope === "resolutions" ? 1 : 0;
+
+  const ticketRows = includeTickets
+    ? database
+        .prepare(
+          `SELECT ticket.id, ticket.number, ticket.group_id, ticket.title, ticket.summary,
+                  ticket.status, ticket.priority, ticket.updated_at,
+                  client.name AS client_name, support_group.subject AS group_name,
+                  resolution.summary AS resolution_summary,
+                  resolution.root_cause, resolution.outcome,
+                  (SELECT response.body
+                   FROM sent_responses response
+                   WHERE response.ticket_id = ticket.id
+                   ORDER BY response.sent_at DESC, response.id DESC LIMIT 1)
+                    AS last_sent_response
+           FROM tickets ticket
+           JOIN clients client ON client.id = ticket.client_id
+           JOIN whatsapp_groups support_group ON support_group.id = ticket.group_id
+           LEFT JOIN resolutions resolution ON resolution.ticket_id = ticket.id
+           WHERE (? = 0 OR resolution.id IS NOT NULL)
+             AND (
+               ticket.number = ?
+               OR lower(ticket.title) LIKE ? ESCAPE '\\'
+               OR lower(ticket.summary) LIKE ? ESCAPE '\\'
+               OR lower(client.name) LIKE ? ESCAPE '\\'
+               OR lower(support_group.subject) LIKE ? ESCAPE '\\'
+               OR lower(COALESCE(resolution.summary, '')) LIKE ? ESCAPE '\\'
+               OR lower(COALESCE(resolution.root_cause, '')) LIKE ? ESCAPE '\\'
+               OR lower(COALESCE(resolution.outcome, '')) LIKE ? ESCAPE '\\'
+               OR EXISTS (
+                 SELECT 1
+                 FROM ticket_messages membership
+                 JOIN messages message ON message.id = membership.message_id
+                 WHERE membership.ticket_id = ticket.id
+                   AND lower(COALESCE(message.text, '')) LIKE ? ESCAPE '\\'
+               )
+             )
+           ORDER BY CASE WHEN ticket.number = ? THEN 0 ELSE 1 END,
+                    ticket.updated_at DESC, ticket.number DESC
+           LIMIT ?`,
+        )
+        .all(
+          resolutionOnly,
+          ticketNumber,
+          pattern,
+          pattern,
+          pattern,
+          pattern,
+          pattern,
+          pattern,
+          pattern,
+          pattern,
+          ticketNumber,
+          args.limit,
+        ) as Array<{
+        id: string;
+        number: number;
+        group_id: string;
+        title: string;
+        summary: string;
+        status: string;
+        priority: string;
+        updated_at: string;
+        client_name: string;
+        group_name: string;
+        resolution_summary: string | null;
+        root_cause: string | null;
+        outcome: string | null;
+        last_sent_response: string | null;
+      }>
+    : [];
+
+  const messageRows = includeMessages
+    ? database
+        .prepare(
+          `SELECT message.id, message.occurred_at, message.text,
+                  message.message_type, participant.display_name AS author,
+                  support_group.id AS group_id,
+                  support_group.subject AS group_name,
+                  client.name AS client_name,
+                  GROUP_CONCAT(DISTINCT ticket.number) AS ticket_numbers
+           FROM messages message
+           JOIN participants participant ON participant.id = message.sender_id
+           JOIN whatsapp_groups support_group ON support_group.id = message.group_id
+           JOIN clients client ON client.id = support_group.client_id
+           LEFT JOIN ticket_messages membership ON membership.message_id = message.id
+           LEFT JOIN tickets ticket ON ticket.id = membership.ticket_id
+           WHERE lower(COALESCE(message.text, '')) LIKE ? ESCAPE '\\'
+              OR lower(participant.display_name) LIKE ? ESCAPE '\\'
+              OR lower(support_group.subject) LIKE ? ESCAPE '\\'
+              OR lower(client.name) LIKE ? ESCAPE '\\'
+           GROUP BY message.id
+           ORDER BY message.occurred_at DESC, message.id DESC
+           LIMIT ?`,
+        )
+        .all(pattern, pattern, pattern, pattern, args.limit) as Array<{
+        id: string;
+        occurred_at: string;
+        text: string | null;
+        message_type: string;
+        author: string;
+        group_id: string;
+        group_name: string;
+        client_name: string;
+        ticket_numbers: string | null;
+      }>
+    : [];
+
+  return {
+    query: normalizedQuery,
+    scope: args.scope,
+    tickets: ticketRows.map((row) => ({
+      id: row.id,
+      number: row.number,
+      groupId: row.group_id,
+      title: row.title,
+      summary: truncatePlainText(row.summary, 2_000),
+      status: row.status,
+      priority: row.priority,
+      clientName: row.client_name,
+      groupName: row.group_name,
+      resolution: row.resolution_summary
+        ? {
+            summary: truncatePlainText(row.resolution_summary, 2_000),
+            rootCause: row.root_cause ? truncatePlainText(row.root_cause, 1_000) : null,
+            outcome: row.outcome ? truncatePlainText(row.outcome, 1_000) : null,
+          }
+        : null,
+      lastSentResponse: row.last_sent_response
+        ? truncatePlainText(row.last_sent_response, 2_000)
+        : null,
+      updatedAt: row.updated_at,
+    })),
+    messages: messageRows.map((row) => ({
+      id: row.id,
+      occurredAt: row.occurred_at,
+      text: row.text ? truncatePlainText(row.text, 2_000) : null,
+      messageType: row.message_type,
+      author: row.author,
+      groupId: row.group_id,
+      groupName: row.group_name,
+      clientName: row.client_name,
+      ticketNumbers: row.ticket_numbers
+        ? row.ticket_numbers.split(",").map(Number).filter(Number.isFinite)
+        : [],
+    })),
+  };
+}
+
+function escapeSqliteLike(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+function truncatePlainText(value: string, maxCharacters: number): string {
+  return value.length <= maxCharacters
+    ? value
+    : `${value.slice(0, Math.max(0, maxCharacters - 20))}\n[conteúdo truncado]`;
+}
+
 async function boundedFetchText(
   fetchImpl: typeof globalThis.fetch,
   url: URL,
@@ -1317,7 +2498,7 @@ function isFilesystemTool(tool: LocalToolResolvedConfig): boolean {
 
 function testSuccessMessage(type: LocalToolResolvedConfig["type"]): string {
   if (type === "codebase" || type === "knowledge") {
-    return "Pasta acessível com as mesmas restrições de leitura da investigação profunda.";
+    return "Pasta acessível com as mesmas restrições de leitura do Threadmark AI.";
   }
   if (type === "debugger_skill") {
     return "Skill acessível em modo somente leitura, sem executar seus comandos.";
@@ -1373,4 +2554,40 @@ function truncateUtf8(value: string, maxBytes: number): string {
   const bytes = Buffer.from(value, "utf8");
   if (bytes.byteLength <= maxBytes) return value;
   return `${bytes.subarray(0, maxBytes).toString("utf8")}\n[saída truncada pelo Threadmark]`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function mcpSchemaExample(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  return Object.fromEntries(
+    Object.entries(properties).slice(0, 20).map(([name, candidate]) => {
+      const property = isRecord(candidate) ? candidate : {};
+      if (Array.isArray(property.enum) && property.enum.length) return [name, property.enum[0]];
+      if (property.type === "boolean") return [name, false];
+      if (property.type === "number" || property.type === "integer") return [name, 0];
+      if (property.type === "array") return [name, []];
+      if (property.type === "object") return [name, {}];
+      return [name, `<${name}>`];
+    }),
+  );
+}
+
+function isExplicitExternalActionRequest(message: string): boolean {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/\b(?:nao|nunca)\s+(?:crie|envie|execute|publique|altere|atualize)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(?:pode\s+|por\s+favor\s+)?(?:crie|criar|envie|enviar|execute|executar|publique|publicar|altere|alterar|atualize|atualizar)\b/.test(normalized);
 }

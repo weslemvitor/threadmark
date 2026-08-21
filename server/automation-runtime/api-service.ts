@@ -50,13 +50,21 @@ const metadataSchema = z.object({
 }).strict();
 
 const connectedAppSchema = z.object({
-  type: z.enum(["slack_webhook", "custom_http"]),
+  type: z.enum(["slack_webhook", "intercom", "custom_http", "mcp_remote"]),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1_000).nullable().optional(),
   enabled: z.boolean().default(true),
+  aiEnabled: z.boolean().optional(),
   endpoint: z.string().trim().max(2_000),
   secret: z.string().trim().max(16_384).optional(),
   headers: z.record(z.string(), z.string().max(8_192)).optional(),
+  allowPrivateNetwork: z.boolean().optional(),
+  mcpTools: z.array(z.object({
+    name: z.string().trim().min(1).max(200),
+    aiEnabled: z.boolean(),
+    automationEnabled: z.boolean(),
+    confirmationRequired: z.boolean(),
+  }).strict()).max(200).optional(),
 }).strict();
 
 const decisionSchema = z.object({
@@ -222,16 +230,27 @@ export class AutomationApiService {
   async createConnectedApp(input: unknown, actor: string) {
     const parsed = connectedAppSchema.parse(input);
     if (!parsed.endpoint) throw new AutomationApiError("Informe o endpoint do app.");
-    return withActions(
-      await this.runtime.connectedApps.create(parsed as ConnectedAppWriteInput, actor),
+    const created = await this.runtime.connectedApps.create(
+      parsed as ConnectedAppWriteInput,
+      actor,
     );
+    if (created.type === "mcp_remote") {
+      await this.runtime.connectedApps.validateConnection(created.id);
+    }
+    return withActions(this.runtime.connectedApps.get(created.id));
   }
 
   async updateConnectedApp(id: string, input: unknown, actor: string) {
     const parsed = connectedAppSchema.parse(input);
-    return withActions(
-      await this.runtime.connectedApps.update(id, parsed as ConnectedAppWriteInput, actor),
+    const updated = await this.runtime.connectedApps.update(
+      id,
+      parsed as ConnectedAppWriteInput,
+      actor,
     );
+    if (updated.type === "mcp_remote") {
+      await this.runtime.connectedApps.validateConnection(updated.id);
+    }
+    return withActions(this.runtime.connectedApps.get(updated.id));
   }
 
   async deleteConnectedApp(id: string) {
@@ -552,7 +571,48 @@ function validateConnectedApps(
     if (app.status !== "active") {
       throw new AutomationApiError(`Ative o app conectado “${app.name}” antes do fluxo.`);
     }
+    if (app.type === "intercom") {
+      throw new AutomationApiError(
+        "O Intercom nativo está disponível no Threadmark AI, mas ainda não expõe etapas automáticas. Use uma conexão MCP para este fluxo.",
+      );
+    }
+    if (app.type !== "mcp_remote") continue;
+    const tool = app.mcpTools.find(
+      (candidate) =>
+        candidate.name === node.config.actionId && candidate.automationEnabled,
+    );
+    if (!tool) {
+      throw new AutomationApiError(
+        `A ferramenta “${node.config.actionId}” não está autorizada para automações em “${app.name}”.`,
+      );
+    }
+    if (tool.confirmationRequired && !hasApprovalAncestor(definition, node.id)) {
+      throw new AutomationApiError(
+        `Adicione uma etapa de aprovação antes de “${tool.title}” ou desative a confirmação dessa ferramenta no app conectado.`,
+      );
+    }
   }
+}
+
+function hasApprovalAncestor(
+  definition: AutomationWorkflowDefinition,
+  nodeId: string,
+): boolean {
+  const nodes = new Map(definition.nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, string[]>();
+  for (const edge of definition.edges) {
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source]);
+  }
+  const pending = [...(incoming.get(nodeId) ?? [])];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const current = pending.shift();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
+    if (nodes.get(current)?.type === "approval") return true;
+    pending.push(...(incoming.get(current) ?? []));
+  }
+  return false;
 }
 
 function countRuns(database: SupportDatabase, workflowId: string): number {
@@ -563,17 +623,37 @@ function countRuns(database: SupportDatabase, workflowId: string): number {
 }
 
 function withActions(app: ConnectedAppDto) {
+  if (app.type === "mcp_remote") {
+    return {
+      ...app,
+      actions: app.mcpTools.map((tool) => ({
+        id: tool.name,
+        name: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.annotations,
+        aiEnabled: tool.aiEnabled,
+        automationEnabled: tool.automationEnabled,
+        confirmationRequired: tool.confirmationRequired,
+      })),
+    };
+  }
   return {
     ...app,
     actions:
       app.type === "slack_webhook"
         ? [{ id: "send_message", name: "Enviar mensagem", description: "Publica no canal do webhook." }]
-        : [{ id: "request", name: "Executar requisição", description: "Envia um payload para a API." }],
+        : app.type === "intercom"
+          ? []
+          : [{ id: "request", name: "Executar requisição", description: "Envia um payload para a API." }],
   };
 }
 
-function providerId(type: ConnectedAppType): "slack-webhook" | "custom-http" {
-  return type === "slack_webhook" ? "slack-webhook" : "custom-http";
+function providerId(type: ConnectedAppType): "slack-webhook" | "intercom" | "custom-http" | "mcp-remote" {
+  if (type === "slack_webhook") return "slack-webhook";
+  if (type === "intercom") return "intercom";
+  if (type === "mcp_remote") return "mcp-remote";
+  return "custom-http";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

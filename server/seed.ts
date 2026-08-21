@@ -703,7 +703,7 @@ export function seedPresentationData(config = loadConfig()): void {
           (SELECT COUNT(*) FROM client_stores WHERE active = 1) AS stores,
           (SELECT COUNT(*) FROM whatsapp_groups) AS groups,
           (SELECT COUNT(*) FROM messages) AS messages,
-          (SELECT COUNT(*) FROM tickets WHERE status NOT IN ('resolved', 'archived')) AS open_tickets,
+          (SELECT COUNT(*) FROM tickets WHERE status NOT IN ('resolved', 'cancelled', 'archived')) AS open_tickets,
           (SELECT COUNT(*) FROM investigation_jobs) AS investigations`,
       )
       .get() as Record<string, number>;

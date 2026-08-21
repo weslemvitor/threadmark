@@ -36,7 +36,8 @@
               "clickhouse",
               "aws",
               "code",
-              "deployment"
+              "deployment",
+              "external_app"
             ]
           },
           "summary": { "type": "string" },

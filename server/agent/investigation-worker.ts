@@ -41,7 +41,7 @@ export type InvestigationWorkerEvent =
   | {
       type: "cancelled";
       jobId: string;
-      ticketId: string;
+      ticketId?: string;
       jobKind: "thread_turn";
     }
   | {
@@ -108,7 +108,7 @@ export class InvestigationWorker {
       jobId: job.id,
       ...(job.kind === "triage"
         ? { groupId: job.groupId }
-        : { ticketId: job.ticketId }),
+        : job.ticketId ? { ticketId: job.ticketId } : {}),
       jobKind: job.kind,
     });
     const execution = job.kind === "thread_turn"
@@ -151,7 +151,7 @@ export class InvestigationWorker {
         jobId: job.id,
         ...(job.kind === "triage"
           ? { groupId: job.groupId }
-          : { ticketId: job.ticketId }),
+          : job.ticketId ? { ticketId: job.ticketId } : {}),
         jobKind: job.kind,
       });
     } catch (error) {
@@ -160,7 +160,7 @@ export class InvestigationWorker {
           .prepare("SELECT 1 FROM whatsapp_groups WHERE id = ?")
           .get(job.groupId);
         if (!conversationStillExists) return true;
-      } else {
+      } else if (job.kind !== "thread_turn" || job.ticketId) {
         const ticketStillExists = this.store.database
           .prepare("SELECT 1 FROM tickets WHERE id = ?")
           .get(job.ticketId);
@@ -173,7 +173,7 @@ export class InvestigationWorker {
         this.onEvent({
           type: "cancelled",
           jobId: job.id,
-          ticketId: job.ticketId,
+          ...(job.ticketId ? { ticketId: job.ticketId } : {}),
           jobKind: "thread_turn",
         });
         return true;
@@ -185,7 +185,7 @@ export class InvestigationWorker {
           jobId: job.id,
           ...(job.kind === "triage"
             ? { groupId: job.groupId }
-            : { ticketId: job.ticketId }),
+            : job.ticketId ? { ticketId: job.ticketId } : {}),
           jobKind: job.kind,
           reason: "shutdown",
         });
@@ -232,6 +232,17 @@ export class InvestigationWorker {
       } else if (job.kind === "automatic") {
         this.store.failInvestigationJob(job.id, message);
       } else if (job.kind === "thread_turn") {
+        if (job.attemptCount < 3) {
+          this.store.requeueInvestigationThreadJob(job.id, message);
+          this.onEvent({
+            type: "requeued",
+            jobId: job.id,
+            ...(job.ticketId ? { ticketId: job.ticketId } : {}),
+            jobKind: "thread_turn",
+            reason: "retry",
+          });
+          return true;
+        }
         this.store.failInvestigationThreadJob(job.id, message);
       } else if (job.attemptCount < 2) {
         this.store.requeueDocumentationJob(job.id, message);
@@ -249,7 +260,7 @@ export class InvestigationWorker {
       this.onEvent({
         type: "failed",
         jobId: job.id,
-        ticketId: job.ticketId,
+        ...(job.ticketId ? { ticketId: job.ticketId } : {}),
         jobKind: job.kind,
         error: message,
       });

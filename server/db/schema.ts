@@ -2,6 +2,7 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  disableForeignKeys?: boolean;
 }
 
 export const migrations: Migration[] = [
@@ -131,7 +132,7 @@ export const migrations: Migration[] = [
         title TEXT NOT NULL,
         summary TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'new'
-          CHECK (status IN ('new', 'triage', 'in_progress', 'waiting_customer', 'blocked', 'resolved', 'archived')),
+          CHECK (status IN ('new', 'triage', 'in_progress', 'waiting_customer', 'blocked', 'resolved', 'cancelled', 'archived')),
         priority TEXT NOT NULL DEFAULT 'normal'
           CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
         confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
@@ -2767,6 +2768,485 @@ export const migrations: Migration[] = [
     sql: `
       DELETE FROM automation_runs
       WHERE json_extract(input_json, '$.dryRun') IS 1;
+    `,
+  },
+  {
+    version: 50,
+    name: "workspace_threadmark_ai",
+    sql: `
+      ALTER TABLE investigation_thread_tool_executions
+        RENAME TO investigation_thread_tool_executions_v49;
+      ALTER TABLE investigation_thread_jobs
+        RENAME TO investigation_thread_jobs_v49;
+      ALTER TABLE investigation_thread_messages
+        RENAME TO investigation_thread_messages_v49;
+      ALTER TABLE investigation_threads
+        RENAME TO investigation_threads_v49;
+
+      CREATE TABLE investigation_threads (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+        scope TEXT NOT NULL DEFAULT 'ticket'
+          CHECK (scope IN ('ticket', 'workspace')),
+        title TEXT NOT NULL DEFAULT 'Nova conversa',
+        context_json TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'concluded')),
+        summary TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (scope = 'ticket' AND ticket_id IS NOT NULL)
+          OR (scope = 'workspace' AND ticket_id IS NULL)
+        )
+      ) STRICT;
+
+      CREATE TABLE investigation_thread_messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('operator', 'assistant')),
+        body TEXT NOT NULL,
+        phase TEXT
+          CHECK (phase IS NULL OR phase IN ('analysis', 'needs_information', 'conclusion')),
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        suggested_response TEXT,
+        next_action TEXT,
+        context_json TEXT NOT NULL DEFAULT '{}',
+        client_message_id TEXT,
+        job_id TEXT UNIQUE,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE investigation_thread_jobs (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        operator_message_id TEXT NOT NULL
+          REFERENCES investigation_thread_messages(id) ON DELETE RESTRICT,
+        assistant_message_id TEXT
+          REFERENCES investigation_thread_messages(id) ON DELETE SET NULL,
+        state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed')),
+        requested_at TEXT NOT NULL,
+        started_at TEXT,
+        claimed_at TEXT,
+        lease_expires_at TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        finished_at TEXT,
+        result_json TEXT,
+        error TEXT,
+        ai_provider_id TEXT,
+        ai_connection_id TEXT,
+        ai_model TEXT,
+        cancelled_at TEXT,
+        cancelled_by TEXT,
+        UNIQUE(thread_id, operator_message_id)
+      ) STRICT;
+
+      CREATE TABLE investigation_thread_tool_executions (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL
+          REFERENCES investigation_thread_jobs(id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        arguments_json TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('success', 'error')),
+        summary TEXT NOT NULL,
+        content TEXT NOT NULL,
+        reference TEXT,
+        executed_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        UNIQUE(job_id, request_id)
+      ) STRICT;
+
+      INSERT INTO investigation_threads (
+        id, ticket_id, scope, title, context_json, created_by, status,
+        summary, created_at, updated_at
+      )
+      SELECT id, ticket_id, 'ticket', 'Ticket', '{}', NULL, status,
+             summary, created_at, updated_at
+      FROM investigation_threads_v49;
+
+      INSERT INTO investigation_thread_messages (
+        id, thread_id, role, body, phase, evidence_json, suggested_response,
+        next_action, context_json, client_message_id, job_id, created_at
+      )
+      SELECT id, thread_id, role, body, phase, evidence_json,
+             suggested_response, next_action, '{}', client_message_id, job_id,
+             created_at
+      FROM investigation_thread_messages_v49;
+
+      INSERT INTO investigation_thread_jobs (
+        id, thread_id, operator_message_id, assistant_message_id, state,
+        requested_at, started_at, claimed_at, lease_expires_at, attempt_count,
+        finished_at, result_json, error, ai_provider_id, ai_connection_id,
+        ai_model, cancelled_at, cancelled_by
+      )
+      SELECT id, thread_id, operator_message_id, assistant_message_id, state,
+             requested_at, started_at, claimed_at, lease_expires_at,
+             attempt_count, finished_at, result_json, error, ai_provider_id,
+             ai_connection_id, ai_model, cancelled_at, cancelled_by
+      FROM investigation_thread_jobs_v49;
+
+      INSERT INTO investigation_thread_tool_executions (
+        id, job_id, request_id, tool_id, tool_name, operation, arguments_json,
+        purpose, status, summary, content, reference, executed_at, recorded_at
+      )
+      SELECT id, job_id, request_id, tool_id, tool_name, operation,
+             arguments_json, purpose, status, summary, content, reference,
+             executed_at, recorded_at
+      FROM investigation_thread_tool_executions_v49;
+
+      DROP TABLE investigation_thread_tool_executions_v49;
+      DROP TABLE investigation_thread_jobs_v49;
+      DROP TABLE investigation_thread_messages_v49;
+      DROP TABLE investigation_threads_v49;
+
+      CREATE INDEX investigation_threads_scope_updated_idx
+        ON investigation_threads(scope, updated_at DESC, id);
+      CREATE INDEX investigation_thread_messages_time_idx
+        ON investigation_thread_messages(thread_id, created_at, id);
+      CREATE UNIQUE INDEX investigation_thread_messages_client_id_idx
+        ON investigation_thread_messages(thread_id, client_message_id)
+        WHERE client_message_id IS NOT NULL;
+      CREATE UNIQUE INDEX investigation_thread_jobs_active_idx
+        ON investigation_thread_jobs(thread_id)
+        WHERE state IN ('queued', 'running');
+      CREATE INDEX investigation_thread_jobs_queue_idx
+        ON investigation_thread_jobs(state, requested_at);
+      CREATE INDEX investigation_thread_jobs_cancelled_idx
+        ON investigation_thread_jobs(thread_id, cancelled_at DESC)
+        WHERE cancelled_at IS NOT NULL;
+      CREATE INDEX investigation_thread_tool_executions_job_time_idx
+        ON investigation_thread_tool_executions(job_id, executed_at, id);
+
+      CREATE TRIGGER investigation_thread_tool_executions_no_update
+      BEFORE UPDATE ON investigation_thread_tool_executions
+      BEGIN
+        SELECT RAISE(ABORT, 'tool execution audit is append-only');
+      END;
+    `,
+  },
+  {
+    version: 51,
+    name: "threadmark_ai_image_attachments",
+    sql: `
+      CREATE TABLE investigation_thread_message_attachments (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL
+          REFERENCES investigation_thread_messages(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'image' CHECK (kind = 'image'),
+        mime_type TEXT NOT NULL
+          CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/gif', 'image/webp')),
+        file_name TEXT NOT NULL,
+        local_path TEXT NOT NULL UNIQUE,
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        ai_analysis_approved INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_analysis_approved IN (0, 1)),
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX investigation_thread_message_attachments_message_idx
+        ON investigation_thread_message_attachments(message_id, created_at, id);
+    `,
+  },
+  {
+    version: 52,
+    name: "cancelled_ticket_status",
+    disableForeignKeys: true,
+    sql: `
+      PRAGMA legacy_alter_table = ON;
+
+      ALTER TABLE tickets RENAME TO tickets_v51;
+
+      CREATE TABLE tickets (
+        number INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        client_id TEXT NOT NULL REFERENCES clients(id) ON DELETE RESTRICT,
+        group_id TEXT NOT NULL REFERENCES whatsapp_groups(id) ON DELETE RESTRICT,
+        affected_store_id TEXT REFERENCES client_stores(id) ON DELETE SET NULL,
+        source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'new'
+          CHECK (status IN ('new', 'triage', 'in_progress', 'waiting_customer', 'blocked', 'resolved', 'cancelled', 'archived')),
+        priority TEXT NOT NULL DEFAULT 'normal'
+          CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+        confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+        needs_review INTEGER NOT NULL DEFAULT 1 CHECK (needs_review IN (0, 1)),
+        ai_relation TEXT
+          CHECK (ai_relation IS NULL OR ai_relation IN ('new', 'continuation', 'possible_reopen', 'informational', 'social', 'uncertain')),
+        next_action TEXT,
+        first_message_at TEXT NOT NULL,
+        last_message_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_at TEXT,
+        archived_at TEXT,
+        merged_into_ticket_id TEXT REFERENCES tickets(id) ON DELETE SET NULL,
+        requester_id TEXT REFERENCES participants(id) ON DELETE SET NULL,
+        assignee_user_id TEXT REFERENCES local_users(id) ON DELETE SET NULL
+      ) STRICT;
+
+      INSERT INTO tickets (
+        number, id, client_id, group_id, affected_store_id, source_message_id,
+        title, summary, status, priority, confidence, needs_review, ai_relation,
+        next_action, first_message_at, last_message_at, created_at, updated_at,
+        resolved_at, archived_at, merged_into_ticket_id, requester_id,
+        assignee_user_id
+      )
+      SELECT
+        number, id, client_id, group_id, affected_store_id, source_message_id,
+        title, summary, status, priority, confidence, needs_review, ai_relation,
+        next_action, first_message_at, last_message_at, created_at, updated_at,
+        resolved_at, archived_at, merged_into_ticket_id, requester_id,
+        assignee_user_id
+      FROM tickets_v51;
+
+      DROP TABLE tickets_v51;
+
+      CREATE INDEX tickets_status_updated_idx
+        ON tickets(status, updated_at DESC);
+      CREATE INDEX tickets_client_updated_idx
+        ON tickets(client_id, updated_at DESC);
+      CREATE UNIQUE INDEX tickets_source_message_idx
+        ON tickets(source_message_id)
+        WHERE source_message_id IS NOT NULL;
+      CREATE INDEX tickets_merged_into_idx
+        ON tickets(merged_into_ticket_id)
+        WHERE merged_into_ticket_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS ticket_messages_message_idx
+        ON ticket_messages(message_id, ticket_id);
+      CREATE INDEX tickets_group_status_idx
+        ON tickets(group_id, status, last_message_at DESC);
+      CREATE INDEX tickets_requester_updated_idx
+        ON tickets(requester_id, updated_at DESC);
+      CREATE INDEX tickets_assignee_status_updated_idx
+        ON tickets(assignee_user_id, status, updated_at DESC);
+
+      PRAGMA legacy_alter_table = OFF;
+    `,
+  },
+  {
+    version: 53,
+    name: "connected_apps_threadmark_ai_authorization",
+    sql: `
+      ALTER TABLE connected_apps
+        ADD COLUMN ai_enabled INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_enabled IN (0, 1));
+
+      CREATE INDEX connected_apps_ai_enabled_name_idx
+        ON connected_apps(ai_enabled DESC, enabled DESC, name COLLATE NOCASE, id);
+    `,
+  },
+  {
+    version: 54,
+    name: "threadmark_ai_ticket_drafts",
+    sql: `
+      CREATE TABLE threadmark_ai_ticket_drafts (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL
+          REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        operator_message_id TEXT NOT NULL
+          REFERENCES investigation_thread_messages(id) ON DELETE RESTRICT,
+        group_id TEXT NOT NULL REFERENCES whatsapp_groups(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        priority TEXT NOT NULL DEFAULT 'normal'
+          CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+        external_source_type TEXT
+          CHECK (external_source_type IS NULL OR external_source_type = 'intercom_conversation'),
+        external_source_id TEXT,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (state IN ('pending', 'created')),
+        created_ticket_id TEXT UNIQUE REFERENCES tickets(id) ON DELETE SET NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (external_source_type IS NULL AND external_source_id IS NULL)
+          OR (external_source_type IS NOT NULL AND external_source_id IS NOT NULL)
+        )
+      ) STRICT;
+
+      CREATE INDEX threadmark_ai_ticket_drafts_thread_time_idx
+        ON threadmark_ai_ticket_drafts(thread_id, created_at DESC, id);
+      CREATE INDEX threadmark_ai_ticket_drafts_source_idx
+        ON threadmark_ai_ticket_drafts(external_source_type, external_source_id)
+        WHERE external_source_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 55,
+    name: "native_intercom_connected_app",
+    disableForeignKeys: true,
+    sql: `
+      ALTER TABLE connected_apps RENAME TO connected_apps_v54;
+
+      CREATE TABLE connected_apps (
+        id TEXT PRIMARY KEY,
+        provider_type TEXT NOT NULL
+          CHECK (provider_type IN ('slack_webhook', 'intercom', 'custom_http')),
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        config_json TEXT NOT NULL DEFAULT '{}',
+        secret_ref TEXT,
+        secret_configured INTEGER NOT NULL DEFAULT 0
+          CHECK (secret_configured IN (0, 1)),
+        last_tested_at TEXT,
+        last_test_status TEXT
+          CHECK (last_test_status IS NULL OR last_test_status IN ('success', 'failed')),
+        last_test_message TEXT,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (ai_enabled IN (0, 1))
+      ) STRICT;
+
+      INSERT INTO connected_apps (
+        id, provider_type, name, description, enabled, config_json,
+        secret_ref, secret_configured, last_tested_at, last_test_status,
+        last_test_message, created_by, updated_by, created_at, updated_at, ai_enabled
+      )
+      SELECT
+        id,
+        CASE
+          WHEN provider_type = 'custom_http'
+            AND lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.intercom.io/*'
+            THEN 'intercom'
+          WHEN provider_type = 'custom_http'
+            AND lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.eu.intercom.io/*'
+            THEN 'intercom'
+          WHEN provider_type = 'custom_http'
+            AND lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.au.intercom.io/*'
+            THEN 'intercom'
+          ELSE provider_type
+        END,
+        name,
+        description,
+        enabled,
+        CASE
+          WHEN lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.eu.intercom.io/*'
+            THEN json_set(config_json, '$.endpoint', 'https://api.eu.intercom.io/', '$.endpointPreview', 'https://api.eu.intercom.io/')
+          WHEN lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.au.intercom.io/*'
+            THEN json_set(config_json, '$.endpoint', 'https://api.au.intercom.io/', '$.endpointPreview', 'https://api.au.intercom.io/')
+          WHEN lower(json_extract(config_json, '$.endpoint')) GLOB 'https://api.intercom.io/*'
+            THEN json_set(config_json, '$.endpoint', 'https://api.intercom.io/', '$.endpointPreview', 'https://api.intercom.io/')
+          ELSE config_json
+        END,
+        secret_ref,
+        secret_configured,
+        last_tested_at,
+        last_test_status,
+        last_test_message,
+        created_by,
+        updated_by,
+        created_at,
+        updated_at,
+        ai_enabled
+      FROM connected_apps_v54;
+
+      DROP TABLE connected_apps_v54;
+
+      CREATE INDEX connected_apps_enabled_name_idx
+        ON connected_apps(enabled DESC, name COLLATE NOCASE, id);
+      CREATE INDEX connected_apps_ai_enabled_name_idx
+        ON connected_apps(ai_enabled DESC, enabled DESC, name COLLATE NOCASE, id);
+    `,
+  },
+  {
+    version: 56,
+    name: "threadmark_ai_automation_proposals",
+    sql: `
+      ALTER TABLE investigation_thread_messages
+        ADD COLUMN actor_user_id TEXT
+          REFERENCES local_users(id) ON DELETE SET NULL;
+      ALTER TABLE investigation_thread_messages
+        ADD COLUMN actor_role TEXT
+          CHECK (actor_role IS NULL OR actor_role IN ('owner', 'admin', 'operator', 'viewer'));
+
+      CREATE TABLE threadmark_ai_automation_drafts (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL
+          REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        operator_message_id TEXT NOT NULL
+          REFERENCES investigation_thread_messages(id) ON DELETE RESTRICT,
+        intent TEXT NOT NULL CHECK (intent IN ('create', 'update')),
+        target_workflow_id TEXT,
+        name TEXT NOT NULL,
+        description TEXT,
+        definition_json TEXT NOT NULL,
+        base_updated_at TEXT,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (state IN ('pending', 'applied')),
+        applied_workflow_id TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (intent = 'create' AND target_workflow_id IS NULL AND base_updated_at IS NULL)
+          OR (intent = 'update' AND target_workflow_id IS NOT NULL AND base_updated_at IS NOT NULL)
+        )
+      ) STRICT;
+
+      CREATE INDEX threadmark_ai_automation_drafts_thread_time_idx
+        ON threadmark_ai_automation_drafts(thread_id, created_at DESC, id);
+      CREATE INDEX threadmark_ai_automation_drafts_target_idx
+        ON threadmark_ai_automation_drafts(target_workflow_id, created_at DESC)
+        WHERE target_workflow_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 57,
+    name: "remote_mcp_connected_apps",
+    disableForeignKeys: true,
+    sql: `
+      ALTER TABLE connected_apps RENAME TO connected_apps_v56;
+
+      CREATE TABLE connected_apps (
+        id TEXT PRIMARY KEY,
+        provider_type TEXT NOT NULL
+          CHECK (provider_type IN ('slack_webhook', 'intercom', 'custom_http', 'mcp_remote')),
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        config_json TEXT NOT NULL DEFAULT '{}',
+        secret_ref TEXT,
+        secret_configured INTEGER NOT NULL DEFAULT 0
+          CHECK (secret_configured IN (0, 1)),
+        last_tested_at TEXT,
+        last_test_status TEXT
+          CHECK (last_test_status IS NULL OR last_test_status IN ('success', 'failed')),
+        last_test_message TEXT,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (ai_enabled IN (0, 1))
+      ) STRICT;
+
+      INSERT INTO connected_apps (
+        id, provider_type, name, description, enabled, config_json,
+        secret_ref, secret_configured, last_tested_at, last_test_status,
+        last_test_message, created_by, updated_by, created_at, updated_at, ai_enabled
+      )
+      SELECT
+        id, provider_type, name, description, enabled, config_json,
+        secret_ref, secret_configured, last_tested_at, last_test_status,
+        last_test_message, created_by, updated_by, created_at, updated_at, ai_enabled
+      FROM connected_apps_v56;
+
+      DROP TABLE connected_apps_v56;
+
+      CREATE INDEX connected_apps_enabled_name_idx
+        ON connected_apps(enabled DESC, name COLLATE NOCASE, id);
+      CREATE INDEX connected_apps_ai_enabled_name_idx
+        ON connected_apps(ai_enabled DESC, enabled DESC, name COLLATE NOCASE, id);
     `,
   },
 ];
