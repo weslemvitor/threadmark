@@ -159,7 +159,7 @@ export type AutomationNodeDefinition = {
   baseConfig?: AutomationNodeConfig;
 };
 
-export type ConnectedAppType = "slack_webhook" | "custom_http";
+export type ConnectedAppType = "slack_webhook" | "intercom" | "custom_http" | "mcp_remote";
 export type ConnectedAppStatus = "active" | "disabled" | "error";
 
 export type ConnectedAppSummary = {
@@ -168,8 +168,10 @@ export type ConnectedAppSummary = {
   name: string;
   description: string | null;
   status: ConnectedAppStatus;
+  aiEnabled: boolean;
   secretConfigured: boolean;
   endpointPreview: string | null;
+  allowPrivateNetwork?: boolean;
   lastTestAt: string | null;
   lastTestSucceeded: boolean | null;
   updatedAt: string;
@@ -177,6 +179,16 @@ export type ConnectedAppSummary = {
     id: string;
     name: string;
     description: string;
+    inputSchema?: Record<string, unknown>;
+    annotations?: {
+      readOnlyHint: boolean;
+      destructiveHint: boolean;
+      idempotentHint: boolean;
+      openWorldHint: boolean;
+    };
+    aiEnabled?: boolean;
+    automationEnabled?: boolean;
+    confirmationRequired?: boolean;
   }>;
 };
 
@@ -189,9 +201,17 @@ export type UpsertConnectedAppInput = {
   name: string;
   description?: string | null;
   enabled: boolean;
+  aiEnabled: boolean;
   endpoint: string;
   secret?: string;
   headers?: Record<string, string>;
+  allowPrivateNetwork?: boolean;
+  mcpTools?: Array<{
+    name: string;
+    aiEnabled: boolean;
+    automationEnabled: boolean;
+    confirmationRequired: boolean;
+  }>;
 };
 
 export type AutomationValidationIssue = {

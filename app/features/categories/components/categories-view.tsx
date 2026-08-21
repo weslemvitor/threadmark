@@ -5,7 +5,13 @@ import { type CategoryFacetType, type TicketCategoryCatalog } from "@/app/lib/ty
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
 
 const facetLabels: Record<CategoryFacetType, string> = {
@@ -117,19 +123,22 @@ export function CategoriesView({
         <div className="grid items-end gap-3 md:grid-cols-[minmax(150px,170px)_minmax(0,1fr)_120px_120px]">
           <label className="grid min-w-0 gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Faceta</span>
-            <NativeSelect
-              className="h-9 text-sm"
+            <Select
               disabled={isSubmitting}
-              onChange={(event) => setFacet(event.target.value as CategoryFacetType)}
+              onValueChange={(value) => setFacet(value as CategoryFacetType)}
               value={facet}
-              wrapperClassName="w-full"
             >
-              {(Object.keys(facetLabels) as CategoryFacetType[]).map((facetType) => (
-                <option key={facetType} value={facetType}>
-                  {facetLabels[facetType]}
-                </option>
-              ))}
-            </NativeSelect>
+              <SelectTrigger className="h-9 w-full text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(facetLabels) as CategoryFacetType[]).map((facetType) => (
+                  <SelectItem key={facetType} value={facetType}>
+                    {facetLabels[facetType]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
           <label className="grid min-w-0 gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Nome da categoria</span>

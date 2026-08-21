@@ -263,7 +263,7 @@ export function SettingsView({
         >
           <TabsList
             aria-label="Seções das configurações"
-            className="mx-auto flex h-auto max-w-[1180px] justify-start gap-1 overflow-x-auto rounded-none bg-transparent py-2"
+            className="mx-auto flex h-auto max-w-[1180px] justify-start gap-1 overflow-x-auto overflow-y-hidden rounded-none bg-transparent py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {TABS.map((tab) => {
               const Icon = tab.icon;

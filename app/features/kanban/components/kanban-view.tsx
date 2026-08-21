@@ -83,6 +83,14 @@ const columns: KanbanColumn[] = [
     targetStatus: "resolved",
     accent: "green",
   },
+  {
+    id: "cancelled",
+    label: "Cancelados",
+    description: "Encerrados sem resolução",
+    statuses: ["cancelled"],
+    targetStatus: "cancelled",
+    accent: "rose",
+  },
 ];
 
 const initialColumnLimits = Object.fromEntries(
@@ -94,6 +102,7 @@ const columnAccentClasses: Record<string, string> = {
   blue: "bg-blue-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-blue-500)_20%,transparent)]",
   amber: "bg-amber-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-amber-500)_20%,transparent)]",
   green: "bg-emerald-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-emerald-500)_20%,transparent)]",
+  rose: "bg-rose-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-rose-500)_20%,transparent)]",
 };
 
 function sortTickets(
@@ -245,8 +254,13 @@ export function KanbanView({
     0,
     archivedVisibleCount,
   );
+  const visibleCancelledTickets = sortTickets(
+    filteredActiveTickets.filter((ticket) => ticket.status === "cancelled"),
+    "active",
+    "cancelled",
+  ).slice(0, columnLimits.cancelled ?? KANBAN_PAGE_SIZE);
   const selectableTickets = mode === "active"
-    ? visibleResolvedTickets
+    ? [...visibleResolvedTickets, ...visibleCancelledTickets]
     : visibleArchivedTickets;
   const selectableIds = new Set(selectableTickets.map((ticket) => ticket.id));
   const selectedVisibleIds = [...selectedIds].filter((ticketId) => selectableIds.has(ticketId));
@@ -449,6 +463,9 @@ export function KanbanView({
     setBulkBusy(true);
     setBulkError(null);
     const targetStatus = mode === "active" ? "archived" : "resolved";
+    const selectedResolvedCount = selectedVisibleIds.filter((ticketId) =>
+      visibleResolvedTickets.some((ticket) => ticket.id === ticketId)
+    ).length;
     try {
       const updated = await onBulkStatusChange(selectedVisibleIds, targetStatus);
       if (!updated) {
@@ -460,7 +477,7 @@ export function KanbanView({
         setResolvedTickets((current) =>
           current.filter((ticket) => !updatedIds.has(ticket.id))
         );
-        setResolvedTotal((current) => Math.max(0, current - updated.length));
+        setResolvedTotal((current) => Math.max(0, current - selectedResolvedCount));
         if (archivedLoaded) {
           setArchivedTickets((current) => mergeTickets(current, updated, true));
           setArchivedTotal((current) => current + updated.length);
@@ -469,11 +486,12 @@ export function KanbanView({
         const updatedIds = new Set(updated.map((ticket) => ticket.id));
         setArchivedTickets((current) => current.filter((ticket) => !updatedIds.has(ticket.id)));
         setArchivedTotal((current) => Math.max(0, current - updated.length));
+        const restoredResolved = updated.filter((ticket) => ticket.status === "resolved");
         setResolvedTickets((current) =>
-          sortTickets(mergeTickets(current, updated, true), "active", "done")
+          sortTickets(mergeTickets(current, restoredResolved, true), "active", "done")
             .slice(0, KANBAN_PAGE_SIZE)
         );
-        setResolvedTotal((current) => current + updated.length);
+        setResolvedTotal((current) => current + restoredResolved.length);
       }
       void loadResolved(true);
       void loadArchived(true);
@@ -615,7 +633,7 @@ export function KanbanView({
             disabled={
               bulkBusy ||
               (mode === "active"
-                ? !resolvedLoaded || resolvedLoading || !resolvedTickets.length
+                ? !resolvedLoaded || resolvedLoading || (!resolvedTickets.length && !visibleCancelledTickets.length)
                 : archivedLoading || !archivedTickets.length)
             }
             onClick={toggleSelectionMode}
@@ -627,7 +645,7 @@ export function KanbanView({
             {selectionMode
               ? "Cancelar seleção"
               : mode === "active"
-                ? "Selecionar resolvidos"
+                ? "Selecionar encerrados"
                 : "Selecionar para restaurar"}
           </Button>
         </div>
@@ -696,7 +714,7 @@ export function KanbanView({
       {mode === "active" ? (
         <div
           aria-labelledby="kanban-active-tab"
-          className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-4"
+          className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5"
           id="kanban-active-panel"
           role="tabpanel"
         >
@@ -766,7 +784,7 @@ export function KanbanView({
                       key={ticket.id}
                       mode="active"
                       onDragEnd={() => setDropTarget(null)}
-                      onDragStart={ticket.status === "resolved" ? undefined : (event) => {
+                      onDragStart={ticket.status === "resolved" || ticket.status === "cancelled" ? undefined : (event) => {
                         event.dataTransfer.effectAllowed = "move";
                         event.dataTransfer.setData("text/support-ticket", ticket.id);
                       }}
@@ -777,7 +795,7 @@ export function KanbanView({
                         return updated;
                       }}
                       onToggle={() => toggleTicket(ticket.id)}
-                      selectable={selectionMode && column.id === "done"}
+                      selectable={selectionMode && (column.id === "done" || column.id === "cancelled")}
                       selected={selectedIds.has(ticket.id)}
                       ticket={ticket}
                     />
@@ -846,7 +864,7 @@ export function KanbanView({
             <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Archive size={18} /></span>
             <div className="flex min-w-0 flex-1 flex-col">
               <h2 className="text-sm font-semibold text-foreground">Tickets arquivados</h2>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Continuam salvos por completo e podem voltar para Resolvidos a qualquer momento.</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Continuam salvos por completo e voltam ao estado anterior: Resolvido ou Cancelado.</p>
             </div>
             {archivedLoaded ? <b className="whitespace-nowrap rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">{archivedTotal} no total</b> : null}
           </header>
@@ -862,7 +880,7 @@ export function KanbanView({
               title={query.trim() ? "Nenhum card encontrado" : "Nenhum ticket arquivado"}
               description={query.trim()
                 ? `Nenhum título, grupo ou solicitante corresponde a “${query.trim()}” entre os arquivados carregados.`
-                : "Selecione tickets da coluna Resolvidos para organizar o histórico sem apagar dados."}
+                : "Arquive tickets resolvidos ou cancelados para organizar o histórico sem apagar dados."}
             />
           ) : null}
           {filteredArchivedTickets.length ? (

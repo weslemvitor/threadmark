@@ -3,6 +3,7 @@ import type {
   AutomationNodeConfig,
   AutomationNodeConfigValue,
   AutomationNodeDefinition,
+  AutomationNodeField,
   ConnectedAppSummary,
 } from "./automation-types.js";
 
@@ -219,9 +220,10 @@ export const defaultAutomationNodeCatalog: AutomationNodeDefinition[] = [
           { label: "Em andamento", value: "in_progress" },
           { label: "Aguardando resposta", value: "waiting_customer" },
           { label: "Aguardando interno", value: "blocked" },
+          { label: "Cancelado", value: "cancelled" },
           { label: "Arquivado", value: "archived" },
         ],
-        description: "Arquivar exige que o ticket já esteja resolvido. Use o gatilho “Ticket resolvido” antes desta ação.",
+        description: "Arquivar exige que o ticket já esteja resolvido ou cancelado.",
       },
     ],
     baseConfig: { actionId: "change_status" },
@@ -523,13 +525,43 @@ export function catalogWithConnectedApps(
     });
   const connectedNodes: AutomationNodeDefinition[] = [];
   for (const connection of connections.filter((item) => item.status === "active")) {
+    // O conector nativo do Intercom é deliberadamente exclusivo do Threadmark AI.
+    // O agente consegue consultar contexto e propor rascunhos com confirmação;
+    // o motor de automações ainda não oferece esse mesmo fluxo seguro de aprovação.
+    if (connection.type === "intercom") continue;
+    if (connection.type === "mcp_remote") {
+      for (const action of connection.actions?.filter((item) => item.automationEnabled) ?? []) {
+        connectedNodes.push({
+          id: `app-connection.${connection.id}.${action.id}`,
+          nodeType: "app_action",
+          category: "connected_app",
+          label: action.name,
+          description: action.confirmationRequired
+            ? `${action.description} Exige uma etapa de aprovação anterior.`
+            : action.description,
+          icon: "webhook",
+          accent: action.annotations?.readOnlyHint ? "blue" : "violet",
+          connected: true,
+          connectionLabel: connection.name,
+          fields: mcpFields(action.inputSchema),
+          baseConfig: {
+            appId: "mcp-remote",
+            connectionId: connection.id,
+            actionId: action.id,
+          },
+        });
+      }
+      continue;
+    }
     const templateId =
       connection.type === "slack_webhook"
         ? "app.slack.send_message"
         : "app.custom.http_request";
     const template = defaultAutomationNodeCatalog.find((item) => item.id === templateId);
     if (!template) continue;
-    const actionId = connection.type === "slack_webhook" ? "send_message" : "request";
+    const actionId = connection.type === "slack_webhook"
+      ? "send_message"
+      : "request";
     connectedNodes.push({
       ...template,
       id: `app-connection.${connection.id}.${actionId}`,
@@ -544,6 +576,75 @@ export function catalogWithConnectedApps(
     });
   }
   return [...internal, ...connectedNodes];
+}
+
+function mcpFields(schema: Record<string, unknown> | undefined): AutomationNodeField[] {
+  if (!schema || !isRecord(schema.properties) || Object.keys(schema.properties).length === 0) {
+    return [{
+      key: "input.__argumentsJson",
+      label: "Argumentos JSON",
+      description: "Use quando o servidor MCP publica um schema composto ou sem campos individuais.",
+      type: "textarea",
+      required: false,
+      placeholder: "{}",
+      defaultValue: "{}",
+      supportsVariables: true,
+    }];
+  }
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+  return Object.entries(schema.properties).slice(0, 40).map(([name, raw]) => {
+    const property = isRecord(raw) ? raw : {};
+    const label = typeof property.title === "string" && property.title.trim()
+      ? property.title.trim()
+      : humanizeMcpName(name);
+    const description = typeof property.description === "string"
+      ? property.description.slice(0, 500)
+      : undefined;
+    const options = Array.isArray(property.enum)
+      ? property.enum
+          .filter((value): value is string | number =>
+            typeof value === "string" || typeof value === "number",
+          )
+          .map((value) => ({ label: String(value), value: String(value) }))
+      : undefined;
+    const type = options?.length
+      ? "select"
+      : property.type === "boolean"
+        ? "boolean"
+        : property.type === "number" || property.type === "integer"
+          ? "number"
+          : property.type === "object" || property.type === "array"
+            ? "textarea"
+            : "text";
+    return {
+      key: `input.${name}`,
+      label,
+      ...(description ? { description } : {}),
+      type,
+      required: required.has(name),
+      ...(options?.length ? { options } : {}),
+      ...(property.type === "object" || property.type === "array"
+        ? {
+            placeholder: property.type === "array" ? "[]" : "{}",
+            defaultValue: property.type === "array" ? "[]" : "{}",
+          }
+        : {}),
+      ...(property.type === "string" ? { supportsVariables: true } : {}),
+    } satisfies AutomationNodeField;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function humanizeMcpName(value: string): string {
+  const text = value.replace(/[_-]+/g, " ").trim();
+  return text ? `${text[0]?.toLocaleUpperCase("pt-BR")}${text.slice(1)}` : "Campo";
 }
 
 function teamRoleLabel(role: string): string {

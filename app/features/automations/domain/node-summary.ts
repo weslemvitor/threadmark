@@ -8,6 +8,7 @@ const statusLabels: Record<string, string> = {
   new: "Novo",
   archived: "Arquivar ticket",
   blocked: "Aguardando interno",
+  cancelled: "Cancelado",
   in_progress: "Em andamento",
   resolved: "Resolvido",
   triage: "Em revisão",
@@ -31,6 +32,7 @@ const conditionValueOptions: Record<
     { label: "Aguardando resposta", value: "waiting_customer" },
     { label: "Aguardando interno", value: "blocked" },
     { label: "Resolvido", value: "resolved" },
+    { label: "Cancelado", value: "cancelled" },
     { label: "Arquivado", value: "archived" },
   ],
 };

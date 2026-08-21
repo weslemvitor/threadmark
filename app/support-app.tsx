@@ -5,14 +5,12 @@ import { AlertCircle, CheckCircle2, LoaderCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import {
   ApiError,
-  addInvestigationThreadMessage,
   addTicketInternalNote,
   attachCategoryToTicket,
   createCategory,
   detachCategoryFromTicket,
   getCategories,
   bulkUpdateTicketStatus,
-  cancelInvestigationThread,
   createManualTicket,
   deleteTicket,
   deleteTicketInternalNote,
@@ -21,13 +19,11 @@ import {
   getConversations,
   getDashboard,
   getDirectory,
-  getInvestigationThread,
   getRuntime,
   getUnreadNotificationCount,
   getTicket,
   getTicketAssignees,
   getTickets,
-  openInvestigationThread,
   queueTicketDocumentation,
   upsertTicketProductForwarding,
   updateTicketInternalNote,
@@ -41,7 +37,6 @@ import type {
   CategoryFacetType,
   TicketCategoryCatalog,
   DirectorySnapshot,
-  InvestigationThreadDto,
   RuntimeState,
   TicketDetail,
   TicketAssignee,
@@ -52,9 +47,8 @@ import {
   type UpsertTicketProductForwardingInput,
   type UpdateTicketMetadataInput,
 } from "@/shared/contracts";
-import { activeStatuses, configureSupportTimeZone } from "./lib/format";
+import { activeStatuses, configureSupportTimeZone, statusLabels } from "./lib/format";
 import { isInvestigationActive } from "./lib/investigation";
-import { isInvestigationTurnActive } from "./lib/investigation-thread";
 import {
   handleSupportSearchShortcut,
   isSupportSearchShortcut,
@@ -110,8 +104,8 @@ const TicketDetailPanel = dynamic(
 const ManualTicketDialog = dynamic(
   () => import("./features/tickets").then((module) => module.ManualTicketDialog),
 );
-const InvestigationRoom = dynamic(
-  () => import("./features/tickets").then((module) => module.InvestigationRoom),
+const ThreadmarkAi = dynamic(
+  () => import("./features/threadmark-ai").then((module) => module.ThreadmarkAi),
 );
 const ProductForwardingDialog = dynamic(
   () => import("./features/tickets").then((module) => module.ProductForwardingDialog),
@@ -208,7 +202,6 @@ export function SupportApp({
 }) {
   const access = useAppAccess();
   const initialNavigation = parseThreadmarkLocation(initialPath);
-  const previousRoomTurnStateRef = useRef<InvestigationThreadDto["activeTurnState"]>(null);
   const [activeView, setActiveView] = useState<ViewId>(initialNavigation.view);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>(
     initialNavigation.settingsTab,
@@ -266,13 +259,6 @@ export function SupportApp({
   const [productForwardingTarget, setProductForwardingTarget] =
     useState<ProductForwardingDraft | null>(null);
   const [savingProductForwarding, setSavingProductForwarding] = useState(false);
-  const [investigationRoomTarget, setInvestigationRoomTarget] = useState<string | null>(null);
-  const [investigationThread, setInvestigationThread] =
-    useState<InvestigationThreadDto | null>(null);
-  const [investigationRoomLoading, setInvestigationRoomLoading] = useState(false);
-  const [investigationRoomSending, setInvestigationRoomSending] = useState(false);
-  const [investigationRoomStopping, setInvestigationRoomStopping] = useState(false);
-  const [investigationRoomError, setInvestigationRoomError] = useState<string | null>(null);
   const [roomSearchOpen, setRoomSearchOpen] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [conversationRefreshVersion, setConversationRefreshVersion] = useState(0);
@@ -333,9 +319,6 @@ export function SupportApp({
   const currentSelectedId = selectedId ?? routedSelectedId;
   const selectedTicket = currentSelectedId
     ? ticketDetails.get(currentSelectedId) ?? null
-    : null;
-  const investigationRoomTicket = investigationRoomTarget
-    ? ticketDetails.get(investigationRoomTarget) ?? null
     : null;
   const reviewTickets = tickets.filter(
     (ticket) => ticket.needsReview || ticket.status === "triage",
@@ -725,26 +708,41 @@ export function SupportApp({
       const modalOpen = document.querySelector(
         '[role="dialog"][aria-modal="true"]',
       );
-      if (resolutionTarget || (modalOpen && !investigationRoomTarget)) return;
+      if (resolutionTarget || modalOpen) return;
       handleSupportSearchShortcut(event, focusTicketSearch);
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [focusTicketSearch, investigationRoomTarget, resolutionTarget]);
+  }, [focusTicketSearch, resolutionTarget]);
 
   const persistStatusChange = useCallback(
     async (ticketId: string, status: TicketStatus, resolution?: string) => {
+      const previousStatus = ticketDetailsRef.current.get(ticketId)?.status;
       setUpdatingStatus(true);
       invalidateTicketSnapshot(ticketId);
       try {
         const updated = await updateTicketStatus(ticketId, status, resolution);
         invalidateTicketSnapshot(ticketId);
         commitTicketSnapshot(updated);
+        if (previousStatus === "archived" && status === "resolved") {
+          const restoredSummary = ticketSummaryFromDetail(updated);
+          setTickets((current) =>
+            current.some((ticket) => ticket.id === ticketId)
+              ? current.map((ticket) =>
+                  ticket.id === ticketId ? restoredSummary : ticket,
+                )
+              : [restoredSummary, ...current],
+          );
+        }
         showToast({
           tone: "success",
           message:
-            status === "resolved"
+            previousStatus === "archived" && status === "resolved"
+              ? `Ticket restaurado para ${statusLabels[updated.status]}.`
+              : status === "resolved"
               ? "Ticket marcado como resolvido."
+              : status === "cancelled"
+                ? "Ticket cancelado."
               : "Status interno atualizado.",
         });
         void getDashboard().then(setDashboard);
@@ -764,6 +762,11 @@ export function SupportApp({
 
   const requestStatusChange = useCallback(
     (ticketId: string, status: TicketStatus) => {
+      const currentStatus = ticketDetailsRef.current.get(ticketId)?.status;
+      if (currentStatus === "archived" && status === "resolved") {
+        void persistStatusChange(ticketId, status);
+        return;
+      }
       if (status === "resolved") {
         const openResolutionDialog = async () => {
           try {
@@ -819,7 +822,7 @@ export function SupportApp({
           tone: "success",
           message: status === "archived"
             ? `${updated.length} ${updated.length === 1 ? "ticket arquivado" : "tickets arquivados"}. Nenhum dado foi excluído.`
-            : `${updated.length} ${updated.length === 1 ? "ticket restaurado" : "tickets restaurados"} para Resolvidos.`,
+            : `${updated.length} ${updated.length === 1 ? "ticket restaurado" : "tickets restaurados"} ao estado anterior.`,
         });
         return updated;
       } catch (error) {
@@ -942,7 +945,9 @@ export function SupportApp({
     if (!selectedTicket) return;
     const existing = selectedTicket.productForwarding;
     const canResolve =
-      selectedTicket.status !== "resolved" && selectedTicket.status !== "archived";
+      selectedTicket.status !== "resolved" &&
+      selectedTicket.status !== "cancelled" &&
+      selectedTicket.status !== "archived";
 
     productForwardingReturnFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1009,172 +1014,6 @@ export function SupportApp({
       setSavingProductForwarding(false);
     }
   }, [commitTicketSnapshot, invalidateTicketSnapshot, productForwardingTarget, showToast]);
-
-  const syncInvestigationThread = useCallback((thread: InvestigationThreadDto) => {
-    setInvestigationThread(thread);
-    setTicketDetails((current) => {
-      const ticket = current.get(thread.ticketId);
-      if (!ticket) return current;
-      return new Map(current).set(thread.ticketId, {
-        ...ticket,
-        investigationThread: {
-          id: thread.id,
-          status: thread.status,
-          updatedAt: thread.updatedAt,
-          lastAssistantMessageAt: thread.lastAssistantMessageAt,
-          activeTurnState: thread.activeTurnState,
-        },
-      });
-    });
-  }, []);
-
-  const openInvestigationRoom = useCallback(async () => {
-    if (!currentSelectedId) return;
-    invalidateTicketSnapshot(currentSelectedId);
-    setInvestigationRoomTarget(currentSelectedId);
-    setInvestigationThread(null);
-    setInvestigationRoomError(null);
-    setInvestigationRoomLoading(true);
-    try {
-      const thread = await openInvestigationThread(currentSelectedId);
-      invalidateTicketSnapshot(currentSelectedId);
-      syncInvestigationThread(thread);
-    } catch (error) {
-      setInvestigationRoomError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível abrir a sala de investigação.",
-      );
-    } finally {
-      setInvestigationRoomLoading(false);
-    }
-  }, [currentSelectedId, invalidateTicketSnapshot, syncInvestigationThread]);
-
-  const refreshInvestigationRoom = useCallback(
-    async (silent = false) => {
-      if (!investigationRoomTarget && !investigationThread) return;
-      const ticketId = investigationThread?.ticketId ?? investigationRoomTarget;
-      if (!ticketId) return;
-      if (!silent) setInvestigationRoomLoading(true);
-      setInvestigationRoomError(null);
-      try {
-        const [threadResult, ticketResult] = await Promise.allSettled([
-          investigationThread
-            ? getInvestigationThread(investigationThread.id)
-            : openInvestigationThread(ticketId),
-          requestTicketSnapshot(ticketId),
-        ]);
-        if (
-          ticketResult.status === "fulfilled" &&
-          ticketSnapshotCoordinatorRef.current.isCurrent(
-            ticketId,
-            ticketResult.value,
-          )
-        ) {
-          commitTicketSnapshot(ticketResult.value.detail);
-        }
-        if (threadResult.status === "rejected") throw threadResult.reason;
-        syncInvestigationThread(threadResult.value);
-        if (ticketResult.status === "rejected") throw ticketResult.reason;
-      } catch (error) {
-        setInvestigationRoomError(
-          error instanceof Error
-            ? error.message
-            : "Não foi possível atualizar a sala de investigação.",
-        );
-      } finally {
-        if (!silent) setInvestigationRoomLoading(false);
-      }
-    },
-    [
-      commitTicketSnapshot,
-      investigationRoomTarget,
-      investigationThread,
-      requestTicketSnapshot,
-      syncInvestigationThread,
-    ],
-  );
-
-  const sendInvestigationRoomMessage = useCallback(
-    async (body: string, clientMessageId: string): Promise<boolean> => {
-      if (!investigationThread) return false;
-      invalidateTicketSnapshot(investigationThread.ticketId);
-      setInvestigationRoomSending(true);
-      setInvestigationRoomError(null);
-      try {
-        const thread = await addInvestigationThreadMessage(
-          investigationThread.id,
-          body,
-          clientMessageId,
-        );
-        invalidateTicketSnapshot(investigationThread.ticketId);
-        syncInvestigationThread(thread);
-        return true;
-      } catch (error) {
-        setInvestigationRoomError(
-          error instanceof Error
-            ? error.message
-            : "Não foi possível registrar a mensagem da investigação.",
-        );
-        return false;
-      } finally {
-        setInvestigationRoomSending(false);
-      }
-    },
-    [investigationThread, invalidateTicketSnapshot, syncInvestigationThread],
-  );
-
-  const stopInvestigationRoom = useCallback(async () => {
-    if (!investigationThread || investigationRoomStopping) return;
-    setInvestigationRoomStopping(true);
-    setInvestigationRoomError(null);
-    try {
-      const thread = await cancelInvestigationThread(investigationThread.id);
-      invalidateTicketSnapshot(thread.ticketId);
-      syncInvestigationThread(thread);
-      showToast({
-        tone: "success",
-        message: "Investigação interrompida. Todo o histórico foi preservado.",
-      });
-    } catch (error) {
-      setInvestigationRoomError(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível interromper a investigação.",
-      );
-    } finally {
-      setInvestigationRoomStopping(false);
-    }
-  }, [
-    investigationRoomStopping,
-    investigationThread,
-    invalidateTicketSnapshot,
-    showToast,
-    syncInvestigationThread,
-  ]);
-
-  useEffect(() => {
-    if (!investigationThread) return;
-    const active = isInvestigationTurnActive(investigationThread.activeTurnState);
-    if (!investigationRoomTarget && !active) return;
-    const interval = window.setInterval(() => {
-      void refreshInvestigationRoom(true);
-    }, active ? 2_000 : 5_000);
-    return () => window.clearInterval(interval);
-  }, [investigationRoomTarget, investigationThread, refreshInvestigationRoom]);
-
-  useEffect(() => {
-    const previousState = previousRoomTurnStateRef.current;
-    const currentState = investigationThread?.activeTurnState ?? null;
-    if (
-      investigationThread &&
-      isInvestigationTurnActive(previousState) &&
-      !isInvestigationTurnActive(currentState)
-    ) {
-      void loadSelectedTicket(investigationThread.ticketId, true, true);
-    }
-    previousRoomTurnStateRef.current = currentState;
-  }, [investigationThread, loadSelectedTicket]);
 
   const reloadDirectory = useCallback(async () => {
     const snapshot = await getDirectory();
@@ -1541,12 +1380,6 @@ export function SupportApp({
         setActiveView("kanban");
         window.history.replaceState({}, "", buildThreadmarkPath({ view: "kanban" }));
         setResolutionTarget((current) => (current === ticketId ? null : current));
-        if (investigationRoomTarget === ticketId) {
-          setInvestigationRoomTarget(null);
-          setInvestigationThread(null);
-          setInvestigationRoomError(null);
-          setRoomSearchOpen(false);
-        }
         const [ticketsResult, clientsResult, dashboardResult] =
           await Promise.allSettled([
             requestTicketListSnapshot(),
@@ -1578,7 +1411,6 @@ export function SupportApp({
       }
     },
     [
-      investigationRoomTarget,
       commitTicketListSnapshot,
       invalidateTicketSnapshot,
       requestTicketListSnapshot,
@@ -1633,6 +1465,26 @@ export function SupportApp({
   }, [applyLocationNavigation]);
 
   const currentPage = pageContent[activeView];
+  const threadmarkAiContext = useMemo(
+    () => ({
+      route: buildThreadmarkPath({
+        view: activeView,
+        ticketReference:
+          activeView === "inbox" && selectedTicket
+            ? String(selectedTicket.number)
+            : null,
+        settingsTab: settingsInitialTab,
+      }),
+      label: selectedTicket
+        ? `Ticket #${selectedTicket.number} · ${selectedTicket.title}`
+        : currentPage.title,
+      ticketId: selectedTicket?.id ?? null,
+      ticketNumber: selectedTicket?.number ?? null,
+      groupId: selectedTicket?.group.id ?? null,
+      groupName: selectedTicket?.group.subject ?? null,
+    }),
+    [activeView, currentPage.title, selectedTicket, settingsInitialTab],
+  );
   const pageView = useMemo(() => {
     switch (activeView) {
       case "conversations":
@@ -1667,7 +1519,6 @@ export function SupportApp({
               onDelete={handleDeleteTicket}
               onDetachMessage={handleDetachTicketMessage}
               onDeleteNote={handleDeleteTicketNote}
-              onOpenInvestigationRoom={openInvestigationRoom}
               onOpenCategoryCatalog={() => navigateToView("categories")}
               onOpenProductForwarding={openProductForwarding}
               onGenerateDocumentation={handleGenerateDocumentation}
@@ -1792,7 +1643,6 @@ export function SupportApp({
     openTicket,
     openSettingsTab,
     openProductForwarding,
-    openInvestigationRoom,
     openManualTicketDialog,
     openNotificationTarget,
     refreshTicket,
@@ -1933,32 +1783,12 @@ export function SupportApp({
           returnFocusRef={productForwardingReturnFocusRef}
         />
       ) : null}
-      {investigationRoomTicket ? (
-        <InvestigationRoom
-          error={investigationRoomError}
-          loading={investigationRoomLoading}
-          onClose={() => {
-            setRoomSearchOpen(false);
-            setInvestigationRoomTarget(null);
-            setInvestigationRoomError(null);
-          }}
-          onRefresh={() => void refreshInvestigationRoom()}
-          onSend={sendInvestigationRoomMessage}
-          onStop={() => void stopInvestigationRoom()}
-          sending={investigationRoomSending}
-          stopping={investigationRoomStopping}
-          thread={investigationThread}
-          ticket={investigationRoomTicket}
-        />
-      ) : null}
+      <ThreadmarkAi context={threadmarkAiContext} />
       {roomSearchOpen ? (
         <SupportSearchOverlay
           onClose={() => setRoomSearchOpen(false)}
           onOpenTicket={(ticketId) => {
             setRoomSearchOpen(false);
-            if (ticketId === investigationRoomTarget) return;
-            setInvestigationRoomTarget(null);
-            setInvestigationRoomError(null);
             openTicket(ticketId);
           }}
           tickets={tickets}

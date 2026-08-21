@@ -8,7 +8,13 @@ import {
   DialogTitle,
 } from "@/app/components/ui/dialog";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { Textarea } from "@/app/components/ui/textarea";
 import {
   FilePenLine,
@@ -160,19 +166,22 @@ export function TicketMetadataEditor({
               </label>
               <label className="grid min-w-0 gap-1.5 self-start text-xs font-medium text-foreground">
                 <span>Prioridade</span>
-                <NativeSelect
+                <Select
                   disabled={saving}
-                  onChange={(event) =>
-                    setPriority(event.target.value as TicketPriority)
-                  }
+                  onValueChange={(value) => setPriority(value as TicketPriority)}
                   value={priority}
                 >
-                  {TICKET_PRIORITIES.map((option) => (
-                    <option key={option} value={option}>
-                      {priorityLabels[option]}
-                    </option>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TICKET_PRIORITIES.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {priorityLabels[option]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
               <label className="grid min-w-0 gap-1.5 text-xs font-medium text-foreground sm:col-span-3">
                 <span>Descrição</span>
@@ -202,28 +211,35 @@ export function TicketMetadataEditor({
             </div>
             <label className="grid gap-1.5 text-xs font-medium text-foreground">
               <span>Pessoa solicitante</span>
-              <NativeSelect
+              <Select
                 disabled={saving}
-                onChange={(event) => setRequesterId(event.target.value)}
-                value={requesterId}
+                onValueChange={(value) => setRequesterId(
+                  value === "__automatic__" ? "" : value,
+                )}
+                value={requesterId || "__automatic__"}
               >
-                <option value="">
-                  Detectar automaticamente · {automaticRequester}
-                </option>
-                {unavailableRequester && ticket.requesterOverrideId ? (
-                  <option disabled value={ticket.requesterOverrideId}>
-                    {unavailableRequester.displayName} · não está mais no grupo
-                  </option>
-                ) : null}
-                {ticket.requesterCandidates.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.displayName}
-                    {candidate.phoneE164
-                      ? ` · ${formatPhoneNumber(candidate.phoneE164)}`
-                      : ""}
-                  </option>
-                ))}
-              </NativeSelect>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__automatic__">
+                    Detectar automaticamente · {automaticRequester}
+                  </SelectItem>
+                  {unavailableRequester && ticket.requesterOverrideId ? (
+                    <SelectItem disabled value={ticket.requesterOverrideId}>
+                      {unavailableRequester.displayName} · não está mais no grupo
+                    </SelectItem>
+                  ) : null}
+                  {ticket.requesterCandidates.map((candidate) => (
+                    <SelectItem key={candidate.id} value={candidate.id}>
+                      {candidate.displayName}
+                      {candidate.phoneE164
+                        ? ` · ${formatPhoneNumber(candidate.phoneE164)}`
+                        : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <small className="font-normal leading-relaxed text-muted-foreground">
                 A escolha manual prevalece sobre a primeira mensagem externa do
                 ticket. Selecione a detecção automática para remover essa preferência.

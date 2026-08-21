@@ -9,6 +9,7 @@ export function getKanbanTicketTimestamp(
 ): string {
   if (mode === "archived") return ticket.archivedAt ?? ticket.updatedAt;
   if (columnId === "done") return ticket.resolvedAt ?? ticket.updatedAt;
+  if (columnId === "cancelled") return ticket.updatedAt;
   return ticket.lastMessageAt;
 }
 
@@ -22,5 +23,6 @@ export function getKanbanTicketTimeLabel(
   );
   if (mode === "archived") return `Arquivado ${relative}`;
   if (columnId === "done") return `Resolvido ${relative}`;
+  if (columnId === "cancelled") return `Cancelado ${relative}`;
   return relative;
 }

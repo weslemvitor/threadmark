@@ -69,8 +69,8 @@ export const TASKS: Array<{
   },
   {
     id: "deep",
-    label: "Investigação aprofundada",
-    description: "Aprofunda o caso em uma sala persistente usando as capacidades da conexão selecionada.",
+    label: "Threadmark AI",
+    description: "Atende dúvidas, investiga casos e prepara respostas ou ações em um chat global persistente.",
   },
   {
     id: "documentation",
@@ -137,16 +137,6 @@ export function EmptySettingsState({ icon: Icon, title, description }: { icon: L
 
 export function Metric({ label, value }: { label: string; value: string | number }) {
   return <div className="rounded-lg bg-muted/60 p-3"><dt className="text-xs font-medium text-muted-foreground">{label}</dt><dd className="mt-1 truncate text-sm font-semibold text-foreground">{typeof value === "number" ? new Intl.NumberFormat("pt-BR").format(value) : value}</dd></div>;
-}
-
-export function RoleOptions({
-  allowPrivileged,
-  currentRole,
-}: {
-  allowPrivileged: boolean;
-  currentRole?: SettingsRole;
-}) {
-  return <><option value="viewer">Visualizador</option><option value="operator">Operador</option>{allowPrivileged || currentRole === "admin" ? <option value="admin">Administrador</option> : null}{allowPrivileged || currentRole === "owner" ? <option value="owner">Proprietário</option> : null}</>;
 }
 
 export function RoleBadge({ role }: { role: SettingsRole }) {

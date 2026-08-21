@@ -4,6 +4,7 @@ import { FilePlus2, LoaderCircle, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ClientSummary, TicketPriority } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
+import { Combobox } from "@/app/components/ui/combobox";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +13,13 @@ import {
   DialogTitle,
 } from "@/app/components/ui/dialog";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { Textarea } from "@/app/components/ui/textarea";
 
 export type ManualTicketDraft = {
@@ -113,34 +120,37 @@ export function ManualTicketDialog({
             </span>
           </div>
 
-          <label className="col-span-2 flex min-w-0 flex-col gap-1.5 max-[760px]:col-span-1">
-            <span className="text-xs font-medium text-muted-foreground">Grupo ou conversa relacionada</span>
-            <NativeSelect
+          <div className="col-span-2 flex min-w-0 flex-col gap-1.5 max-[760px]:col-span-1">
+            <span className="text-xs font-medium text-muted-foreground" id="manual-ticket-group-label">Grupo ou conversa relacionada</span>
+            <Combobox
+              ariaLabelledBy="manual-ticket-group-label"
               autoFocus
-              disabled={!groups.length}
-              onChange={(event) => setDraft((current) => ({
+              disabled={!groups.length || busy}
+              emptyMessage="Nenhuma conversa encontrada."
+              onValueChange={(groupId) => setDraft((current) => ({
                 ...current,
-                groupId: event.target.value,
+                groupId,
               }))}
+              options={groups.map((group) => ({
+                value: group.id,
+                label: group.subject,
+                description:
+                  group.clientName !== group.subject
+                    ? group.clientName
+                    : undefined,
+                keywords: [group.clientName],
+              }))}
+              placeholder="Selecione o contexto do ticket…"
               required
+              searchPlaceholder="Buscar grupo ou conversa…"
               value={draft.groupId}
-              wrapperClassName="w-full"
-            >
-              <option value="">Selecione o contexto do ticket…</option>
-              {clients.map((client) => client.groups.length ? (
-                <optgroup key={client.id} label={client.name}>
-                  {client.groups.map((group) => (
-                    <option key={group.id} value={group.id}>{group.subject}</option>
-                  ))}
-                </optgroup>
-              ) : null)}
-            </NativeSelect>
+            />
             {!groups.length ? (
               <small className="text-xs leading-relaxed text-amber-700">
                 Nenhum grupo ou conversa está disponível para vincular o ticket.
               </small>
             ) : null}
-          </label>
+          </div>
 
           <label className="col-span-2 flex min-w-0 flex-col gap-1.5 max-[760px]:col-span-1">
             <span className="text-xs font-medium text-muted-foreground">Título do ticket</span>
@@ -173,19 +183,23 @@ export function ManualTicketDialog({
 
           <label className="flex min-w-0 flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Prioridade</span>
-            <NativeSelect
-              onChange={(event) => setDraft((current) => ({
+            <Select
+              onValueChange={(priority) => setDraft((current) => ({
                 ...current,
-                priority: event.target.value as TicketPriority,
+                priority: priority as TicketPriority,
               }))}
               value={draft.priority}
-              wrapperClassName="w-full"
             >
-              <option value="low">Baixa</option>
-              <option value="normal">Normal</option>
-              <option value="high">Alta</option>
-              <option value="urgent">Urgente</option>
-            </NativeSelect>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="low">Baixa</SelectItem>
+                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="high">Alta</SelectItem>
+                <SelectItem value="urgent">Urgente</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
 
           {error ? <p className="col-span-2 m-0 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm leading-relaxed text-destructive max-[760px]:col-span-1" role="alert">{error}</p> : null}

@@ -20,7 +20,13 @@ import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Checkbox } from "@/app/components/ui/checkbox";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs";
 import { Textarea } from "@/app/components/ui/textarea";
 import {
@@ -236,7 +242,7 @@ export function DocumentationView() {
                 <label className="grid gap-1.5 text-xs font-medium">Resumo<Textarea className="min-h-20" maxLength={600} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} value={draft.summary} /></label>
                 <label className="grid gap-1.5 text-xs font-medium">Pré-requisitos, um por linha<Textarea className="min-h-20" onChange={(event) => setDraft({ ...draft, prerequisites: event.target.value.split("\n") })} value={draft.prerequisites.join("\n")} /></label>
                 <label className="grid gap-1.5 text-xs font-medium">Conteúdo em Markdown<Textarea className="min-h-80 font-mono text-sm" maxLength={30_000} onChange={(event) => setDraft({ ...draft, bodyMarkdown: event.target.value })} value={draft.bodyMarkdown} /></label>
-                <div className="flex flex-wrap items-center justify-between gap-3"><NativeSelect className="w-44" onChange={(event) => setDraft({ ...draft, status: event.target.value as DocumentationDraftStatus })} value={draft.status}><option value="draft">Em revisão</option><option value="ready">Pronta</option><option value="archived">Arquivada</option></NativeSelect><Button disabled={!dirty || saving} onClick={() => void save()}>{saving ? <LoaderCircle className="animate-spin" size={14} /> : <Check size={14} />} Salvar alterações</Button></div>
+                <div className="flex flex-wrap items-center justify-between gap-3"><Select onValueChange={(status) => setDraft({ ...draft, status: status as DocumentationDraftStatus })} value={draft.status}><SelectTrigger aria-label="Status da documentação" className="w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="draft">Em revisão</SelectItem><SelectItem value="ready">Pronta</SelectItem><SelectItem value="archived">Arquivada</SelectItem></SelectContent></Select><Button disabled={!dirty || saving} onClick={() => void save()}>{saving ? <LoaderCircle className="animate-spin" size={14} /> : <Check size={14} />} Salvar alterações</Button></div>
               </TabsContent>
               <TabsContent className="m-0 p-5" value="preview"><article className="mx-auto max-w-3xl whitespace-pre-wrap break-words text-sm leading-7"><h1 className="mb-3 text-2xl font-bold">{draft.title}</h1><p className="mb-5 text-muted-foreground">{draft.summary}</p>{draft.prerequisites.length ? <><h2 className="mb-2 mt-5 text-lg font-semibold">Pré-requisitos</h2><ul className="list-disc pl-5">{draft.prerequisites.filter(Boolean).map((item) => <li key={item}>{item}</li>)}</ul></> : null}<div className="mt-5">{draft.bodyMarkdown}</div></article></TabsContent>
               <TabsContent className="m-0 grid gap-4 p-4" value="sources">

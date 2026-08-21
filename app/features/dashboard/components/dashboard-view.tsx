@@ -41,7 +41,13 @@ import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
 import { cn } from "@/app/lib/utils";
 import {
@@ -306,40 +312,44 @@ export function DashboardView({
       <div className="flex min-w-0 flex-wrap items-end gap-2 lg:justify-end">
         <label className="flex min-w-0 flex-col gap-1">
           <span className="text-xs font-medium text-muted-foreground">Período</span>
-          <NativeSelect
-            aria-label="Selecionar período do dashboard"
-            className="h-9 min-w-40 text-sm"
-            onChange={(event) => selectPeriod(event.target.value as DashboardPeriodId)}
+          <Select
+            onValueChange={(value) => selectPeriod(value as DashboardPeriodId)}
             value={selectedPeriod}
-            wrapperClassName="w-full sm:w-fit"
           >
-            {dashboardPeriodOptions.map((option) => (
-              <option key={option.id} value={option.id}>{option.label}</option>
-            ))}
-          </NativeSelect>
+            <SelectTrigger aria-label="Selecionar período do dashboard" className="h-9 w-full min-w-40 text-sm sm:w-fit">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {dashboardPeriodOptions.map((option) => (
+                <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
         <label className="flex min-w-0 flex-col gap-1">
           <span className="text-xs font-medium text-muted-foreground">Responsável</span>
-          <NativeSelect
-            aria-label="Filtrar dashboard por responsável"
-            className="h-9 min-w-44 text-sm"
-            onChange={(event) => selectAssignee(event.target.value)}
+          <Select
+            onValueChange={selectAssignee}
             value={selectedAssignee}
-            wrapperClassName="w-full sm:w-fit"
           >
-            <option value={allAssigneesFilter}>Toda a equipe</option>
-            {assigneeOptions
-              .filter((metric) => metric.assignee)
-              .map((metric) => (
-                <option key={metric.assignee?.id} value={metric.assignee?.id}>
-                  {metric.assignee?.displayName}
-                  {metric.assignee?.active ? "" : " (inativo)"}
-                </option>
-              ))}
-            {assigneeOptions.some((metric) => !metric.assignee) ? (
-              <option value={unassignedFilter}>Sem responsável</option>
-            ) : null}
-          </NativeSelect>
+            <SelectTrigger aria-label="Filtrar dashboard por responsável" className="h-9 w-full min-w-44 text-sm sm:w-fit">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={allAssigneesFilter}>Toda a equipe</SelectItem>
+              {assigneeOptions
+                .filter((metric) => metric.assignee)
+                .map((metric) => (
+                  <SelectItem key={metric.assignee!.id} value={metric.assignee!.id}>
+                    {metric.assignee!.displayName}
+                    {metric.assignee!.active ? "" : " (inativo)"}
+                  </SelectItem>
+                ))}
+              {assigneeOptions.some((metric) => !metric.assignee) ? (
+                <SelectItem value={unassignedFilter}>Sem responsável</SelectItem>
+              ) : null}
+            </SelectContent>
+          </Select>
         </label>
         {selectedPeriod === "custom" ? (
           <div className="flex min-w-0 flex-wrap items-end gap-2">
@@ -423,6 +433,7 @@ export function DashboardView({
     waiting_customer: "var(--chart-3)",
     blocked: "var(--destructive)",
     resolved: "var(--chart-4)",
+    cancelled: "var(--color-rose-500)",
     archived: "var(--muted-foreground)",
   } satisfies Record<TicketSummary["status"], string>;
   const statusItems = currentDashboard.statusCounts

@@ -81,7 +81,7 @@ export function describeTimelineEvent(event: TimelineEventDto): string {
           : phase === "needs_information"
             ? "Mais informações necessárias"
             : "Análise registrada";
-      return `Codex executou a investigação aprofundada · ${phaseLabel}${confidenceSuffix(event)}`;
+      return `Threadmark AI concluiu uma análise · ${phaseLabel}${confidenceSuffix(event)}`;
     }
     default: {
       const actor = event.actor.trim() || "Sistema";

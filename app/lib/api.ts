@@ -15,6 +15,9 @@ import type {
   DeleteClientResponse,
   DeleteTicketResponse,
   InvestigationThreadDto,
+  ThreadmarkAiContextDto,
+  ThreadmarkAiThreadDto,
+  ThreadmarkAiThreadListResponse,
   TicketListResponse,
   CreateCategoryInput,
   TicketCategoryAttachInput,
@@ -772,6 +775,77 @@ export async function cancelInvestigationThread(
 ): Promise<InvestigationThreadDto> {
   return request<InvestigationThreadDto>(
     `/api/investigation-threads/${encodeURIComponent(threadId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+export async function listThreadmarkAiThreads(): Promise<ThreadmarkAiThreadListResponse> {
+  return request<ThreadmarkAiThreadListResponse>("/api/threadmark-ai/threads");
+}
+
+export async function openCurrentThreadmarkAiThread(
+  context: ThreadmarkAiContextDto | null,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>("/api/threadmark-ai/current", {
+    method: "POST",
+    body: JSON.stringify({ context }),
+  });
+}
+
+export async function createThreadmarkAiThread(
+  context: ThreadmarkAiContextDto | null,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>("/api/threadmark-ai/threads", {
+    method: "POST",
+    body: JSON.stringify({ context }),
+  });
+}
+
+export async function getThreadmarkAiThread(
+  threadId: string,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}`,
+  );
+}
+
+export async function addThreadmarkAiMessage(
+  threadId: string,
+  body: string,
+  clientMessageId: string,
+  context: ThreadmarkAiContextDto | null,
+  attachments: NonNullable<AddInvestigationThreadMessageInput["attachments"]> = [],
+  allowImageAnalysis = false,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        body: body.trim(),
+        clientMessageId,
+        context,
+        attachments,
+        allowImageAnalysis,
+      }),
+    },
+  );
+}
+
+export async function cancelThreadmarkAiTurn(
+  threadId: string,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+export async function retryThreadmarkAiTurn(
+  threadId: string,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}/retry`,
     { method: "POST" },
   );
 }

@@ -267,7 +267,7 @@ export function AiSection({
                   {connection.capabilities.triage ? <Capability label="Sugestões de ticket" /> : null}
                   {connection.capabilities.localTools ? <Capability label="Ferramentas locais" /> : null}
                   {connection.capabilities.codebaseAccess ? <Capability label="Codebase" /> : null}
-                  {connection.capabilities.deepInvestigation ? <Capability label="Investigação profunda" /> : null}
+                  {connection.capabilities.deepInvestigation ? <Capability label="Threadmark AI" /> : null}
                 </div>
                 {connection.baseUrl ? <p className="mt-4 truncate rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">{connection.baseUrl}</p> : null}
                 {catalog ? <p className={`mt-4 flex items-start gap-2 rounded-xl px-3 py-2 text-xs ${catalog.status === "error" ? "bg-destructive/10 text-destructive" : catalog.status === "success" ? "bg-emerald-50 text-emerald-800" : "bg-muted text-muted-foreground"}`}>{catalog.status === "loading" ? <LoaderCircle className="mt-0.5 shrink-0 animate-spin" size={14} /> : catalog.status === "success" ? <CheckCircle2 className="mt-0.5 shrink-0" size={14} /> : <CircleAlert className="mt-0.5 shrink-0" size={14} />}<span>{catalog.message}{catalog.status === "success" && catalog.models.length ? ` ${catalog.models.length} modelo(s) disponível(is) para seleção.` : ""}</span></p> : null}

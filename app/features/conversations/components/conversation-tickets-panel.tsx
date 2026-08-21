@@ -49,6 +49,7 @@ const EMPTY_SUMMARY: ConversationTicketListResponse["summary"] = {
   all: 0,
   active: 0,
   resolved: 0,
+  cancelled: 0,
   archived: 0,
 };
 
@@ -71,7 +72,7 @@ function displayedTicketsProgressLabel(count: number, total: number): string {
 
 function statusesForFilter(filter: StatusFilter): TicketStatus[] | undefined {
   if (filter === ALL_STATUSES) return undefined;
-  if (filter === HISTORY_STATUSES) return ["resolved", "archived"];
+  if (filter === HISTORY_STATUSES) return ["resolved", "cancelled", "archived"];
   return [filter];
 }
 
@@ -252,7 +253,7 @@ export function ConversationTicketsPanel({
     }
   }, [conversationId, debouncedQuery, loadingMore, nextCursor, selectedStatus]);
 
-  const historyTotal = summary.resolved + summary.archived;
+  const historyTotal = summary.resolved + summary.cancelled + summary.archived;
   if (!previewLoading && !previewError && summary.all === 0) return null;
 
   return (
@@ -372,7 +373,7 @@ export function ConversationTicketsPanel({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL_STATUSES}>Todos os status</SelectItem>
-                <SelectItem value={HISTORY_STATUSES}>Resolvidos e arquivados</SelectItem>
+                <SelectItem value={HISTORY_STATUSES}>Encerrados e arquivados</SelectItem>
                 {TICKET_STATUSES.map((status) => (
                   <SelectItem key={status} value={status}>
                     {statusLabels[status]}

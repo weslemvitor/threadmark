@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   BookOpenText,
   Bug,
@@ -38,7 +40,13 @@ import { TicketDeleteDialog } from "./ticket-delete-dialog";
 import { TicketMetadataEditor } from "./ticket-metadata-editor";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
 import { Button } from "@/app/components/ui/button";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { TicketConversation } from "./ticket-conversation";
 import {
   TicketNoteComposer,
@@ -47,7 +55,6 @@ import {
 import { CategoryPanel } from "./ticket-category-panel";
 import { ContextPanel } from "./ticket-context-panel";
 import { ProductForwardingPanel } from "./ticket-product-panel";
-import { InvestigationRoomLauncher } from "./investigation-room-launcher";
 import { TicketResolutionSummary } from "./ticket-resolution-summary";
 import { TicketAssignmentPanel } from "./ticket-assignment-panel";
 
@@ -58,6 +65,7 @@ const mutableStatuses: TicketStatus[] = [
   "waiting_customer",
   "blocked",
   "resolved",
+  "cancelled",
 ];
 
 type TicketDetailProps = {
@@ -75,7 +83,6 @@ type TicketDetailProps = {
   currentUserId: string | null;
   deleting: boolean;
   onStatusChange: (status: TicketStatus) => void;
-  onOpenInvestigationRoom: () => void;
   onRefresh: () => void;
   onDelete: (ticketId: string) => Promise<boolean>;
   onBackToKanban: () => void;
@@ -130,7 +137,6 @@ export function TicketDetail({
   currentUserId,
   deleting,
   onStatusChange,
-  onOpenInvestigationRoom,
   onRefresh,
   onDelete,
   onBackToKanban,
@@ -343,26 +349,43 @@ export function TicketDetail({
           <Button onClick={onRefresh} aria-label="Atualizar ticket" size="icon" type="button" variant="outline">
             <RefreshCw size={16} />
           </Button>
-          <label className="min-w-0 max-[900px]:flex-1">
-            <span className="sr-only">Alterar status interno</span>
-            <NativeSelect
-              aria-label={ticket.status === "archived" ? "Status arquivado, restaure pelo Kanban" : undefined}
-              disabled={updatingStatus || ticket.status === "archived"}
-              onChange={(event) => onStatusChange(event.target.value as TicketStatus)}
-              value={ticket.status}
-              wrapperClassName="w-full"
+          {ticket.status === "archived" ? (
+            <Button
+              className="shrink-0 max-[900px]:flex-1"
+              disabled={updatingStatus}
+              onClick={() => onStatusChange("resolved")}
+              type="button"
+              variant="outline"
             >
-              {mutableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabels[status]}
-                </option>
-              ))}
-              {ticket.status === "archived" ? (
-                <option value="archived">{statusLabels.archived}</option>
-              ) : null}
-            </NativeSelect>
-          </label>
-          {ticket.status !== "resolved" && ticket.status !== "archived" ? (
+              {updatingStatus ? (
+                <LoaderCircle className="animate-spin" size={16} />
+              ) : (
+                <ArchiveRestore size={16} />
+              )}
+              {updatingStatus ? "Restaurando…" : "Restaurar ticket"}
+            </Button>
+          ) : (
+            <label className="min-w-0 max-[900px]:flex-1">
+              <span className="sr-only">Alterar status interno</span>
+              <Select
+                disabled={updatingStatus}
+                onValueChange={(status) => onStatusChange(status as TicketStatus)}
+                value={ticket.status}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {mutableStatuses.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {statusLabels[status]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          )}
+          {ticket.status !== "resolved" && ticket.status !== "cancelled" && ticket.status !== "archived" ? (
             <Button
               className="max-[1279px]:size-8 max-[1279px]:px-0 max-[1279px]:text-[0px] max-[900px]:w-auto max-[900px]:px-2.5"
               disabled={updatingStatus}
@@ -424,6 +447,26 @@ export function TicketDetail({
                     </small>
                   </span>
                 </Button>
+                {ticket.status === "resolved" || ticket.status === "cancelled" ? (
+                  <Button
+                    className="h-auto w-full justify-start gap-2.5 p-2 text-left whitespace-normal text-primary"
+                    disabled={updatingStatus}
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      onStatusChange("archived");
+                    }}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Archive size={15} />
+                    <span className="flex min-w-0 flex-col">
+                      <strong className="text-xs">Arquivar ticket</strong>
+                      <small className="mt-1 text-xs leading-snug text-muted-foreground">
+                        Organize sem excluir o histórico
+                      </small>
+                    </span>
+                  </Button>
+                ) : null}
                 <Button
                   className="h-auto w-full justify-start gap-2.5 p-2 text-left whitespace-normal text-primary"
                   onClick={revealCategoryPanel}
@@ -552,10 +595,6 @@ export function TicketDetail({
           />
           <ProductForwardingPanel
             onOpen={onOpenProductForwarding}
-            ticket={ticket}
-          />
-          <InvestigationRoomLauncher
-            onOpen={onOpenInvestigationRoom}
             ticket={ticket}
           />
         </aside>

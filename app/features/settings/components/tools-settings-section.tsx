@@ -176,7 +176,7 @@ export function ToolsSettingsSection({
         "success",
         draft.id
           ? "A ferramenta e seus escopos foram atualizados."
-          : "A ferramenta foi criada para a investigação aprofundada.",
+          : "A ferramenta foi criada para o Threadmark AI.",
       );
     } catch (cause) {
       onFeedback("error", errorMessage(cause));
@@ -257,7 +257,7 @@ export function ToolsSettingsSection({
 
       <div className="mb-6 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-800">
         <ShieldCheck className="mt-0.5 shrink-0 text-emerald-700" size={18} />
-        <p><strong className="block text-emerald-800">Isolamento por tarefa</strong>A triagem nunca recebe estas ferramentas. Somente a sala de investigação pode usar operações marcadas abaixo, sempre em modo de leitura.</p>
+        <p><strong className="block text-emerald-800">Isolamento por tarefa</strong>A triagem nunca recebe estas ferramentas. Somente o Threadmark AI pode usar as operações autorizadas abaixo, sempre dentro dos limites configurados.</p>
       </div>
 
       {!canManage ? (
@@ -386,7 +386,7 @@ function ToolForm({
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Toggle checked={draft.enabled} label="Ferramenta ativa" onChange={(enabled) => onChange({ ...draft, enabled })} />
-          <Toggle checked={draft.deepEnabled} label="Disponível na investigação profunda" onChange={(deepEnabled) => onChange({ ...draft, deepEnabled })} />
+          <Toggle checked={draft.deepEnabled} label="Disponível no Threadmark AI" onChange={(deepEnabled) => onChange({ ...draft, deepEnabled })} />
         </div>
       </fieldset>
       <div className="mt-5 flex flex-col-reverse gap-2 border-t border-primary/20 pt-5 sm:flex-row sm:justify-end">

@@ -1,4 +1,3 @@
-export { InvestigationRoom } from "./components/investigation-room";
 export {
   ManualTicketDialog,
   type ManualTicketDraft,

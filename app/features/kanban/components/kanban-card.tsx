@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Clock3,
   UserRound,
+  XCircle,
 } from "lucide-react";
 
 import { PriorityPill } from "@/app/components/shared/status-pill";
@@ -181,6 +182,11 @@ export function KanbanCard({
               <>
                 Solução registrada
                 <CheckCircle2 className="ml-auto text-primary" size={14} />
+              </>
+            ) : ticket.status === "cancelled" ? (
+              <>
+                Ticket cancelado
+                <XCircle className="ml-auto text-rose-600" size={14} />
               </>
             ) : (
               <>

@@ -129,7 +129,7 @@ export function TicketDeleteDialog({
                 <strong className="block text-xs text-foreground">O ticket e todo o trabalho gerado serão apagados</strong>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   Status, categorias, análises automáticas, sugestões, resolução,
-                  eventos internos e a sala de investigação do Codex deixarão de
+                  eventos internos e as investigações legadas vinculadas deixarão de
                   existir.
                 </p>
               </div>

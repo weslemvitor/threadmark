@@ -15,6 +15,7 @@ export const statusLabels: Record<TicketStatus, string> = {
   waiting_customer: "Aguardando resposta",
   blocked: "Aguardando interno",
   resolved: "Resolvido",
+  cancelled: "Cancelado",
   archived: "Arquivado",
 };
 
@@ -248,7 +249,7 @@ type SuggestionTicket = Pick<
 >>;
 
 function hasTerminalTicketStatus(ticket: SuggestionTicket): boolean {
-  return ticket.status === "resolved" || ticket.status === "archived";
+  return ticket.status === "resolved" || ticket.status === "cancelled" || ticket.status === "archived";
 }
 
 function getLastSentResponseAt(ticket: SuggestionTicket): string | null {

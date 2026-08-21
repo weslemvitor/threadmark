@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  BookOpenText,
   BellRing,
   CheckCircle2,
   Clock3,
@@ -19,7 +18,6 @@ import {
 } from "lucide-react";
 import { useMemo, useState, type ComponentType, type DragEvent } from "react";
 
-import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
 import { ScrollArea } from "@/app/components/ui/scroll-area";
@@ -34,6 +32,7 @@ import { cn } from "@/app/lib/utils";
 import {
   automationCategoryDescriptions,
   automationCategoryLabels,
+  type ConnectedAppSummary,
   type AutomationNodeCategory,
   type AutomationNodeDefinition,
 } from "../domain";
@@ -47,7 +46,6 @@ const categoryOrder: AutomationNodeCategory[] = [
 
 const icons: Record<string, ComponentType<{ size?: number }>> = {
   "bell-ring": BellRing,
-  "book-open-text": BookOpenText,
   "circle-check": CheckCircle2,
   clock: Clock3,
   flag: Flag,
@@ -62,20 +60,8 @@ const icons: Record<string, ComponentType<{ size?: number }>> = {
   webhook: Webhook,
 };
 
-const futureApps = [
-  {
-    name: "Linear",
-    description: "Crie issues após conectar uma integração compatível.",
-    icon: SquareKanban,
-  },
-  {
-    name: "Intercom",
-    description: "Crie artigos e solicitações quando o conector estiver disponível.",
-    icon: BookOpenText,
-  },
-];
-
 type NodeCatalogSheetProps = {
+  apps: ConnectedAppSummary[];
   catalog: AutomationNodeDefinition[];
   onAdd: (catalogId: string) => void;
   onOpenApps: () => void;
@@ -84,6 +70,7 @@ type NodeCatalogSheetProps = {
 };
 
 export function NodeCatalogSheet({
+  apps,
   catalog,
   onAdd,
   onOpenApps,
@@ -100,6 +87,9 @@ export function NodeCatalogSheet({
         .includes(normalized),
     );
   }, [catalog, query]);
+  const aiOnlyApps = apps.filter(
+    (app) => app.status === "active" && app.type === "intercom" && app.aiEnabled,
+  );
 
   function startDrag(event: DragEvent<HTMLButtonElement>, catalogId: string) {
     event.dataTransfer.setData("application/threadmark-automation-node", catalogId);
@@ -177,27 +167,29 @@ export function NodeCatalogSheet({
                     })}
                     {category === "connected_app" ? (
                       <>
-                        {futureApps.map((app) => (
-                          <div className="flex min-w-0 items-start gap-3 rounded-xl border border-dashed p-3 opacity-70" key={app.name}>
-                            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
-                              <app.icon size={16} />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="flex flex-wrap items-center gap-1.5">
-                                <strong className="text-xs font-semibold">{app.name}</strong>
-                                <Badge variant="secondary">Em breve</Badge>
+                        {aiOnlyApps.map((app) => (
+                          <div className="col-span-full rounded-xl border bg-muted/30 p-3" key={app.id}>
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                                <Webhook size={16} />
                               </span>
-                              <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                                {app.description}
-                              </span>
-                            </span>
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-semibold">{app.name}</p>
+                                <p className="text-xs text-emerald-700">Conectado ao Threadmark AI</p>
+                              </div>
+                            </div>
+                            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                              O conector nativo do Intercom já pode ser usado no chat. Para transformá-lo em etapas automáticas, conecte um servidor MCP do app e autorize as ferramentas desejadas.
+                            </p>
                           </div>
                         ))}
                         {!items.length ? (
                           <div className="col-span-full rounded-xl border border-dashed p-4 text-center">
-                            <p className="text-xs font-medium">Nenhum app ativo ainda</p>
+                            <p className="text-xs font-medium">Nenhuma ação de app autorizada</p>
                             <p className="mt-1 text-xs text-muted-foreground">
-                              Conecte um Slack ou uma API personalizada para liberar ações.
+                              {aiOnlyApps.length
+                                ? "Nenhuma ferramenta deste app foi autorizada para automações."
+                                : "Conecte um servidor MCP e escolha quais ferramentas poderão virar etapas do fluxo."}
                             </p>
                             <Button className="mt-3" onClick={onOpenApps} size="sm" type="button" variant="outline">
                               Gerenciar apps

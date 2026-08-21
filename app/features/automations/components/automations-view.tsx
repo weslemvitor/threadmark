@@ -793,6 +793,7 @@ export function AutomationsView() {
         <ConnectedAppsPanel apps={apps} busyId={appBusyId} error={appsError} loading={appsLoading} onDelete={removeApp} onRetry={() => void loadApps()} onSave={saveApp} onTest={testApp} />
       </TabsContent>
       <NodeCatalogSheet
+        apps={apps}
         catalog={catalog}
         onAdd={addNode}
         onOpenApps={() => { setCatalogOpen(false); setSection("apps"); }}

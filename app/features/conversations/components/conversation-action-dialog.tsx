@@ -7,7 +7,8 @@ import type {
   TicketPriority,
   TicketSummary,
 } from "@/app/lib/types";
-import { priorityLabels } from "@/app/lib/format";
+import { priorityLabels, statusLabels } from "@/app/lib/format";
+import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import {
   Dialog,
@@ -17,7 +18,13 @@ import {
   DialogTitle,
 } from "@/app/components/ui/dialog";
 import { Input } from "@/app/components/ui/input";
-import { NativeSelect } from "@/app/components/ui/native-select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 import { Textarea } from "@/app/components/ui/textarea";
 import { cn } from "@/app/lib/utils";
 
@@ -55,7 +62,7 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
   const availableTickets = useMemo(() => {
     const normalized = ticketQuery.trim().toLocaleLowerCase("pt-BR");
     return props.tickets
-      .filter((ticket) => ticket.status !== "archived" && ticket.status !== "resolved")
+      .filter((ticket) => ticket.status !== "archived")
       .filter((ticket) => {
         if (!normalized) return true;
         return [ticket.title, ticket.summary, ticket.client.name, `#${ticket.number}`]
@@ -115,7 +122,7 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
             <DialogDescription className="mt-1 text-sm leading-relaxed">
               {props.mode === "create"
                 ? "Revise a leitura inicial antes de criar. Nada será enviado ao WhatsApp."
-                : "As mensagens passam a compor o contexto e a investigação do ticket escolhido."}
+                : "As mensagens passam a compor o contexto do ticket escolhido. Tickets resolvidos continuam disponíveis até serem arquivados."}
             </DialogDescription>
           </div>
           <Button aria-label="Fechar" onClick={props.onCancel} size="icon" type="button" variant="ghost">
@@ -152,46 +159,53 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">Vincular esta conversa à organização</span>
-              <NativeSelect
-                onChange={(event) => {
-                  const clientId = event.target.value || null;
+              <Select
+                onValueChange={(value) => {
+                  const clientId = value === "__unidentified__" ? null : value;
                   setDraft((current) => ({
                     ...current,
                     clientId,
                   }));
                 }}
-                value={draft.clientId ?? ""}
-                wrapperClassName="w-full"
+                value={draft.clientId ?? "__unidentified__"}
               >
-                {props.initialDraft.clientId === null ? (
-                  <option value="">Organização não identificada</option>
-                ) : null}
-                {props.clients.map((client) => (
-                  <option key={client.id} value={client.id}>{client.name}</option>
-                ))}
-              </NativeSelect>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {props.initialDraft.clientId === null ? (
+                    <SelectItem value="__unidentified__">Organização não identificada</SelectItem>
+                  ) : null}
+                  {props.clients.map((client) => (
+                    <SelectItem key={client.id} value={client.id}>{client.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <small className="text-xs leading-relaxed text-muted-foreground">
                 Ao alterar, todo este grupo ou contato ficará vinculado à organização escolhida.
               </small>
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
               <span className="text-xs font-medium text-muted-foreground">Prioridade</span>
-              <NativeSelect
-                aria-label="Prioridade do ticket"
-                onChange={(event) =>
+              <Select
+                onValueChange={(value) =>
                   setDraft((current) => ({
                     ...current,
-                    priority: event.target.value as TicketPriority,
+                    priority: value as TicketPriority,
                   }))
                 }
                 value={draft.priority}
-                wrapperClassName="w-full"
               >
-                <option value="low">{priorityLabels.low}</option>
-                <option value="normal">{priorityLabels.normal}</option>
-                <option value="high">{priorityLabels.high}</option>
-                <option value="urgent">{priorityLabels.urgent}</option>
-              </NativeSelect>
+                <SelectTrigger aria-label="Prioridade do ticket" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">{priorityLabels.low}</SelectItem>
+                  <SelectItem value="normal">{priorityLabels.normal}</SelectItem>
+                  <SelectItem value="high">{priorityLabels.high}</SelectItem>
+                  <SelectItem value="urgent">{priorityLabels.urgent}</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           </div>
         ) : (
@@ -205,7 +219,7 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
                 value={ticketQuery}
               />
             </label>
-            <div className="mt-2.5 min-h-44 overflow-y-auto rounded-lg border border-border" role="radiogroup" aria-label="Tickets abertos">
+            <div className="mt-2.5 min-h-44 overflow-y-auto rounded-lg border border-border" role="radiogroup" aria-label="Tickets disponíveis">
               {availableTickets.length ? availableTickets.map((ticket) => (
                 <label
                   className={cn(
@@ -223,12 +237,17 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
                     value={ticket.id}
                   />
                   <span className="flex min-w-0 flex-1 flex-col">
-                    <strong className="truncate text-xs text-foreground">#{ticket.number} · {ticket.title}</strong>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <strong className="min-w-0 flex-1 truncate text-xs text-foreground">#{ticket.number} · {ticket.title}</strong>
+                      <Badge className="h-5 shrink-0 px-1.5 text-[10px]" variant="secondary">
+                        {statusLabels[ticket.status]}
+                      </Badge>
+                    </span>
                     <small className="mt-1 text-xs text-muted-foreground">{ticket.client.name}{ticket.affectedStore ? ` · ${ticket.affectedStore.name}` : ""}</small>
                   </span>
                 </label>
               )) : (
-                <p className="p-8 text-center text-sm text-muted-foreground">Nenhum ticket aberto corresponde à busca.</p>
+                <p className="p-8 text-center text-sm text-muted-foreground">Nenhum ticket disponível corresponde à busca.</p>
               )}
             </div>
           </div>

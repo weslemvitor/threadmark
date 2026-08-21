@@ -11,6 +11,7 @@ export function StatusPill({ status }: { status: TicketStatus }) {
     waiting_customer: "bg-amber-50 text-amber-800",
     blocked: "bg-amber-50 text-amber-800",
     resolved: "bg-emerald-50 text-emerald-700",
+    cancelled: "bg-rose-50 text-rose-700",
     archived: "bg-muted text-muted-foreground",
   };
   const dotClassName: Record<TicketStatus, string> = {
@@ -20,6 +21,7 @@ export function StatusPill({ status }: { status: TicketStatus }) {
     waiting_customer: "bg-amber-500",
     blocked: "bg-amber-500",
     resolved: "bg-emerald-500",
+    cancelled: "bg-rose-500",
     archived: "bg-muted-foreground",
   };
 
