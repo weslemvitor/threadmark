@@ -18,8 +18,8 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período, responsável, comparação com o período anterior, eficiência operacional, envelhecimento do backlog e exportação filtrada.
 - Automações visuais com gatilhos de ticket, condições, esperas, aprovações humanas, ações internas e apps conectados.
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
-- Sala de investigação profunda, iniciada manualmente, com conversa persistida, evidências, sugestões para revisão humana e execução auditável.
-- Broker de ferramentas tipadas readonly, disponível somente dentro da sala manual.
+- Threadmark AI global em formato de chat, com histórico persistido, contexto da tela atual, evidências, sugestões de resposta e trabalho contínuo em segundo plano.
+- Broker de ferramentas tipadas, disponível somente no Threadmark AI e limitado às fontes e ações autorizadas pelo workspace. Fontes técnicas permanecem readonly; escritas internas e externas usam operações explícitas e confirmação atual.
 - SQLite como fonte de verdade e arquivos locais com permissões restritivas.
 
 ## Invariantes de segurança
@@ -29,7 +29,7 @@ A persistência operacional de mensagens, anexos, configurações e investigaç�
 - Casos ambíguos permanecem em revisão; não são descartados silenciosamente.
 - Conteúdo de mensagens, anexos e documentos é tratado como não confiável pelo agente.
 - A triagem não executa shell, código, banco ou infraestrutura.
-- Ferramentas técnicas da investigação profunda devem ser configuradas explicitamente e operar somente em leitura.
+- Ferramentas técnicas do Threadmark AI devem ser configuradas explicitamente e operar somente em leitura. A criação de ticket interno usa um rascunho persistido e uma confirmação posterior do operador.
 - Credenciais, sessão do WhatsApp, banco, anexos, logs, backups e chaves ficam fora do Git.
 
 Leia também a [política de segurança](SECURITY.md) e o guia de [privacidade e dados locais](docs/privacy.md).
@@ -44,7 +44,7 @@ Baileys inbound-only
   -> blocos sugeridos para revisão humana
   -> ticket confirmado como recorte de mensagens
   -> contexto completo aberto pelo card do Kanban
-  -> sala de investigação profunda opcional e persistente
+  -> Threadmark AI global, opcional e persistente
   -> Web UI local
   -> cópia manual da resposta pelo operador
   -> resolução documentada no ticket
@@ -66,7 +66,7 @@ Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações tamb
 
 - Node.js `>=22.13.0`.
 - Uma conta do WhatsApp autorizada para o pareamento.
-- Um provedor de IA configurado, caso deseje triagem e sala de investigação profunda.
+- Um provedor de IA configurado, caso deseje triagem e Threadmark AI.
 
 O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
 
@@ -124,23 +124,29 @@ O Diretório apresenta as identidades capturadas pelo WhatsApp:
 
 O Diretório não cria uma taxonomia comercial adicional. A organização operacional das demandas acontece nos tickets, categorias, responsáveis e prioridades.
 
-## IA e investigação
+## IA e Threadmark AI
 
-O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket, investigação profunda e geração de documentações. O Codex CLI integrado pode ser usado nas três; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão, turno da sala ou geração documental recebe um identificador e um estado persistido, evitando reprocessamento contínuo do mesmo conteúdo.
+O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket, Threadmark AI e geração de documentações. O Codex CLI integrado pode ser usado nas três; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão, turno do assistente ou geração documental recebe um identificador e um estado persistido, evitando reprocessamento contínuo do mesmo conteúdo.
 
 Nas sugestões de ticket, a janela de silêncio padrão é de três minutos e pode ser alterada na mesma tela. Cada nova mensagem externa reinicia a contagem; mensagens da equipe entram somente como contexto. A IA pode aguardar mais informações sem criar um card, atualizar uma sugestão pendente quando o assunto continua ou separar assuntos distintos. **Analisar agora** antecipa essa avaliação, mas não cria tickets automaticamente.
 
 Ao resolver um ticket, a resolução é salva somente no atendimento. O encerramento não cria conteúdo reutilizável nem executa IA automaticamente. Quando o caso realmente contém um procedimento reaproveitável, o operador pode usar **Gerar documentação**. A IA cria um rascunho em português a partir das mensagens, da resolução e das imagens comprovadamente vinculadas ao ticket. O resultado fica persistido no SQLite em **Documentações**, exige revisão humana e pode ser copiado, exportado em DOCX compatível com importação no Intercom ou excluído definitivamente com confirmação; excluir a documentação não remove o ticket, as mensagens nem os anexos originais. O Threadmark não publica automaticamente no Intercom ou em outro serviço.
 
-No Codex, sugestões e investigação profunda rodam em uma execução efêmera sem rede livre, navegador, apps, plugins, MCP, memória ou HOME pessoal. A triagem recebe somente o contexto sanitizado e até cinco imagens preparadas. A sala manual pode acessar apenas a codebase e as ferramentas locais explicitamente autorizadas, sempre em modo de leitura.
+No Codex, sugestões e Threadmark AI rodam em uma execução efêmera sem rede livre, navegador, apps, plugins, MCP direto, memória ou HOME pessoal. A triagem recebe somente o contexto sanitizado e até cinco imagens preparadas. O assistente pode acessar apenas a codebase e as ferramentas locais explicitamente autorizadas, sempre em modo de leitura. Conexões MCP, quando configuradas, são executadas fora do modelo pelo broker local, que entrega somente ferramentas autorizadas e resultados limitados.
 
-Na investigação profunda, qualquer modelo selecionado pode **solicitar** uma operação tipada. O Threadmark valida o ID e a operação contra **Configurações → Ferramentas**, executa a leitura fora do processo do modelo e devolve apenas um resultado limitado e sanitizado no turno seguinte. Tokens e senhas nunca entram no prompt. Isso permite combinar Codex, OpenAI, Anthropic, OpenRouter ou Ollama com as mesmas autorizações locais, sem dar shell ao modelo.
+No Threadmark AI, qualquer modelo selecionado pode **solicitar** uma operação tipada. O Threadmark valida o ID e a operação contra **Configurações → Ferramentas** e **Apps conectados**, executa fora do processo do modelo e devolve apenas um resultado limitado e sanitizado no turno seguinte. Tokens e senhas nunca entram no prompt. Isso permite combinar Codex, OpenAI, Anthropic, OpenRouter ou Ollama com as mesmas autorizações locais, sem dar shell ao modelo. O conector nativo do Intercom recebe apenas a região e um access token protegido no cofre local; ele pode pesquisar e ler conversas, consultar o autor associado ao token, listar coleções e criar artigos somente em rascunho após confirmação explícita. Para transformar uma conversa em ticket, a IA precisa montar uma prévia associada a um grupo existente; somente uma nova mensagem confirmando explicitamente cria o ticket no SQLite, de forma idempotente e sem alterar o Intercom.
+
+Proprietários e administradores também podem pedir ao Threadmark AI para criar ou editar automações. A IA consulta primeiro o catálogo e os IDs reais, persiste uma proposta e a apresenta sem alterar o fluxo atual. Uma mensagem posterior precisa confirmar a aplicação; fluxos novos continuam como rascunho. Ativar, pausar e excluir são confirmações separadas. O teste disponível nesse processo é um dry-run: valida nós, conexões, usuários e apps sem executar ações. Apps só podem entrar numa proposta quando estiverem ativos e explicitamente liberados para o Threadmark AI.
 
 O botão **Testar conexão** faz uma leitura real, mínima e readonly no recurso configurado — inclusive PostgreSQL, ClickHouse, CloudWatch e Vercel — e persiste o último resultado. Uma configuração bem formada nunca é apresentada como conexão válida sem esse probe.
 
 A triagem recebe apenas as mensagens candidatas, sugestões ainda abertas, anexos suportados e o contexto necessário da conversa. Ela pode separar assuntos, aguardar novas informações ou propor criar/anexar um ticket, mas não recebe precedentes resolvidos nem ferramentas técnicas. Áudios candidatos aguardam a transcrição local antes dessa avaliação.
 
-Na sala profunda, o operador conversa com o agente a partir do contexto do ticket. Esse fluxo recebe o recorte da conversa e precedentes resolvidos compatíveis. Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos.
+O Threadmark AI fica disponível globalmente no canto da aplicação e recebe um retrato persistido da tela atual. Ao ser aberto a partir de um ticket, grupo ou conversa, o contexto correspondente acompanha a mensagem; referências explícitas como `#123` também carregam o ticket indicado. Fechar o painel, trocar de página ou reiniciar a interface não cancela o trabalho: o job continua no servidor e pode ser interrompido somente pelo botão **Parar**, por conclusão ou por um bloqueio real. No Codex CLI local os turnos não possuem um timeout artificial; uma interrupção do daemon devolve o job à fila para retomada segura. Falhas transitórias recebem até três tentativas persistidas. Se o bloqueio permanecer, ele aparece no próprio chat e o operador pode solicitar outra tentativa sem perder a mensagem ou a auditoria já coletada.
+
+Além das ferramentas configuradas pelo operador, o assistente possui uma busca interna fixa, limitada e somente leitura no SQLite do próprio Threadmark. Ela localiza tickets, conversas, mensagens e resoluções por número, título, grupo, pessoa ou texto, sem permitir SQL arbitrário. Assim, uma pergunta global pode recuperar o atendimento correto mesmo quando o painel é aberto fora da tela daquele ticket.
+
+Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos. O assistente pode preparar uma ação e seus parâmetros, mas nenhuma mutação é executada sem confirmação explícita e auditável; o WhatsApp continua sem qualquer capacidade outbound.
 
 Ferramentas disponíveis nesta versão:
 
@@ -276,7 +282,7 @@ Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
 - `server/db/`: schema e migrações SQLite.
 - `server/domain/`: tickets, Diretório, categorias, documentações e auditoria.
 - `server/triage/`: detecção conservadora de demandas.
-- `server/agent/`: prompts, provedores e worker da sala de investigação.
+- `server/agent/`: prompts, provedores e worker do Threadmark AI.
 - `server/transcription/`: catálogo, download, execução e fila local de transcrição.
 - `server/runtime/`: configuração, estado e settings locais.
 - `shared/`: contratos compartilhados pela API e UI.

@@ -16,8 +16,9 @@ WhatsApp / Baileys (inbound-only)
        -> eventos de ticket para o motor persistente de automações
             -> condição / espera / aprovação
             -> ação interna auditável, notificação interna ou app conectado
-       -> sala de investigação profunda iniciada manualmente
+       -> Threadmark AI global e persistente
             -> provedor de IA configurado
+            -> contexto da tela e tickets referenciados
             -> conhecimento permitido
             -> pedido JSON de operação tipada
             -> broker local valida autorização
@@ -29,14 +30,14 @@ WhatsApp / Baileys (inbound-only)
 
 - Web UI: `http://127.0.0.1:3000`.
 - API: `http://127.0.0.1:4317` por padrão.
-- Daemon: captura, heartbeat, triagem, transcrição local e worker da sala de investigação.
+- Daemon: captura, heartbeat, triagem, transcrição local e worker do Threadmark AI.
 - CLI: controla ciclo de vida, configuração e diagnóstico sem duplicar a interface operacional.
 
 Todos os listeners usam loopback por padrão. Expor a API em outra interface muda o modelo de ameaça e exige proteção de rede adicional.
 
 ## Persistência
 
-SQLite é a fonte de verdade para contas, participantes, grupos, mensagens, tickets, categorias, jobs, salas de investigação, auditoria e configuração operacional. Anexos são arquivos locais referenciados pelo banco.
+SQLite é a fonte de verdade para contas, participantes, grupos, mensagens, tickets, categorias, jobs, conversas do Threadmark AI, auditoria e configuração operacional. Anexos são arquivos locais referenciados pelo banco.
 
 Áudios OGG/Opus podem ser transcritos por um worker local opcional. Configuração, download dos modelos, progresso, tentativas e resultados ficam persistidos no SQLite; o cache do modelo fica dentro do diretório privado de dados. O áudio original não é substituído. Novos áudios só retornam à triagem depois de uma transcrição concluída, enquanto áudios históricos entram exclusivamente numa fila manual limitada e não reabrem a triagem.
 
@@ -87,9 +88,10 @@ Cada job, vínculo com mensagem, espera e sugestão é persistido no SQLite. Iss
 - `waiting_customer`: aguardando o solicitante.
 - `blocked`: aguardando dependência interna.
 - `resolved`: resolvido manualmente.
+- `cancelled`: encerrado sem resolução e sem exigir um resumo de solução.
 - `archived`: ocultado das visões ativas sem apagar o histórico.
 
-Mapeamento do Kanban: `new`/`triage` → Todo, `in_progress` → In Progress, `waiting_customer`/`blocked` → Blocked, `resolved` → Done. Arquivados aparecem em uma visão separada.
+Mapeamento do Kanban: `new`/`triage` → A revisar, `in_progress` → Em andamento, `waiting_customer`/`blocked` → Aguardando, `resolved` → Resolvidos e `cancelled` → Cancelados. Resolvidos e cancelados podem ser arquivados; ao restaurar, o histórico devolve cada ticket ao estado terminal anterior.
 
 ## Resolução
 
@@ -103,7 +105,13 @@ O contexto de análise contém um estado explícito da conversa: última mensage
 
 O contexto explícito do Diretório e a conversa atual são as fontes primárias. Precedentes de tickets resolvidos são limitados ao mesmo registro atendido, exigem uma resolução validada e são ranqueados por compatibilidade e recência. O modelo só pode citá-los com o ID persistido em `resolved_ticket`; referências ausentes do recorte são rejeitadas na validação. Precedentes servem para orientar a investigação, nunca para repetir automaticamente uma resposta enviada anteriormente.
 
-A triagem não recebe precedentes resolvidos, shell, banco, infraestrutura nem acesso irrestrito ao filesystem. O processo da sala profunda permanece isolado: não recebe credenciais nem acesso direto às ferramentas. Ele pode solicitar operações tipadas; o broker local confere ferramenta ativa, escopo profundo e operação permitida antes de executar.
+A triagem não recebe precedentes resolvidos, shell, banco, infraestrutura nem acesso irrestrito ao filesystem. O processo do Threadmark AI permanece isolado: não recebe credenciais nem acesso direto às ferramentas. Ele pode solicitar operações tipadas; o broker local confere ferramenta ativa, escopo profundo e operação permitida antes de executar. A ferramenta interna `threadmark-context` oferece pesquisa preparada e limitada sobre tickets, conversas, mensagens e resoluções do SQLite, sem aceitar SQL fornecido pelo modelo. Sua única escrita operacional é a criação confirmada de ticket: primeiro persiste uma prévia ligada à conversa do Threadmark AI; somente uma mensagem posterior e explicitamente afirmativa pode converter esse rascunho em ticket. A associação exige um grupo existente, é idempotente e preserva a origem externa no SQLite.
+
+A ferramenta interna `threadmark-automations` segue a mesma fronteira. Leituras carregam o catálogo real, usuários ativos, apps autorizados e definições atuais. Criação e edição sempre geram primeiro uma proposta completa, validada e persistida separadamente; somente uma mensagem posterior do proprietário ou administrador pode aplicá-la. Uma criação nasce em rascunho. Ativar, pausar e excluir exigem pedidos explícitos separados, vinculados à mensagem atual. O dry-run valida o grafo e os apps sem criar execução nem disparar ação. A identidade do autor fica associada à mensagem para que o worker em segundo plano preserve as permissões originais, e cada operação continua registrada na auditoria append-only das ferramentas.
+
+Apps Intercom autorizados usam um conector nativo, sem exigir que o operador monte URLs de endpoint. O cadastro solicita a região do workspace e o access token, que fica no cofre local e nunca entra no prompt ou no SQLite. O teste da conexão verifica, sem mutação, o acesso a conversas, ao autor associado ao token e às coleções. O Threadmark AI pode pesquisar e ler conversas, consultar o autor válido para `author_id`, listar coleções do Help Center e criar artigos estritamente em `draft` após confirmação explícita da mensagem atual. Endpoints de resposta, atribuição ou fechamento de conversa não são expostos. A criação de ticket continua sendo uma ação interna do Threadmark; o Intercom serve apenas como fonte readonly nesse fluxo.
+
+Apps com servidor MCP remoto podem ser conectados por Streamable HTTP. O broker local faz a negociação do protocolo e descobre as ferramentas com `tools/list`; endpoint e catálogo sanitizado ficam no SQLite, enquanto o bearer token permanece no cofre local. A descoberta não concede acesso: cada ferramenta nasce bloqueada e precisa ser autorizada separadamente para Threadmark AI e para automações. O JSON Schema publicado pelo servidor gera os campos do nó no editor, mas nomes, descrições e anotações MCP são tratados como conteúdo não confiável. A autorização definida pelo proprietário é a fonte de verdade. Chamadas usam `tools/call`, timeout, limite de saída, bloqueio de redirecionamento e proteção contra SSRF; rede local é uma permissão explícita. Ferramentas marcadas para confirmação exigem um pedido atual no chat ou uma etapa de aprovação anterior no fluxo. Nesta versão, o transporte remoto aceita ausência de autenticação ou bearer token; OAuth MCP e servidores `stdio` não são iniciados automaticamente.
 
 O executor resolve caminhos reais dentro da raiz autorizada, recusa arquivos de ambiente, credenciais, sessões e chaves, limita arquivos e saída, bloqueia SQL mutável e funções com efeitos externos, aplica timeout/linhas e usa drivers, APIs ou CLIs com parâmetros controlados. No PostgreSQL, um driver embutido executa a consulta em transação somente leitura e limita a resposta durante o streaming. Resultados de arquivos, consultas e logs continuam sendo evidência não confiável e retornam ao modelo dentro de delimitadores próprios.
 
@@ -137,11 +145,12 @@ A lista abaixo resume as superfícies operacionais; consulte `shared/contracts.t
 - `POST /api/conversations/:id/triage/restore`
 - `GET /api/tickets` e `GET /api/tickets/:id`
 - `PATCH /api/tickets/:id/status` e `PATCH /api/tickets/:id/context`
-- `POST /api/tickets/:id/investigation-thread`
-- `GET /api/investigation-threads/:id`
-- `POST /api/investigation-threads/:id/messages` e `POST /api/investigation-threads/:id/cancel`
+- `GET /api/threadmark-ai/threads` e `POST /api/threadmark-ai/threads`
+- `POST /api/threadmark-ai/current`
+- `GET /api/threadmark-ai/threads/:id`
+- `POST /api/threadmark-ai/threads/:id/messages` e `POST /api/threadmark-ai/threads/:id/cancel`
 
-A sala de investigação é iniciada somente pelo operador. Não existe rota nem fila executável de investigação automática do ticket.
+O Threadmark AI é iniciado somente pelo operador. Não existe rota nem fila executável de investigação automática do ticket. Turnos executados pelo Codex CLI local não recebem timeout de duração: continuam até conclusão, bloqueio real ou cancelamento explícito; encerramentos do daemon liberam o lease para retomada. Falhas transitórias são reenfileiradas até três tentativas e um bloqueio persistente fica visível no chat, com retomada manual sobre o mesmo turno. Rotas antigas de sala por ticket permanecem apenas para compatibilidade dos históricos migrados; a Web UI não as expõe.
 
 ### Diretório
 
