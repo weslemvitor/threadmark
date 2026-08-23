@@ -145,7 +145,7 @@ function AccessFrame({ children }: { children: ReactNode }) {
         <span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Boxes size={20} /></span>
         <strong className="text-sm font-semibold text-foreground">Threadmark</strong>
       </div>
-      <div className="relative z-10 w-full">{children}</div>
+      <div className="relative z-10 grid w-full place-items-center">{children}</div>
       <p className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
         <LockKeyhole size={13} /> Serviço restrito à sua máquina
       </p>

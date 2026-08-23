@@ -148,6 +148,16 @@ test("clientes de API encerram a sessão visual ao receber 401", async () => {
   assert.match(events, /threadmark:session-expired/);
 });
 
+test("estados de acesso permanecem centralizados no workspace", async () => {
+  const gate = await readFile(
+    new URL("../app/features/access/components/app-access-gate.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(gate, /relative z-10 grid w-full place-items-center/);
+  assert.match(gate, /Não foi possível abrir o workspace/);
+});
+
 test("configuração de áudio usa componentes Shadcn e expõe recursos locais", async () => {
   const [aiSection, audioSection, progress, switchComponent] = await Promise.all([
     readFile(new URL("../app/features/settings/components/sections/ai-section.tsx", import.meta.url), "utf8"),
