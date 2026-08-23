@@ -23,6 +23,7 @@ import {
   InboundMediaLimitError,
   normalizeMessagesUpsert,
   type InboundEventSource,
+  type InboundContactName,
   type InboundMessageEnvelope,
   type InboundRuntimeEvent,
 } from "../server/whatsapp/index.js";
@@ -120,12 +121,16 @@ describe("WhatsApp inbound-only boundary", () => {
   it("serializes history and live events into the injected sink", async () => {
     const emitter = new EventEmitter();
     const envelopes: InboundMessageEnvelope[] = [];
+    const contactNames: InboundContactName[] = [];
     const runtimeEvents: InboundRuntimeEvent[] = [];
     const bridge = bindInboundEvents({
       source: emitter as unknown as InboundEventSource,
       sink: {
         upsertMessages(batch) {
           envelopes.push(...batch);
+        },
+        upsertContactNames(batch) {
+          contactNames.push(...batch);
         },
         emitRuntimeEvent(event) {
           runtimeEvents.push(event);
@@ -153,6 +158,9 @@ describe("WhatsApp inbound-only boundary", () => {
       messages: [liveMessage],
       type: "notify",
     });
+    emitter.emit("contacts.update", [
+      { id: customerJid, notify: "Pessoa Fictícia Eta" },
+    ]);
     emitter.emit("messaging-history.status", {
       syncType: 1,
       status: "complete",
@@ -178,6 +186,13 @@ describe("WhatsApp inbound-only boundary", () => {
       ),
       true,
     );
+    assert.deepEqual(contactNames, [
+      {
+        externalJid: customerJid,
+        displayName: "Pessoa Fictícia Eta",
+        observedAt: "2026-07-16T12:00:00.000Z",
+      },
+    ]);
 
     bridge.detach();
     emitter.emit("messages.upsert", {

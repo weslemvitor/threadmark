@@ -8,12 +8,14 @@ import {
   jidNormalizedUser,
   normalizeMessageContent,
   proto,
+  type Contact,
   type WAMessage,
 } from "baileys";
 
 import type {
   HistoryObservation,
   HistorySetPayload,
+  InboundContactName,
   InboundAttachment,
   InboundMessageContent,
   InboundMessageEnvelope,
@@ -105,6 +107,39 @@ export function normalizeHistorySet(
       contactNames,
     }),
   );
+}
+
+export function normalizeHistoryContacts(
+  payload: HistorySetPayload,
+  observedAt: string,
+): InboundContactName[] {
+  return normalizeContactNames(payload.contacts, observedAt);
+}
+
+export function normalizeContactNames(
+  contacts: readonly Partial<Contact>[],
+  observedAt: string,
+): InboundContactName[] {
+  const names = new Map<string, string>();
+  for (const contact of contacts) {
+    const displayName = firstNonEmpty(
+      contact.name,
+      contact.notify,
+      contact.verifiedName,
+    );
+    if (!displayName) continue;
+    for (const candidate of [contact.id, contact.lid, contact.phoneNumber]) {
+      const externalJid = normalizeJid(candidate);
+      if (externalJid) names.set(externalJid, displayName);
+    }
+  }
+  return [...names.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([externalJid, displayName]) => ({
+      externalJid,
+      displayName,
+      observedAt,
+    }));
 }
 
 export function normalizeMessagesUpsert(

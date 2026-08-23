@@ -134,6 +134,13 @@ export interface InboundIdentityLink {
   observedAt: string;
 }
 
+/** A human-readable contact name observed in the local WhatsApp history. */
+export interface InboundContactName {
+  externalJid: string;
+  displayName: string;
+  observedAt: string;
+}
+
 export type InboundGroupParticipantRole = "member" | "admin" | "owner";
 
 export interface InboundGroupParticipant {
@@ -171,6 +178,8 @@ export interface InboundMessageSink {
   upsertMessages(messages: readonly InboundMessageEnvelope[]): Awaitable<void>;
   /** Upsert aliases idempotently; mappings can be redelivered by Baileys. */
   upsertIdentityLinks?(links: readonly InboundIdentityLink[]): Awaitable<void>;
+  /** Improve names only for participants already known by Threadmark. */
+  upsertContactNames?(contacts: readonly InboundContactName[]): Awaitable<void>;
   /** Replace each supplied group's active roster with this readonly snapshot. */
   syncGroupRosters?(rosters: readonly InboundGroupRoster[]): Awaitable<void>;
   /** Apply one incremental membership event after the most recent snapshot. */
@@ -226,6 +235,8 @@ export type InboundRuntimeEvent =
       source:
         | "messaging-history.set"
         | "messaging-history.status"
+        | "contacts.upsert"
+        | "contacts.update"
         | "messages.upsert"
         | "lid-mapping.update"
         | "group-participants.update"
@@ -238,6 +249,8 @@ export type InboundRuntimeEvent =
 
 export type InboundBaileysEventName =
   | "connection.update"
+  | "contacts.upsert"
+  | "contacts.update"
   | "messaging-history.set"
   | "messaging-history.status"
   | "messages.upsert"
@@ -248,6 +261,8 @@ export type InboundBaileysEventName =
 export type InboundEventSource = Pick<BaileysEventEmitter, "on" | "off">;
 
 export type HistorySetPayload = BaileysEventMap["messaging-history.set"];
+export type ContactsUpsertPayload = BaileysEventMap["contacts.upsert"];
+export type ContactsUpdatePayload = BaileysEventMap["contacts.update"];
 export type HistoryStatusPayload =
   BaileysEventMap["messaging-history.status"];
 export type MessagesUpsertPayload = BaileysEventMap["messages.upsert"];

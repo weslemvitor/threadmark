@@ -18,6 +18,8 @@ export {
   type InboundMediaStreamLoader,
 } from "./media.js";
 export {
+  normalizeContactNames,
+  normalizeHistoryContacts,
   normalizeHistorySet,
   normalizeJid,
   normalizeMessagesUpsert,
@@ -25,11 +27,14 @@ export {
 } from "./normalize.js";
 export type {
   ConnectionUpdatePayload,
+  ContactsUpdatePayload,
+  ContactsUpsertPayload,
   DownloadedInboundMedia,
   EncryptedMediaLocator,
   HistoryObservation,
   HistorySetPayload,
   HistoryStatusPayload,
+  InboundContactName,
   InboundAttachment,
   InboundEventSource,
   InboundGroupParticipant,

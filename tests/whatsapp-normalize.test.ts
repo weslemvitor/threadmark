@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { proto, type WAMessage } from "baileys";
 
 import {
+  normalizeHistoryContacts,
   normalizeHistorySet,
   normalizeMessagesUpsert,
   type HistorySetPayload,
@@ -16,6 +17,37 @@ const customerJid = "5511999999999@s.whatsapp.net";
 const staffJid = "5511888888888@s.whatsapp.net";
 
 describe("WhatsApp inbound normalization", () => {
+  it("normaliza nomes da agenda do histórico para todos os aliases conhecidos", () => {
+    const contacts = normalizeHistoryContacts(
+      {
+        chats: [],
+        contacts: [
+          {
+            id: "5511999999999@s.whatsapp.net",
+            lid: "123456789@lid",
+            phoneNumber: "5511999999999@s.whatsapp.net",
+            notify: "Pessoa Fictícia Eta",
+          },
+        ],
+        messages: [],
+      },
+      "2026-08-21T14:00:00.000Z",
+    );
+
+    assert.deepEqual(contacts, [
+      {
+        externalJid: "123456789@lid",
+        displayName: "Pessoa Fictícia Eta",
+        observedAt: "2026-08-21T14:00:00.000Z",
+      },
+      {
+        externalJid: "5511999999999@s.whatsapp.net",
+        displayName: "Pessoa Fictícia Eta",
+        observedAt: "2026-08-21T14:00:00.000Z",
+      },
+    ]);
+  });
+
   it("normalizes group history as stored context, never as a retroactive candidate", () => {
     const message = textMessage({
       id: "HISTORY-1",

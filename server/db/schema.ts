@@ -3287,4 +3287,51 @@ export const migrations: Migration[] = [
         ON threadmark_ai_ticket_update_drafts(ticket_id, created_at DESC, id);
     `,
   },
+  {
+    version: 59,
+    name: "repair_automatic_group_client_names",
+    sql: `
+      UPDATE clients AS client
+      SET name = (
+            SELECT conversation.subject
+            FROM whatsapp_groups conversation
+            WHERE conversation.client_id = client.id
+              AND conversation.client_link_source = 'fallback'
+              AND trim(conversation.subject) <> ''
+              AND lower(trim(conversation.subject)) NOT IN (
+                lower(trim(conversation.external_jid)),
+                lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1)),
+                'grupo ' || lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1))
+              )
+            ORDER BY conversation.updated_at DESC, conversation.id
+            LIMIT 1
+          ),
+          updated_at = (
+            SELECT conversation.updated_at
+            FROM whatsapp_groups conversation
+            WHERE conversation.client_id = client.id
+              AND conversation.client_link_source = 'fallback'
+            ORDER BY conversation.updated_at DESC, conversation.id
+            LIMIT 1
+          )
+      WHERE client.manual_override = 0
+        AND EXISTS (
+          SELECT 1
+          FROM whatsapp_groups conversation
+          WHERE conversation.client_id = client.id
+            AND conversation.client_link_source = 'fallback'
+            AND trim(conversation.subject) <> ''
+            AND lower(trim(client.name)) IN (
+              lower(trim(conversation.external_jid)),
+              lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1)),
+              'grupo ' || lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1))
+            )
+            AND lower(trim(conversation.subject)) NOT IN (
+              lower(trim(conversation.external_jid)),
+              lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1)),
+              'grupo ' || lower(substr(conversation.external_jid, 1, instr(conversation.external_jid, '@') - 1))
+            )
+        );
+    `,
+  },
 ];

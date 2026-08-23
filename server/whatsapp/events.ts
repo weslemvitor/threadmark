@@ -6,12 +6,16 @@ import type {
 } from "baileys";
 
 import {
+  normalizeContactNames,
+  normalizeHistoryContacts,
   normalizeHistorySet,
   normalizeJid,
   normalizeMessagesUpsert,
 } from "./normalize.js";
 import type {
   ConnectionUpdatePayload,
+  ContactsUpdatePayload,
+  ContactsUpsertPayload,
   GroupParticipantsUpdatePayload,
   HistorySetPayload,
   HistoryStatusPayload,
@@ -116,6 +120,9 @@ export function bindInboundEvents(
           observedAt,
         ),
       );
+      await options.sink.upsertContactNames?.(
+        normalizeHistoryContacts(payload, observedAt),
+      );
       const envelopes = normalizeHistorySet(payload, policy);
       await emit({
         type: "history_sync",
@@ -150,6 +157,24 @@ export function bindInboundEvents(
         chunkOrder: null,
         messageCount: 0,
       });
+    });
+  };
+
+  const onContactsUpsert = (payload: ContactsUpsertPayload) => {
+    enqueue("contacts.upsert", async () => {
+      const observedAt = now().toISOString();
+      await options.sink.upsertContactNames?.(
+        normalizeContactNames(payload, observedAt),
+      );
+    });
+  };
+
+  const onContactsUpdate = (payload: ContactsUpdatePayload) => {
+    enqueue("contacts.update", async () => {
+      const observedAt = now().toISOString();
+      await options.sink.upsertContactNames?.(
+        normalizeContactNames(payload, observedAt),
+      );
     });
   };
 
@@ -232,6 +257,8 @@ export function bindInboundEvents(
 
   options.source.on("messaging-history.set", onHistorySet);
   options.source.on("messaging-history.status", onHistoryStatus);
+  options.source.on("contacts.upsert", onContactsUpsert);
+  options.source.on("contacts.update", onContactsUpdate);
   options.source.on("messages.upsert", onMessagesUpsert);
   options.source.on("lid-mapping.update", onLidMappingUpdate);
   options.source.on("group-participants.update", onGroupParticipantsUpdate);
@@ -245,6 +272,8 @@ export function bindInboundEvents(
       detached = true;
       options.source.off("messaging-history.set", onHistorySet);
       options.source.off("messaging-history.status", onHistoryStatus);
+      options.source.off("contacts.upsert", onContactsUpsert);
+      options.source.off("contacts.update", onContactsUpdate);
       options.source.off("messages.upsert", onMessagesUpsert);
       options.source.off("lid-mapping.update", onLidMappingUpdate);
       options.source.off(

@@ -2746,6 +2746,101 @@ test("roster completo vincula privado por PN e remove a elegibilidade quando o m
   }
 });
 
+test("histórico atualiza nomes de contatos existentes e o roster repara cliente fallback sem sobrescrever edição manual", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "support-contact-name-sync-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "contact-account",
+    phoneNumber: "commercial-account",
+    displayName: "Acme Comercial",
+  });
+  const fallbackClient = store.upsertClient({
+    id: "fallback-client",
+    name: "Grupo 120363400099",
+    slug: "grupo-120363400099",
+    kind: "ecommerce",
+  });
+  store.upsertGroup({
+    id: "fallback-group",
+    accountId: account.id,
+    clientId: fallbackClient.id,
+    externalJid: "120363400099@g.us",
+    subject: "Grupo 120363400099",
+    clientLinkSource: "fallback",
+  });
+  const participant = store.upsertParticipant({
+    externalJid: "5511999999999@s.whatsapp.net",
+    phoneE164: "+5511999999999",
+    displayName: "+5511999999999",
+  });
+  store.addGroupParticipant(
+    "fallback-group",
+    participant.id,
+    "member",
+    "group_roster",
+    "2026-08-21T14:00:00.000Z",
+  );
+  const sink = createSqliteInboundSink({
+    store,
+    runtimeState: new RuntimeStateFile(path.join(temporary, "runtime.json")),
+    attachmentsDirectory: path.join(temporary, "attachments"),
+    accountPhone: "commercial-account",
+    accountName: "Acme Comercial",
+  });
+
+  try {
+    assert.ok(sink.upsertContactNames);
+    assert.ok(sink.syncGroupRosters);
+    await sink.upsertContactNames([
+      {
+        externalJid: "5511999999999@s.whatsapp.net",
+        displayName: "Pessoa Fictícia Eta",
+        observedAt: "2026-08-21T14:05:00.000Z",
+      },
+    ]);
+    await sink.syncGroupRosters([
+      {
+        groupJid: "120363400099@g.us",
+        subject: "Loja Exemplo & Acme",
+        observedAt: "2026-08-21T14:10:00.000Z",
+        participants: [],
+      },
+    ]);
+
+    assert.equal(
+      database.prepare("SELECT display_name FROM participants WHERE id = ?").pluck().get(participant.id),
+      "Pessoa Fictícia Eta",
+    );
+    assert.equal(
+      database.prepare("SELECT name FROM clients WHERE id = ?").pluck().get(fallbackClient.id),
+      "Loja Exemplo & Acme",
+    );
+
+    store.updateClientProfile(fallbackClient.id, {
+      name: "Nome definido manualmente",
+      kind: "ecommerce",
+      notes: null,
+      stores: [],
+    });
+    await sink.syncGroupRosters([
+      {
+        groupJid: "120363400099@g.us",
+        subject: "Outro nome do WhatsApp",
+        observedAt: "2026-08-21T14:15:00.000Z",
+        participants: [],
+      },
+    ]);
+    assert.equal(
+      database.prepare("SELECT name FROM clients WHERE id = ?").pluck().get(fallbackClient.id),
+      "Nome definido manualmente",
+    );
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("update incremental remove desativa aliases PN e LID e add reativa ambos", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "support-roster-incremental-"));
   const database = createDatabase(":memory:");

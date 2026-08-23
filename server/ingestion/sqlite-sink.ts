@@ -4,7 +4,10 @@ import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizeConversationSubject } from "../domain/conversation-subject.js";
-import { isHumanParticipantDisplayName } from "../domain/participant-identity.js";
+import {
+  isHumanParticipantDisplayName,
+  preferredParticipantDisplayName,
+} from "../domain/participant-identity.js";
 import type { SupportStore } from "../domain/index.js";
 import { analysePdf } from "../media/pdf-analysis.js";
 import { readRuntimeCounts } from "../runtime/runtime-counts.js";
@@ -13,6 +16,7 @@ import { queueRealtimeAudioTranscription } from "../transcription/index.js";
 import type {
   DownloadedInboundMedia,
   InboundAttachment,
+  InboundContactName,
   InboundGroupParticipant,
   InboundGroupParticipantUpdate,
   InboundGroupRoster,
@@ -415,6 +419,52 @@ export function createSqliteInboundSink(
       )(links);
     },
 
+    upsertContactNames(contacts) {
+      options.store.database.transaction(
+        (batch: readonly InboundContactName[]) => {
+          for (const contact of batch) {
+            const phoneE164 = phoneFromIdentity(contact.externalJid);
+            const participantIds = options.store.findParticipantIds({
+              externalJids: [contact.externalJid],
+              phoneE164s: phoneE164 ? [phoneE164] : [],
+            });
+            if (!participantIds.length) continue;
+            const participants = options.store.database
+              .prepare(
+                `SELECT id, external_jid, phone_e164, display_name
+                 FROM participants
+                 WHERE id IN (${participantIds.map(() => "?").join(", ")})`,
+              )
+              .all(...participantIds) as Array<{
+              id: string;
+              external_jid: string;
+              phone_e164: string | null;
+              display_name: string;
+            }>;
+            const update = options.store.database.prepare(
+              `UPDATE participants
+               SET display_name = ?, updated_at = ?
+               WHERE id = ? AND display_name != ?`,
+            );
+            for (const participant of participants) {
+              const displayName = preferredParticipantDisplayName({
+                externalJid: participant.external_jid,
+                phoneE164: participant.phone_e164,
+                incoming: contact.displayName,
+                existing: participant.display_name,
+              });
+              update.run(
+                displayName,
+                contact.observedAt,
+                participant.id,
+                displayName,
+              );
+            }
+          }
+        },
+      )(contacts);
+    },
+
     syncGroupRosters(rosters) {
       options.store.database.transaction(
         (batch: readonly InboundGroupRoster[]) => {
@@ -425,6 +475,13 @@ export function createSqliteInboundSink(
           for (const roster of batch) {
             const existingGroup = findExistingGroup(options.store, roster.groupJid);
             const subject = roster.subject.trim() || existingGroup?.subject || roster.groupJid;
+            syncFallbackClientName(
+              options.store,
+              existingGroup,
+              subject,
+              roster.groupJid,
+              roster.observedAt,
+            );
             const clientId =
               existingGroup?.clientId ??
               createFallbackClient(options.store, subject, roster.groupJid, "group");
@@ -881,6 +938,46 @@ function createFallbackClient(
         ? "Contato privado armazenado como contexto; novas demandas devem ser associadas a uma agência ou ecommerce."
         : "Criado automaticamente a partir do grupo WhatsApp; confirme se é agência ou ecommerce.",
   }).id;
+}
+
+function syncFallbackClientName(
+  store: SupportStore,
+  group: ExistingGroup | null,
+  subject: string,
+  externalJid: string,
+  observedAt: string,
+): void {
+  if (
+    !group ||
+    group.clientLinkSource !== "fallback" ||
+    group.clientManualOverride ||
+    isTechnicalGroupName(subject, externalJid)
+  ) {
+    return;
+  }
+  const currentName = store.database
+    .prepare("SELECT name FROM clients WHERE id = ?")
+    .pluck()
+    .get(group.clientId) as string | undefined;
+  if (!currentName || !isTechnicalGroupName(currentName, externalJid)) return;
+  store.database
+    .prepare(
+      `UPDATE clients
+       SET name = ?, updated_at = ?
+       WHERE id = ? AND manual_override = 0`,
+    )
+    .run(subject, observedAt, group.clientId);
+}
+
+function isTechnicalGroupName(value: string, externalJid: string): boolean {
+  const candidate = value.trim().toLocaleLowerCase("pt-BR");
+  const id = externalJid.split("@")[0]?.trim().toLocaleLowerCase("pt-BR") ?? "";
+  return Boolean(
+    id &&
+      (candidate === externalJid.toLocaleLowerCase("pt-BR") ||
+        candidate === id ||
+        candidate === `grupo ${id}`),
+  );
 }
 
 function earliestTimestamp(
