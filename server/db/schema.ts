@@ -3249,4 +3249,42 @@ export const migrations: Migration[] = [
         ON connected_apps(ai_enabled DESC, enabled DESC, name COLLATE NOCASE, id);
     `,
   },
+  {
+    version: 58,
+    name: "threadmark_ai_ticket_categories_and_updates",
+    sql: `
+      ALTER TABLE threadmark_ai_ticket_drafts
+        ADD COLUMN category_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(category_ids_json) AND json_type(category_ids_json) = 'array');
+
+      CREATE TABLE threadmark_ai_ticket_update_drafts (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL
+          REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        operator_message_id TEXT NOT NULL
+          REFERENCES investigation_thread_messages(id) ON DELETE RESTRICT,
+        ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        title TEXT,
+        summary TEXT,
+        priority TEXT CHECK (priority IS NULL OR priority IN ('low', 'normal', 'high', 'urgent')),
+        add_category_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(add_category_ids_json) AND json_type(add_category_ids_json) = 'array'),
+        remove_category_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(remove_category_ids_json) AND json_type(remove_category_ids_json) = 'array'),
+        base_updated_at TEXT NOT NULL,
+        base_category_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(base_category_ids_json) AND json_type(base_category_ids_json) = 'array'),
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (state IN ('pending', 'applied')),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX threadmark_ai_ticket_update_drafts_thread_time_idx
+        ON threadmark_ai_ticket_update_drafts(thread_id, created_at DESC, id);
+      CREATE INDEX threadmark_ai_ticket_update_drafts_ticket_time_idx
+        ON threadmark_ai_ticket_update_drafts(ticket_id, created_at DESC, id);
+    `,
+  },
 ];

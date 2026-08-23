@@ -321,6 +321,11 @@ export interface CreateManualTicketInput {
   title: string;
   summary: string;
   priority?: TicketPriority;
+  categories?: Array<{
+    categoryId: string;
+    source?: "ai" | "manual" | "rule";
+    confidence?: number | null;
+  }>;
   actor?: string;
 }
 
@@ -4608,6 +4613,7 @@ export class SupportStore {
       priority: input.priority ?? "normal",
       confidence: null,
       needsReview: false,
+      categories: input.categories,
       actor: input.actor ?? "Operador local",
     });
   }
@@ -10542,6 +10548,79 @@ export class SupportStore {
           data: { categoryId },
           occurredAt: timestamp,
         });
+      }
+      return this.getTicketDetail(ticketId);
+    })();
+  }
+
+  updateTicketCategoriesFromAi(
+    ticketId: string,
+    input: { addCategoryIds: string[]; removeCategoryIds: string[] },
+    actor = "Threadmark AI",
+  ): TicketDetailDto {
+    const addCategoryIds = [...new Set(input.addCategoryIds)];
+    const removeCategoryIds = [...new Set(input.removeCategoryIds)];
+    const conflicts = addCategoryIds.filter((categoryId) => removeCategoryIds.includes(categoryId));
+    if (conflicts.length) {
+      throw new ValidationError("Uma categoria não pode ser adicionada e removida na mesma atualização", {
+        categoryIds: conflicts,
+      });
+    }
+
+    return this.database.transaction(() => {
+      const ticket = this.database
+        .prepare("SELECT id FROM tickets WHERE id = ?")
+        .get(ticketId) as { id: string } | undefined;
+      if (!ticket) throw new NotFoundError("Ticket", ticketId);
+
+      const categoryIds = [...addCategoryIds, ...removeCategoryIds];
+      for (const categoryId of categoryIds) {
+        const category = this.database
+          .prepare("SELECT id FROM categories WHERE id = ?")
+          .get(categoryId);
+        if (!category) throw new NotFoundError("Categoria", categoryId);
+      }
+
+      const timestamp = nowUtc();
+      let changed = false;
+      for (const categoryId of addCategoryIds) {
+        const alreadyLinked = this.database
+          .prepare("SELECT 1 FROM ticket_categories WHERE ticket_id = ? AND category_id = ?")
+          .get(ticketId, categoryId) !== undefined;
+        this.addTicketCategoryInternal(ticketId, categoryId, "ai", 1, timestamp);
+        if (!alreadyLinked) {
+          changed = true;
+          this.insertTicketEvent({
+            ticketId,
+            eventType: "ticket_category_added",
+            actor,
+            fromStatus: null,
+            toStatus: null,
+            data: { categoryId, source: "ai" },
+            occurredAt: timestamp,
+          });
+        }
+      }
+      for (const categoryId of removeCategoryIds) {
+        const removed = this.database
+          .prepare("DELETE FROM ticket_categories WHERE ticket_id = ? AND category_id = ?")
+          .run(ticketId, categoryId).changes > 0;
+        if (removed) {
+          changed = true;
+          this.insertTicketEvent({
+            ticketId,
+            eventType: "ticket_category_removed",
+            actor,
+            fromStatus: null,
+            toStatus: null,
+            data: { categoryId, source: "ai" },
+            occurredAt: timestamp,
+          });
+        }
+      }
+      if (changed) {
+        this.database.prepare("UPDATE tickets SET updated_at = ? WHERE id = ?").run(timestamp, ticketId);
+        this.invalidateLegacyAutomaticGuidance(ticketId, timestamp);
       }
       return this.getTicketDetail(ticketId);
     })();

@@ -258,8 +258,11 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     assert.equal(descriptor?.id, "threadmark-context");
     assert.deepEqual(descriptor?.operations.map((item) => item.name), [
       "search_support_context",
+      "list_ticket_categories",
       "prepare_ticket_draft",
       "create_ticket_from_draft",
+      "prepare_ticket_update_draft",
+      "apply_ticket_update_draft",
     ]);
 
     const result = await executor.execute({
@@ -442,6 +445,16 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     externalJid: "ai-ticket@g.us",
     subject: "Cliente Intercom & Suporte",
   });
+  const productCategory = store.createCategory({
+    facet: "product",
+    label: "CRM",
+    color: "#6554e8",
+  });
+  const symptomCategory = store.createCategory({
+    facet: "symptom",
+    label: "Acesso indisponível",
+    color: "#ef4444",
+  });
   const thread = store.createThreadmarkAiThread({}, "Weslem");
   const withRequest = store.addInvestigationThreadMessage(thread.id, {
     body: "Transforme a conversa 987 do Intercom em um ticket do Threadmark.",
@@ -454,6 +467,23 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
   );
 
   try {
+    const inventedCategory = await executor.execute({
+      requestId: "prepare-ticket-invalid-category",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: requestMessage.id,
+        groupId: group.id,
+        title: "Acesso para criar campanhas",
+        summary: "Tentativa com categoria inventada.",
+        priority: "high",
+        categoryIds: ["categoria-inventada"],
+      }),
+      purpose: "Garantir que apenas o catálogo real seja aceito.",
+    });
+    assert.equal(inventedCategory.status, "error");
+    assert.match(inventedCategory.summary, /Categoria\(s\) inexistente/i);
+
     const draft = await executor.execute({
       requestId: "prepare-ticket-1",
       toolId: "threadmark-context",
@@ -464,6 +494,7 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
         title: "Acesso para criar campanhas",
         summary: "Bruno informou no Intercom que não consegue criar campanhas e pediu liberação de acesso.",
         priority: "high",
+        categoryIds: [productCategory.id, symptomCategory.id],
         externalSource: { type: "intercom_conversation", id: "987" },
       }),
       purpose: "Preparar a prévia solicitada sem criar o ticket.",
@@ -502,20 +533,27 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     assert.equal(ticket.title, "Acesso para criar campanhas");
     assert.equal(ticket.priority, "high");
     assert.equal(ticket.group.id, group.id);
+    assert.deepEqual(
+      ticket.categories.map((category) => category.label).sort(),
+      ["Acesso indisponível", "CRM"],
+    );
     const persistedDraft = database.prepare(
-      `SELECT state, external_source_type, external_source_id, created_ticket_id
+      `SELECT state, external_source_type, external_source_id, created_ticket_id,
+              category_ids_json
        FROM threadmark_ai_ticket_drafts WHERE id = ?`,
     ).get(draftId) as {
       state: string;
       external_source_type: string;
       external_source_id: string;
       created_ticket_id: string;
+      category_ids_json: string;
     };
     assert.deepEqual(persistedDraft, {
       state: "created",
       external_source_type: "intercom_conversation",
       external_source_id: "987",
       created_ticket_id: ticket.id,
+      category_ids_json: JSON.stringify([productCategory.id, symptomCategory.id].sort()),
     });
 
     const replay = await executor.execute({
@@ -531,6 +569,129 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     assert.equal(replay.status, "success");
     assert.match(replay.summary, /já havia sido criado/i);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM tickets").get() as { total: number }).total, 1);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Threadmark AI atualiza metadados e categorias somente após confirmação posterior", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-ticket-update-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "ai-update-account",
+    phoneNumber: "+5548999999222",
+    displayName: "Comercial",
+  });
+  const client = store.upsertClient({
+    id: "ai-update-client",
+    name: "Cliente Atualização",
+    slug: "cliente-atualizacao",
+    kind: "ecommerce",
+  });
+  const group = store.upsertGroup({
+    id: "ai-update-group",
+    accountId: account.id,
+    clientId: client.id,
+    externalJid: "ai-update@g.us",
+    subject: "Cliente Atualização & Suporte",
+  });
+  const originalCategory = store.createCategory({ facet: "reason", label: "Dúvida" });
+  const productCategory = store.createCategory({ facet: "product", label: "Dashboard" });
+  const symptomCategory = store.createCategory({ facet: "symptom", label: "Dados incorretos" });
+  const ticket = store.createManualTicket({
+    clientRequestId: "ai-update-ticket",
+    groupId: group.id,
+    title: "Dúvida genérica",
+    summary: "Cliente relatou uma dúvida.",
+    priority: "normal",
+    actor: "Weslem",
+  });
+  store.attachCategoryToTicket(ticket.id, originalCategory.id, "Weslem");
+  const thread = store.createThreadmarkAiThread({}, "Weslem");
+  const request = store.addInvestigationThreadMessage(thread.id, {
+    body: `Atualize o ticket #${ticket.number}: o problema real são dados incorretos no Dashboard.`,
+  }).messages.filter((message) => message.role === "operator").at(-1);
+  assert.ok(request);
+  const executor = new DeepToolExecutor(
+    new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
+    { database, supportStore: store },
+  );
+
+  try {
+    const catalog = await executor.execute({
+      requestId: "list-categories-1",
+      toolId: "threadmark-context",
+      operation: "list_ticket_categories",
+      argumentsJson: JSON.stringify({ query: "Dashboard", limit: 20 }),
+      purpose: "Usar somente categorias existentes no catálogo.",
+    });
+    assert.equal(catalog.status, "success");
+    assert.match(catalog.content, /Dashboard/);
+
+    const prepared = await executor.execute({
+      requestId: "prepare-update-1",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: request.id,
+        ticketId: ticket.id,
+        title: "Dados incorretos no Dashboard",
+        summary: "O cliente identificou divergência nos dados exibidos no Dashboard.",
+        priority: "high",
+        addCategoryIds: [productCategory.id, symptomCategory.id],
+        removeCategoryIds: [originalCategory.id],
+      }),
+      purpose: "Preparar a atualização para confirmação.",
+    });
+    assert.equal(prepared.status, "success");
+    assert.match(prepared.summary, /nenhuma alteração foi aplicada/i);
+    const draftId = (JSON.parse(prepared.content) as { draftId: string }).draftId;
+    const beforeConfirmation = store.getTicketDetail(ticket.id);
+    assert.equal(beforeConfirmation.title, "Dúvida genérica");
+    assert.deepEqual(beforeConfirmation.categories.map((category) => category.label), ["Dúvida"]);
+
+    database.prepare(
+      `UPDATE investigation_thread_jobs
+       SET state = 'completed', finished_at = requested_at, result_json = '{}'
+       WHERE thread_id = ?`,
+    ).run(thread.id);
+    const confirmation = store.addInvestigationThreadMessage(thread.id, {
+      body: "Confirmo, pode atualizar o ticket conforme a prévia.",
+    }).messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(confirmation);
+
+    const applied = await executor.execute({
+      requestId: "apply-update-1",
+      toolId: "threadmark-context",
+      operation: "apply_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId,
+      }),
+      purpose: "Aplicar a atualização confirmada.",
+    });
+    assert.equal(applied.status, "success");
+    assert.match(applied.summary, new RegExp(`Ticket #${ticket.number} atualizado`));
+    const updated = store.getTicketDetail(ticket.id);
+    assert.equal(updated.title, "Dados incorretos no Dashboard");
+    assert.equal(updated.summary, "O cliente identificou divergência nos dados exibidos no Dashboard.");
+    assert.equal(updated.priority, "high");
+    assert.deepEqual(
+      updated.categories.map((category) => category.label).sort(),
+      ["Dados incorretos", "Dashboard"],
+    );
+
+    const replay = await executor.execute({
+      requestId: "apply-update-2",
+      toolId: "threadmark-context",
+      operation: "apply_ticket_update_draft",
+      argumentsJson: JSON.stringify({ confirmationMessageId: confirmation.id, draftId }),
+      purpose: "Repetição idempotente da atualização.",
+    });
+    assert.equal(replay.status, "success");
+    assert.match(replay.summary, /já havia sido atualizado/i);
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });

@@ -165,12 +165,21 @@ const searchSupportContextSchema = z.object({
   limit: z.number().int().min(1).max(20).default(10),
 }).strict();
 
+const listTicketCategoriesSchema = z.object({
+  query: z.string().trim().min(1).max(200).optional(),
+  facets: z.array(z.enum(["reason", "product", "platform", "symptom", "root_cause", "resolution"]))
+    .max(6)
+    .optional(),
+  limit: z.number().int().min(1).max(200).default(100),
+}).strict();
+
 const prepareThreadmarkTicketDraftSchema = z.object({
   operatorMessageId: z.string().trim().min(1).max(200),
   groupId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(20_000),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+  categoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
   externalSource: z.object({
     type: z.literal("intercom_conversation"),
     id: z.string().trim().min(1).max(200),
@@ -178,6 +187,29 @@ const prepareThreadmarkTicketDraftSchema = z.object({
 }).strict();
 
 const createThreadmarkTicketFromDraftSchema = z.object({
+  confirmationMessageId: z.string().trim().min(1).max(200),
+  draftId: z.string().trim().min(1).max(200),
+}).strict();
+
+const prepareThreadmarkTicketUpdateDraftSchema = z.object({
+  operatorMessageId: z.string().trim().min(1).max(200),
+  ticketId: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(200).optional(),
+  summary: z.string().trim().min(1).max(20_000).optional(),
+  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+  addCategoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
+  removeCategoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
+}).strict().refine(
+  (value) =>
+    value.title !== undefined ||
+    value.summary !== undefined ||
+    value.priority !== undefined ||
+    value.addCategoryIds.length > 0 ||
+    value.removeCategoryIds.length > 0,
+  { message: "Informe ao menos uma alteração para o ticket." },
+);
+
+const applyThreadmarkTicketUpdateDraftSchema = z.object({
   confirmationMessageId: z.string().trim().min(1).max(200),
   draftId: z.string().trim().min(1).max(200),
 }).strict();
@@ -355,19 +387,37 @@ export class DeepToolExecutor {
         operations: [{
           name: "search_support_context",
           description:
-            "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução.",
+            "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução. Tickets encontrados incluem suas categorias atuais.",
           argumentsExample:
             '{"query":"ROAS Global","scope":"all","limit":10}',
         }, {
+          name: "list_ticket_categories",
+          description:
+            "Lista o catálogo real de categorias do SQLite. Consulte antes de criar ou atualizar tickets e use somente IDs cujo significado tenha relação direta com o problema comprovado.",
+          argumentsExample:
+            '{"query":"Dashboard","facets":["product","symptom"],"limit":50}',
+        }, {
           name: "prepare_ticket_draft",
           description:
-            "Persiste uma prévia de ticket vinculada a um grupo existente. Não cria o ticket e não exige confirmação.",
+            "Persiste uma prévia de ticket vinculada a um grupo existente e a categorias reais já consultadas. Não cria o ticket e não exige confirmação.",
           argumentsExample:
-            '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","externalSource":{"type":"intercom_conversation","id":"123"}}',
+            '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","categoryIds":["<categoryId real>"],"externalSource":{"type":"intercom_conversation","id":"123"}}',
         }, {
           name: "create_ticket_from_draft",
           description:
             "Cria no SQLite um ticket a partir de um rascunho já apresentado. Exige confirmação explícita na mensagem atual.",
+          argumentsExample:
+            '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+        }, {
+          name: "prepare_ticket_update_draft",
+          description:
+            "Prepara uma prévia auditável para atualizar título, descrição, prioridade e categorias de um ticket existente. Não altera nada antes da confirmação.",
+          argumentsExample:
+            '{"operatorMessageId":"<currentOperatorMessageId>","ticketId":"<ticketId encontrado>","title":"Título corrigido","addCategoryIds":["<categoryId real>"],"removeCategoryIds":[]}',
+        }, {
+          name: "apply_ticket_update_draft",
+          description:
+            "Aplica uma atualização de ticket já apresentada. Exige confirmação explícita posterior e rejeita uma prévia desatualizada.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
         }],
@@ -876,6 +926,34 @@ export class DeepToolExecutor {
       if (request.operation === "create_ticket_from_draft") {
         return this.createThreadmarkTicketFromDraft(request, rawArguments, executedAt);
       }
+      if (request.operation === "prepare_ticket_update_draft") {
+        return this.prepareThreadmarkTicketUpdateDraft(request, rawArguments, executedAt);
+      }
+      if (request.operation === "apply_ticket_update_draft") {
+        return this.applyThreadmarkTicketUpdateDraft(request, rawArguments, executedAt);
+      }
+      if (request.operation === "list_ticket_categories") {
+        if (!this.supportStore) throw new Error("O catálogo de categorias não está disponível.");
+        const args = listTicketCategoriesSchema.parse(rawArguments);
+        const facets = new Set(args.facets ?? []);
+        const categories = this.supportStore
+          .listCategories({ query: args.query, includeEmpty: true })
+          .filter((category) => facets.size === 0 || facets.has(category.facet))
+          .slice(0, args.limit);
+        return {
+          requestId: request.requestId,
+          toolId: THREADMARK_CONTEXT_TOOL_ID,
+          toolName: "Contexto do Threadmark",
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "success",
+          summary: `${categories.length} categoria(s) existente(s) encontrada(s).`,
+          content: JSON.stringify({ categories }, null, 2),
+          reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:categories:request:${encodeURIComponent(request.requestId)}`,
+          executedAt,
+        };
+      }
       if (request.operation !== "search_support_context") {
         return failedResult(
           request,
@@ -922,12 +1000,16 @@ export class DeepToolExecutor {
     const args = prepareThreadmarkTicketDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
     const group = findActiveTicketGroup(this.database, args.groupId);
+    const categories = resolveTicketCategories(this.database, args.categoryIds);
+    validateAiCategorySelection(categories);
+    const categoryIds = categories.map((category) => category.id).sort();
     const fingerprint = JSON.stringify({
       operatorMessageId: args.operatorMessageId,
       groupId: args.groupId,
       title: args.title,
       summary: args.summary,
       priority: args.priority,
+      categoryIds,
       externalSource: args.externalSource ?? null,
     });
     const draftId = `threadmark-ai-draft:${createHash("sha256").update(fingerprint).digest("hex").slice(0, 32)}`;
@@ -936,8 +1018,8 @@ export class DeepToolExecutor {
         `INSERT OR IGNORE INTO threadmark_ai_ticket_drafts (
            id, thread_id, operator_message_id, group_id, title, summary,
            priority, external_source_type, external_source_id, state,
-           created_ticket_id, created_by, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+           created_ticket_id, created_by, created_at, updated_at, category_ids_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?)`,
       )
       .run(
         draftId,
@@ -952,6 +1034,7 @@ export class DeepToolExecutor {
         operator.actor,
         executedAt,
         executedAt,
+        JSON.stringify(categoryIds),
       );
     const preview = {
       draftId,
@@ -960,6 +1043,7 @@ export class DeepToolExecutor {
       summary: args.summary,
       priority: args.priority,
       group: { id: group.id, name: group.subject, clientName: group.clientName },
+      categories,
       externalSource: args.externalSource ?? null,
       confirmationRequired:
         "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a criação.",
@@ -996,7 +1080,7 @@ export class DeepToolExecutor {
       .prepare(
         `SELECT id, thread_id, group_id, title, summary, priority, state,
                 created_ticket_id, created_by, created_at,
-                external_source_type, external_source_id
+                external_source_type, external_source_id, category_ids_json
          FROM threadmark_ai_ticket_drafts WHERE id = ?`,
       )
       .get(args.draftId) as ThreadmarkAiTicketDraftRow | undefined;
@@ -1011,6 +1095,7 @@ export class DeepToolExecutor {
       return successfulCreatedTicketResult(request, existing, draft, executedAt, true);
     }
     findActiveTicketGroup(this.database, draft.group_id);
+    const categories = resolveTicketCategories(this.database, parseJsonStringArray(draft.category_ids_json));
     const ticket = this.database.transaction(() => {
       const created = this.supportStore!.createManualTicket({
         clientRequestId: `threadmark-ai-ticket:${draft.id}`,
@@ -1018,6 +1103,11 @@ export class DeepToolExecutor {
         title: draft.title,
         summary: draft.summary,
         priority: draft.priority,
+        categories: categories.map((category) => ({
+          categoryId: category.id,
+          source: "ai" as const,
+          confidence: 1,
+        })),
         actor: draft.created_by,
       });
       this.database!
@@ -1030,6 +1120,173 @@ export class DeepToolExecutor {
       return created;
     })();
     return successfulCreatedTicketResult(request, ticket, draft, executedAt, false);
+  }
+
+  private prepareThreadmarkTicketUpdateDraft(
+    request: InvestigationToolRequest,
+    rawArguments: unknown,
+    executedAt: string,
+  ): InvestigationToolResult {
+    if (!this.database || !this.supportStore) {
+      return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
+    }
+    const args = prepareThreadmarkTicketUpdateDraftSchema.parse(rawArguments);
+    const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
+    const ticket = this.supportStore.getTicketDetail(args.ticketId);
+    const requestedAdds = resolveTicketCategories(this.database, args.addCategoryIds);
+    const requestedRemovals = resolveTicketCategories(this.database, args.removeCategoryIds);
+    const rawConflicts = requestedAdds
+      .map((category) => category.id)
+      .filter((categoryId) => requestedRemovals.some((category) => category.id === categoryId));
+    if (rawConflicts.length) {
+      throw new Error("Uma categoria não pode ser adicionada e removida na mesma prévia.");
+    }
+    const currentCategoryIds = ticket.categories.map((category) => category.id).sort();
+    const currentCategorySet = new Set(currentCategoryIds);
+    const addCategories = requestedAdds.filter((category) => !currentCategorySet.has(category.id));
+    const removeCategories = requestedRemovals.filter((category) => currentCategorySet.has(category.id));
+    const addIds = addCategories.map((category) => category.id).sort();
+    const removeIds = removeCategories.map((category) => category.id).sort();
+    if (addIds.length || removeIds.length) {
+      const removed = new Set(removeIds);
+      validateAiCategorySelection([
+        ...ticket.categories.filter((category) => !removed.has(category.id)),
+        ...addCategories,
+      ]);
+    }
+
+    const title = args.title !== undefined && args.title !== ticket.title ? args.title : null;
+    const summary = args.summary !== undefined && args.summary !== ticket.summary ? args.summary : null;
+    const priority = args.priority !== undefined && args.priority !== ticket.priority ? args.priority : null;
+    if (title === null && summary === null && priority === null && !addIds.length && !removeIds.length) {
+      throw new Error("A prévia não contém nenhuma alteração em relação ao ticket atual.");
+    }
+    const fingerprint = JSON.stringify({
+      operatorMessageId: args.operatorMessageId,
+      ticketId: ticket.id,
+      title,
+      summary,
+      priority,
+      addIds,
+      removeIds,
+      baseUpdatedAt: ticket.updatedAt,
+      currentCategoryIds,
+    });
+    const draftId = `threadmark-ai-ticket-update:${createHash("sha256").update(fingerprint).digest("hex").slice(0, 32)}`;
+    this.database.prepare(
+      `INSERT OR IGNORE INTO threadmark_ai_ticket_update_drafts (
+         id, thread_id, operator_message_id, ticket_id, title, summary, priority,
+         add_category_ids_json, remove_category_ids_json, base_updated_at,
+         base_category_ids_json, state, created_by, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    ).run(
+      draftId,
+      operator.threadId,
+      args.operatorMessageId,
+      ticket.id,
+      title,
+      summary,
+      priority,
+      JSON.stringify(addIds),
+      JSON.stringify(removeIds),
+      ticket.updatedAt,
+      JSON.stringify(currentCategoryIds),
+      operator.actor,
+      executedAt,
+      executedAt,
+    );
+    const preview = {
+      draftId,
+      state: "pending",
+      ticket: { id: ticket.id, number: ticket.number, title: ticket.title },
+      changes: {
+        title: title === null ? null : { from: ticket.title, to: title },
+        summary: summary === null ? null : { from: ticket.summary, to: summary },
+        priority: priority === null ? null : { from: ticket.priority, to: priority },
+        addCategories,
+        removeCategories,
+      },
+      confirmationRequired:
+        "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a atualização.",
+    };
+    return {
+      requestId: request.requestId,
+      toolId: THREADMARK_CONTEXT_TOOL_ID,
+      toolName: "Contexto do Threadmark",
+      operation: request.operation,
+      argumentsJson: request.argumentsJson,
+      purpose: request.purpose,
+      status: "success",
+      summary: `Prévia de atualização do ticket #${ticket.number} preparada; nenhuma alteração foi aplicada.`,
+      content: JSON.stringify(preview, null, 2),
+      reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:ticket-update-draft:${encodeURIComponent(draftId)}:request:${encodeURIComponent(request.requestId)}`,
+      executedAt,
+    };
+  }
+
+  private applyThreadmarkTicketUpdateDraft(
+    request: InvestigationToolRequest,
+    rawArguments: unknown,
+    executedAt: string,
+  ): InvestigationToolResult {
+    if (!this.database || !this.supportStore) {
+      return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
+    }
+    const args = applyThreadmarkTicketUpdateDraftSchema.parse(rawArguments);
+    const operator = findThreadmarkAiOperator(this.database, args.confirmationMessageId);
+    if (!isExplicitTicketUpdateConfirmation(operator.messageBody)) {
+      throw new Error("A mensagem atual não confirma explicitamente a atualização do ticket.");
+    }
+    const draft = this.database.prepare(
+      `SELECT id, thread_id, ticket_id, title, summary, priority,
+              add_category_ids_json, remove_category_ids_json, base_updated_at,
+              base_category_ids_json, state, created_by, created_at
+       FROM threadmark_ai_ticket_update_drafts WHERE id = ?`,
+    ).get(args.draftId) as ThreadmarkAiTicketUpdateDraftRow | undefined;
+    if (!draft || draft.thread_id !== operator.threadId) {
+      throw new Error("O rascunho não pertence a esta conversa do Threadmark AI.");
+    }
+    if (Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)) {
+      throw new Error("A confirmação precisa ser posterior à prévia da atualização.");
+    }
+    const current = this.supportStore.getTicketDetail(draft.ticket_id);
+    if (draft.state === "applied") {
+      return successfulUpdatedTicketResult(request, current, executedAt, true);
+    }
+    const currentCategoryIds = current.categories.map((category) => category.id).sort();
+    if (
+      current.updatedAt !== draft.base_updated_at ||
+      JSON.stringify(currentCategoryIds) !== JSON.stringify(parseJsonStringArray(draft.base_category_ids_json).sort())
+    ) {
+      throw new Error("O ticket mudou depois da prévia. Gere uma nova prévia antes de atualizar.");
+    }
+    const addCategoryIds = parseJsonStringArray(draft.add_category_ids_json);
+    const removeCategoryIds = parseJsonStringArray(draft.remove_category_ids_json);
+    resolveTicketCategories(this.database, [...addCategoryIds, ...removeCategoryIds]);
+    const updated = this.database.transaction(() => {
+      let result = current;
+      if (draft.title !== null || draft.summary !== null || draft.priority !== null) {
+        result = this.supportStore!.updateTicketMetadata(draft.ticket_id, {
+          title: draft.title ?? current.title,
+          summary: draft.summary ?? current.summary,
+          priority: draft.priority ?? current.priority,
+          requesterId: current.requesterOverrideId,
+        }, draft.created_by);
+      }
+      if (addCategoryIds.length || removeCategoryIds.length) {
+        result = this.supportStore!.updateTicketCategoriesFromAi(
+          draft.ticket_id,
+          { addCategoryIds, removeCategoryIds },
+          draft.created_by,
+        );
+      }
+      this.database!.prepare(
+        `UPDATE threadmark_ai_ticket_update_drafts
+         SET state = 'applied', updated_at = ? WHERE id = ? AND state = 'pending'`,
+      ).run(executedAt, draft.id);
+      return result;
+    })();
+    return successfulUpdatedTicketResult(request, updated, executedAt, false);
   }
 
   /** Performs one bounded, readonly connection probe without exposing credentials. */
@@ -1957,6 +2214,31 @@ interface ThreadmarkAiTicketDraftRow {
   created_at: string;
   external_source_type: "intercom_conversation" | null;
   external_source_id: string | null;
+  category_ids_json: string;
+}
+
+interface ThreadmarkAiTicketUpdateDraftRow {
+  id: string;
+  thread_id: string;
+  ticket_id: string;
+  title: string | null;
+  summary: string | null;
+  priority: "low" | "normal" | "high" | "urgent" | null;
+  add_category_ids_json: string;
+  remove_category_ids_json: string;
+  base_updated_at: string;
+  base_category_ids_json: string;
+  state: "pending" | "applied";
+  created_by: string;
+  created_at: string;
+}
+
+interface ThreadmarkTicketCategory {
+  id: string;
+  facet: "reason" | "product" | "platform" | "symptom" | "root_cause" | "resolution";
+  slug: string;
+  label: string;
+  color: string | null;
 }
 
 function findThreadmarkAiOperator(
@@ -2018,6 +2300,62 @@ function isExplicitTicketConfirmation(message: string): boolean {
   return /\b(?:confirmo|pode\s+(?:criar|gerar)|crie|cria|gere|gera|sim,?\s+(?:crie|pode\s+criar))\b/.test(normalized);
 }
 
+function isExplicitTicketUpdateConfirmation(message: string): boolean {
+  const normalized = normalizeConfirmationMessage(message);
+  if (/\b(?:nao|nunca)\s+(?:atualize|altere|aplique|mude)\b/.test(normalized)) return false;
+  return /\b(?:confirmo|pode\s+(?:atualizar|alterar|aplicar)|atualize|altere|aplique|sim,?\s+(?:atualize|pode\s+atualizar))\b/.test(normalized);
+}
+
+function normalizeConfirmationMessage(message: string): string {
+  return message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseJsonStringArray(value: string): string[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
+    throw new Error("A lista de categorias persistida é inválida.");
+  }
+  return [...new Set(parsed)];
+}
+
+function resolveTicketCategories(
+  database: SupportDatabase,
+  categoryIds: string[],
+): ThreadmarkTicketCategory[] {
+  const uniqueIds = [...new Set(categoryIds)];
+  if (!uniqueIds.length) return [];
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  const rows = database.prepare(
+    `SELECT id, facet, slug, label, color FROM categories WHERE id IN (${placeholders})`,
+  ).all(...uniqueIds) as ThreadmarkTicketCategory[];
+  const byId = new Map(rows.map((category) => [category.id, category]));
+  const missing = uniqueIds.filter((categoryId) => !byId.has(categoryId));
+  if (missing.length) {
+    throw new Error(`Categoria(s) inexistente(s): ${missing.join(", ")}. Consulte list_ticket_categories antes de preparar a alteração.`);
+  }
+  return uniqueIds.map((categoryId) => byId.get(categoryId)!);
+}
+
+function validateAiCategorySelection(
+  categories: Array<{ facet: ThreadmarkTicketCategory["facet"] }>,
+): void {
+  const counts = new Map<ThreadmarkTicketCategory["facet"], number>();
+  for (const category of categories) {
+    counts.set(category.facet, (counts.get(category.facet) ?? 0) + 1);
+  }
+  for (const [facet, count] of counts) {
+    const maximum = facet === "platform" ? 3 : 1;
+    if (count > maximum) {
+      throw new Error(`A classificação automática permite no máximo ${maximum} categoria(s) da faceta ${facet}.`);
+    }
+  }
+}
+
 function successfulCreatedTicketResult(
   request: InvestigationToolRequest,
   ticket: {
@@ -2028,6 +2366,7 @@ function successfulCreatedTicketResult(
     priority: string;
     client: { name: string };
     group: { subject: string };
+    categories?: Array<{ id: string; facet: string; label: string }>;
   },
   draft: ThreadmarkAiTicketDraftRow,
   executedAt: string,
@@ -2044,6 +2383,7 @@ function successfulCreatedTicketResult(
       priority: ticket.priority,
       clientName: ticket.client.name,
       groupName: ticket.group.subject,
+      categories: ticket.categories ?? [],
       internalUrl: `/tickets/${ticket.number}`,
     },
     source: draft.external_source_id
@@ -2062,6 +2402,50 @@ function successfulCreatedTicketResult(
       ? `O ticket #${ticket.number} já havia sido criado por esta confirmação.`
       : `Ticket #${ticket.number} criado no Threadmark após confirmação explícita.`,
     content: JSON.stringify(content, null, 2),
+    reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:ticket:${encodeURIComponent(ticket.id)}:request:${encodeURIComponent(request.requestId)}`,
+    executedAt,
+  };
+}
+
+function successfulUpdatedTicketResult(
+  request: InvestigationToolRequest,
+  ticket: {
+    id: string;
+    number: number;
+    title: string;
+    summary: string;
+    status: string;
+    priority: string;
+    categories: Array<{ id: string; facet: string; label: string }>;
+  },
+  executedAt: string,
+  idempotentReplay: boolean,
+): InvestigationToolResult {
+  return {
+    requestId: request.requestId,
+    toolId: THREADMARK_CONTEXT_TOOL_ID,
+    toolName: "Contexto do Threadmark",
+    operation: request.operation,
+    argumentsJson: request.argumentsJson,
+    purpose: request.purpose,
+    status: "success",
+    summary: idempotentReplay
+      ? `O ticket #${ticket.number} já havia sido atualizado por esta confirmação.`
+      : `Ticket #${ticket.number} atualizado no Threadmark após confirmação explícita.`,
+    content: JSON.stringify({
+      updated: true,
+      idempotentReplay,
+      ticket: {
+        id: ticket.id,
+        number: ticket.number,
+        title: ticket.title,
+        summary: ticket.summary,
+        status: ticket.status,
+        priority: ticket.priority,
+        categories: ticket.categories,
+        internalUrl: `/tickets/${ticket.number}`,
+      },
+    }, null, 2),
     reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:ticket:${encodeURIComponent(ticket.id)}:request:${encodeURIComponent(request.requestId)}`,
     executedAt,
   };
@@ -2273,6 +2657,14 @@ function searchThreadmarkContext(
                   client.name AS client_name, support_group.subject AS group_name,
                   resolution.summary AS resolution_summary,
                   resolution.root_cause, resolution.outcome,
+                  (SELECT json_group_array(json_object(
+                            'id', category.id,
+                            'facet', category.facet,
+                            'label', category.label
+                          ))
+                   FROM ticket_categories membership
+                   JOIN categories category ON category.id = membership.category_id
+                   WHERE membership.ticket_id = ticket.id) AS categories_json,
                   (SELECT response.body
                    FROM sent_responses response
                    WHERE response.ticket_id = ticket.id
@@ -2331,6 +2723,7 @@ function searchThreadmarkContext(
         resolution_summary: string | null;
         root_cause: string | null;
         outcome: string | null;
+        categories_json: string;
         last_sent_response: string | null;
       }>
     : [];
@@ -2384,6 +2777,7 @@ function searchThreadmarkContext(
       priority: row.priority,
       clientName: row.client_name,
       groupName: row.group_name,
+      categories: parseTicketSearchCategories(row.categories_json),
       resolution: row.resolution_summary
         ? {
             summary: truncatePlainText(row.resolution_summary, 2_000),
@@ -2410,6 +2804,22 @@ function searchThreadmarkContext(
         : [],
     })),
   };
+}
+
+function parseTicketSearchCategories(value: string): Array<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((category): category is Record<string, string> =>
+      typeof category === "object" &&
+      category !== null &&
+      typeof (category as Record<string, unknown>).id === "string" &&
+      typeof (category as Record<string, unknown>).facet === "string" &&
+      typeof (category as Record<string, unknown>).label === "string"
+    );
+  } catch {
+    return [];
+  }
 }
 
 function escapeSqliteLike(value: string): string {
