@@ -965,9 +965,30 @@ test("ticket oferece edição persistente de título, descrição, prioridade e 
   assert.match(app, /Dados do ticket atualizados no SQLite\./);
   assert.match(editor, /<DialogContent/);
   assert.match(editor, /max-h-\[calc\(100dvh-1rem\)\]/);
-  assert.match(editor, /w-\[calc\(100%-1rem\)\] max-w-2xl/);
+  assert.match(editor, /w-\[calc\(100%-1rem\)\] max-w-2xl[\s\S]*sm:max-w-3xl/);
   assert.match(editor, /grid-cols-1 gap-4 sm:grid-cols-3/);
   assert.match(editor, /grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto/);
+});
+
+test("permissões MCP permanecem legíveis no drawer compacto", async () => {
+  const panel = await readFile(
+    new URL(
+      "../app/features/automations/components/connected-apps-panel.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  const permissions = sourceSection(
+    panel,
+    '<div className="grid gap-2">',
+    "</div>\n                          </div>",
+  );
+
+  assert.doesNotMatch(permissions, /grid-cols-3/);
+  assert.match(panel, /min-h-10 items-center justify-between gap-3/);
+  assert.match(panel, /min-w-0 break-words/);
+  assert.match(panel, /<Switch className="shrink-0"/);
 });
 
 test("encaminhamento de bug persiste no ticket e pode finalizar o atendimento", async () => {

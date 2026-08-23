@@ -422,7 +422,7 @@ export function ConnectedAppsPanel({
                               <p className="break-words text-xs font-semibold">{action.name}</p>
                               <p className="mt-1 break-words text-xs leading-relaxed text-muted-foreground">{action.description}</p>
                             </div>
-                            <div className="grid gap-2 sm:grid-cols-3">
+                            <div className="grid gap-2">
                               <ToolPermissionToggle
                                 checked={permission.aiEnabled}
                                 label="Threadmark AI"
@@ -529,9 +529,9 @@ function ToolPermissionToggle({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-2 rounded-lg border bg-background px-2.5 py-2 text-xs font-medium">
-      <span>{label}</span>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    <label className="flex min-h-10 items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 text-xs font-medium">
+      <span className="min-w-0 break-words">{label}</span>
+      <Switch className="shrink-0" checked={checked} onCheckedChange={onCheckedChange} />
     </label>
   );
 }

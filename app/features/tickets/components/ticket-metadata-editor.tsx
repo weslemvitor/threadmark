@@ -102,7 +102,7 @@ export function TicketMetadataEditor({
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
       <DialogContent
-        className="max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)] sm:w-full"
+        className="max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)] sm:w-full sm:max-w-3xl"
         onEscapeKeyDown={(event) => { if (saving) event.preventDefault(); }}
         onInteractOutside={(event) => { if (saving) event.preventDefault(); }}
         showCloseButton={false}
