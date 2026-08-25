@@ -18,6 +18,7 @@ export const SETTINGS_ROUTE_TABS = [
   "ai",
   "tools",
   "data",
+  "desktop",
   "security",
 ] as const;
 

@@ -58,9 +58,12 @@ import {
   type DashboardDateRange,
 } from "./dashboard-period";
 import { notifySessionExpired } from "./session-events";
+import { configuredApiUrl } from "./desktop";
 
 export const API_URL =
-  process.env.NEXT_PUBLIC_SUPPORT_API_URL ?? "http://127.0.0.1:4317";
+  configuredApiUrl() ??
+  process.env.NEXT_PUBLIC_SUPPORT_API_URL ??
+  "http://127.0.0.1:4317";
 
 export class ApiError extends Error {
   constructor(

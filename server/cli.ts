@@ -35,6 +35,11 @@ import {
 import { RuntimeStateFile } from "./runtime/runtime-state.js";
 import { runDoctor, type DoctorProbeState } from "./runtime/doctor.js";
 import {
+  requestWebBuildReload,
+  webBuildReloadPath,
+} from "./runtime/web-build-reload.js";
+import { waitForWebBuildReady } from "./runtime/web-readiness.js";
+import {
   inspectDaemonIdentity,
   requestDaemonShutdown,
   waitForDaemonReady,
@@ -180,6 +185,15 @@ async function start(): Promise<void> {
       );
     }
     console.log(`Threadmark já está rodando no PID ${existingDaemon.identity.pid}.`);
+    if (config.startWeb) {
+      try {
+        await waitForWebBuildReady(config.webOrigin, { timeoutMs: 2_500 });
+      } catch {
+        console.log("Interface incompleta detectada; recarregando somente a Web UI.");
+        await requestWebBuildReload(webBuildReloadPath(config.dataDir));
+        await waitForWebBuildReady(config.webOrigin, { timeoutMs: 20_000 });
+      }
+    }
     await status();
     return;
   }

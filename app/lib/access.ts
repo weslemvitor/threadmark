@@ -44,9 +44,13 @@ export interface CompleteSetupInput {
 
 async function accessRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
+  const timeoutSignal = AbortSignal.timeout(10_000);
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, timeoutSignal])
+        : timeoutSignal,
       credentials: "include",
       cache: "no-store",
       headers: {

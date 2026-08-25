@@ -1,6 +1,6 @@
 # Arquitetura
 
-Threadmark é uma aplicação local-first dividida em quatro superfícies: captura inbound do WhatsApp, domínio persistido em SQLite, agentes de IA configuráveis e interfaces locais.
+Threadmark é uma aplicação local-first dividida em cinco superfícies: captura inbound do WhatsApp, domínio persistido em SQLite, agentes de IA configuráveis, Web UI e shell desktop.
 
 ```text
 WhatsApp / Baileys (inbound-only)
@@ -24,6 +24,8 @@ WhatsApp / Baileys (inbound-only)
             -> broker local valida autorização
             -> executor readonly devolve resultado limitado
   -> Web UI
+       -> navegador local
+       -> shell Electron para macOS
 ```
 
 ## Processos locais
@@ -32,8 +34,20 @@ WhatsApp / Baileys (inbound-only)
 - API: `http://127.0.0.1:4317` por padrão.
 - Daemon: captura, heartbeat, triagem, transcrição local e worker do Threadmark AI.
 - CLI: controla ciclo de vida, configuração e diagnóstico sem duplicar a interface operacional.
+- Desktop: abre a mesma Web UI em um renderer isolado e inicia ou reutiliza o daemon local.
 
 Todos os listeners usam loopback por padrão. Expor a API em outra interface muda o modelo de ameaça e exige proteção de rede adicional.
+
+## Shell desktop e workspaces
+
+O Electron contém apenas a responsabilidade de janela, ciclo de vida da interface e escolha do workspace. React, shadcn/ui e Tailwind continuam no renderer existente. O renderer opera com `nodeIntegration: false`, `contextIsolation: true`, sandbox habilitado, permissões negadas por padrão e navegação limitada à origem do workspace. A ponte de preload expõe somente a URL da API, metadados não secretos e a operação validada de trocar o perfil da conexão.
+
+O perfil do desktop fica em `desktop-workspace.json`, fora do SQLite e com permissão privada. A ausência ou corrupção desse arquivo sempre retorna ao modo local. Existem dois perfis:
+
+1. `local`: inicia ou reutiliza `threadmark on` e acessa `127.0.0.1`;
+2. `remote`: não inicia o daemon local e carrega uma origem HTTPS previamente configurada.
+
+Trocar o perfil não move nem remove dados. O modo remoto pressupõe uma implantação compatível em que UI e API estejam atrás da mesma origem HTTPS. A distribuição de servidor, autenticação remota, provisionamento e migração controlada de dados são etapas posteriores; o shell não expõe SQLite nem portas internas diretamente à rede.
 
 ## Persistência
 

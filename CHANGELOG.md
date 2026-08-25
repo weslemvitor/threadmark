@@ -6,6 +6,19 @@ As mudanças relevantes do Threadmark são registradas neste arquivo. O projeto 
 
 ## [Não publicado]
 
+## [0.3.0] - 2026-08-25
+
+### Adicionado
+
+- Aplicativo para macOS Apple Silicon com workspace local padrão e conexão opcional a uma origem HTTPS compatível.
+- Empacotamento de Developer Preview em DMG, inspeção automatizada do artefato e checksum SHA-256 publicado junto da release.
+- Comando no menu do aplicativo para encerrar com segurança a interface e o serviço local antes de uma atualização.
+
+### Segurança
+
+- Renderer desktop isolado, sem integração Node, com sandbox, permissões negadas e navegação restrita ao workspace selecionado.
+- Pipeline de release repete testes, auditoria de privacidade, build e inspeção do DMG antes de publicar qualquer artefato.
+
 ### Removido
 
 - Cockpit OpenTUI, dependência nativa, comando `threadmark tui` e testes específicos. A Web UI permanece como interface operacional e a CLI continua responsável pelo ciclo de vida e diagnóstico.
@@ -52,5 +65,6 @@ As mudanças relevantes do Threadmark são registradas neste arquivo. O projeto 
 - API e Web UI limitadas a loopback por padrão.
 - Credenciais cifradas fora do SQLite e excluídas dos backups integrados.
 
+[0.3.0]: https://github.com/weslemvitor/threadmark/releases/tag/v0.3.0
 [0.2.0]: https://github.com/weslemvitor/threadmark/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/weslemvitor/threadmark/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 {
   "name": "threadmark",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Central de suporte local-first para transformar conversas inbound do WhatsApp em contexto e tickets.",
   "keywords": [
     "whatsapp",
@@ -20,6 +20,7 @@
   },
   "license": "MIT",
   "author": "Weslem Vitor",
+  "main": "dist-desktop/main.js",
   "files": [
     ".env.example",
     "bin/threadmark.mjs",
@@ -41,13 +42,19 @@
     "dev:api": "tsx watch server/index.ts",
     "build": "npm run typecheck && npm run build:web",
     "build:web": "tsx server/runtime/build-web.ts",
+    "desktop:compile": "tsc -p tsconfig.desktop.json",
+    "desktop:dev": "npm run package:build && npm run desktop:compile && electron .",
+    "desktop:pack": "node bin/build-desktop.mjs dir",
+    "desktop:dist": "node bin/build-desktop.mjs dmg",
+    "desktop:artifact:check": "node bin/desktop-artifact-check.mjs",
     "package:build": "npm run typecheck && tsx server/runtime/build-web.ts --package",
     "package:smoke": "node bin/npm-package-smoke.mjs",
     "audit:runtime": "node bin/npm-audit-runtime.mjs",
     "privacy:check": "node bin/privacy-fixtures-check.mjs",
     "test:package": "npm run package:smoke",
     "prepack": "npm run package:build",
-    "release:check": "npm run privacy:check && npm run test:unit && npm run lint && npm run test:package",
+    "release:check": "npm run privacy:check && npm run audit:runtime && npm run test:unit && npm run lint && npm run build && npm run test:package",
+    "release:desktop": "npm run release:check && npm run desktop:dist && npm run desktop:artifact:check",
     "start": "concurrently -k -n web,api -c blue,green \"npm:start:web\" \"npm:start:api\"",
     "start:web": "vinext start --hostname 127.0.0.1",
     "start:api": "tsx server/index.ts",
@@ -55,7 +62,7 @@
     "test": "npm run test:unit && npm run build",
     "test:unit": "node --import tsx --test tests/*.test.ts",
     "eval:prompts": "tsx server/evals/prompt-eval.ts",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-desktop --ignore-pattern release --ignore-pattern .next",
     "seed": "tsx server/seed.ts",
     "demo:reset": "tsx server/demo-reset.ts",
     "support": "tsx server/cli.ts",
@@ -107,6 +114,8 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "concurrently": "^10.0.5",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "eslint": "9.39.5",
     "eslint-config-next": "16.3.1",
     "tailwindcss": "4.3.3",
@@ -116,6 +125,37 @@
     "postcss": "8.5.24",
     "sharp": "0.35.3",
     "ws": "8.21.0"
+  },
+  "build": {
+    "appId": "com.threadmark.desktop",
+    "productName": "Threadmark",
+    "asar": false,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-desktop/**/*",
+      "desktop/static/**/*",
+      "bin/**/*",
+      "server/**/*",
+      "shared/**/*",
+      "package.json",
+      "!server/**/*.test.ts",
+      "!**/*.map"
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "icon": "desktop/assets/threadmark-icon.icns",
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "title": "Threadmark ${version}",
+      "artifactName": "Threadmark-${version}-${arch}.${ext}"
+    }
   },
   "type": "module",
   "publishConfig": {

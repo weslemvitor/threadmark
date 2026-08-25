@@ -50,7 +50,7 @@ Baileys inbound-only
   -> resolução documentada no ticket
 ```
 
-A Web UI é a interface operacional. A CLI permanece responsável pelo ciclo de vida e pelo diagnóstico, sem uma interface própria de terminal. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md) e a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md).
+A mesma Web UI é a interface operacional no navegador e no aplicativo desktop. A CLI permanece responsável pelo ciclo de vida e pelo diagnóstico, sem uma interface própria de terminal. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md), a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md) e a [ADR 0003](docs/decisions/0003-desktop-local-and-remote-workspaces.md).
 
 ## Automações e apps conectados
 
@@ -85,6 +85,57 @@ threadmark on
 Esta versão é instalada a partir do código-fonte e não está publicada no registro npm. Não use `npm install -g threadmark`: o `npm link` acima registra o executável do clone atual. O tarball e a instalação global já são validados pela CI para uma publicação futura, mas nenhum pacote será enviado ao registro sem uma release explícita. Para atualizar ou remover a instalação, consulte [UPGRADE.md](UPGRADE.md).
 
 Abra [http://127.0.0.1:3000](http://127.0.0.1:3000). Em uma instalação nova, o assistente inicial cria o administrador local e identifica o workspace. Depois, a área **Configurações** permite cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. O login é local; não existe conta hospedada pelo projeto. Use esse endereço exato para que a sessão permaneça no mesmo host da API local.
+
+## Aplicativo para macOS
+
+O shell desktop reutiliza a interface React, os componentes shadcn/ui e o Tailwind existentes. No modo padrão, abrir o aplicativo inicia ou reutiliza o daemon local, sem criar um segundo SQLite ou outra captura do WhatsApp. Fechar a janela encerra somente a interface; o serviço local pode continuar capturando mensagens como já acontece com `threadmark on`.
+
+### Instalar a Developer Preview
+
+A distribuição atual suporta Macs com Apple Silicon (`arm64`) e é publicada como DMG nas [releases oficiais do projeto](https://github.com/weslemvitor/threadmark/releases). Cada release inclui o arquivo `.sha256` correspondente. Com os dois arquivos na mesma pasta, valide o download antes de instalar:
+
+```bash
+shasum -a 256 -c Threadmark-0.3.0-arm64.dmg.sha256
+```
+
+Abra o DMG e arraste `Threadmark.app` para **Aplicativos**. Esta Developer Preview ainda não possui assinatura nem notarização da Apple. Depois de confirmar que o DMG veio da release oficial e que o checksum corresponde, remova somente o atributo de quarentena desse aplicativo e abra-o:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Threadmark.app"
+open -a Threadmark
+```
+
+O comando `xattr` reduz uma proteção do macOS e não deve ser usado em cópias recebidas por terceiros. Assinatura, notarização e atualização automática permanecem planejadas para uma distribuição estável futura.
+
+O workspace do aplicativo fica em `~/Library/Application Support/Threadmark`, fora do `.app`. Substituir o aplicativo por uma versão nova não remove o SQLite, os anexos nem as configurações locais. Consulte o procedimento completo em [UPGRADE.md](UPGRADE.md).
+
+### Desenvolvimento e empacotamento
+
+Durante o desenvolvimento:
+
+```bash
+npm run desktop:dev
+```
+
+Para gerar um `.app` local sem instalador ou um DMG:
+
+```bash
+npm run desktop:pack
+npm run desktop:dist
+```
+
+Para executar todas as verificações de release, gerar o DMG, inspecionar o aplicativo montado e produzir o checksum:
+
+```bash
+npm run release:desktop
+```
+
+Os artefatos ficam em `release/` e não entram no Git. Uma tag `vX.Y.Z` correspondente à versão de `package.json` aciona o workflow de Developer Preview, que repete essas validações antes de anexar o DMG e seu checksum à release. A configuração **Aplicativo** oferece os modos:
+
+- **Nesta máquina:** mantém SQLite, anexos, WhatsApp, automações e IA no Mac atual;
+- **Servidor remoto:** conecta o aplicativo a uma origem HTTPS compatível, sem migrar ou apagar o workspace local.
+
+O cliente remoto é uma fundação para a edição hospedada. O servidor multiusuário empacotado, provisionamento de VPS, domínio, TLS e atualização remota serão entregues em uma fase própria; informar uma URL qualquer não transforma a instalação local atual em serviço hospedado.
 
 As configurações básicas também podem ser preparadas em `.env`:
 
@@ -305,6 +356,7 @@ Threadmark não é afiliado, patrocinado ou endossado pelo WhatsApp, Meta, OpenA
 - [Privacidade e dados locais](docs/privacy.md)
 - [Decisão sobre Web UI e Obsidian](docs/decisions/0001-web-ui-and-obsidian.md)
 - [Decisão sobre organização por features](docs/decisions/0002-feature-first-architecture.md)
+- [Decisão sobre o aplicativo desktop](docs/decisions/0003-desktop-local-and-remote-workspaces.md)
 - [Atualização, rollback e desinstalação](UPGRADE.md)
 - [Política de segurança](SECURITY.md)
 - [Guia de contribuição](CONTRIBUTING.md)

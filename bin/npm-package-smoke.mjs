@@ -13,6 +13,7 @@ const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-package-smoke
 try {
   const packageDirectory = path.join(temporary, "package");
   const installPrefix = path.join(temporary, "install");
+  const npmCache = path.join(temporary, "npm-cache");
   const forbiddenPackageDataDirectory = path.join(temporary, "package-data");
   await mkdir(packageDirectory, { recursive: true });
   await run(npmCommand(), [
@@ -24,6 +25,8 @@ try {
     cwd: projectRoot,
     env: {
       ...process.env,
+      npm_config_cache: npmCache,
+      npm_config_update_notifier: "false",
       SUPPORT_DATA_DIR: forbiddenPackageDataDirectory,
     },
   });
@@ -45,6 +48,11 @@ try {
     archivePath,
   ], {
     cwd: temporary,
+    env: {
+      ...process.env,
+      npm_config_cache: npmCache,
+      npm_config_update_notifier: "false",
+    },
   });
 
   const globalModules = await run(npmCommand(), [

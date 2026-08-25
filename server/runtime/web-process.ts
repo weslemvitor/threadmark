@@ -225,10 +225,10 @@ export function createVinextWebProcessController(
   projectRoot: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): WebProcessController {
-  const vinextCli = path.join(projectRoot, "node_modules", "vinext", "dist", "cli.js");
+  const productionServer = path.join(projectRoot, "bin", "start-web.mjs");
   return new WebProcessController(
     () =>
-      spawn(process.execPath, [vinextCli, "start", "--hostname", "127.0.0.1"], {
+      spawn(process.execPath, [productionServer], {
         cwd: projectRoot,
         env: environment,
         stdio: "inherit",
