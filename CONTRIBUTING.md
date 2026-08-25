@@ -9,7 +9,7 @@ Obrigado por ajudar a tornar o suporte local-first mais seguro e útil. Ao parti
 3. Nunca use dados reais de pessoas ou organizações em fixtures, prints, logs ou commits.
 4. Mantenha o escopo pequeno e preserve mudanças alheias no worktree.
 
-Use fixtures obviamente sintéticas, como `+5500000000000`, `900000000000001@lid` e `120363000000000000@g.us`. Execute `npm run privacy:check` antes de enviar mudanças; a CI reprova identificadores com aparência real.
+Use fixtures obviamente sintéticas, como `+5500000000000`, `pessoa@example.test`, `900000000000001@lid` e `120363000000000000@g.us`. Nunca inclua caminhos absolutos da sua conta local. Execute `npm run privacy:check` antes de enviar mudanças; a CI reprova identificadores com aparência real.
 
 ## Ambiente
 

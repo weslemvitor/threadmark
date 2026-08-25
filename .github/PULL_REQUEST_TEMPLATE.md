@@ -8,7 +8,6 @@
 - [ ] `npm run typecheck`
 - [ ] `npm run lint`
 - [ ] `npm run test:unit`
-- [ ] `npm run test:tui`
 - [ ] `npm run build:web`
 - [ ] `npm run test:package` when packaging or runtime behavior changed
 

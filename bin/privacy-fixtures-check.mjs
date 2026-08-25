@@ -10,6 +10,31 @@ const brazilPhonePatterns = [
   /(?<!\d)\+?55[\s().-]*(?:\d[\s().-]*){10,11}(?!\d)/g,
   /(?<!\d)\(\d{2}\)[\s.-]*\d{4,5}[\s.-]*\d{4}(?!\d)/g,
 ];
+const emailPattern = /\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b/gi;
+const allowedFixtureEmailDomains = new Set([
+  "example.com",
+  "example.net",
+  "example.org",
+  "example.test",
+]);
+const nonEmailProtocolDomains = new Set([
+  "g.us",
+  "s.whatsapp.net",
+]);
+const localUserPathPatterns = [
+  /\/Users\/([^/\s"'`]+)(?:\/|\b)/g,
+  /\/home\/([^/\s"'`]+)(?:\/|\b)/g,
+  /[A-Z]:\\Users\\([^\\\s"'`]+)(?:\\|\b)/gi,
+];
+const allowedFixtureLocalUsers = new Set([
+  "example",
+  "private",
+  "tester",
+  "threadmark",
+  "user",
+  "usuario",
+  "voce",
+]);
 const textFilePattern = /\.(?:cjs|css|html|js|json|jsx|md|mjs|sql|ts|tsx|txt|ya?ml)$/i;
 const ignoredFiles = new Set(["package-lock.json"]);
 
@@ -71,6 +96,31 @@ export function findUnsafeIdentifiers(content, path) {
     }
   }
 
+  for (const match of content.matchAll(emailPattern)) {
+    const start = match.index ?? 0;
+    if (coveredRanges.some(([rangeStart, rangeEnd]) => start >= rangeStart && start < rangeEnd)) continue;
+    const domain = match[1]?.toLowerCase();
+    if (!domain || allowedFixtureEmailDomains.has(domain) || nonEmailProtocolDomains.has(domain)) continue;
+    findings.push({
+      path,
+      line: content.slice(0, start).split("\n").length,
+      kind: "email",
+    });
+  }
+
+  for (const pattern of localUserPathPatterns) {
+    for (const match of content.matchAll(pattern)) {
+      const localUser = match[1]?.toLowerCase();
+      if (localUser && allowedFixtureLocalUsers.has(localUser)) continue;
+      const start = match.index ?? 0;
+      findings.push({
+        path,
+        line: content.slice(0, start).split("\n").length,
+        kind: "local-user-path",
+      });
+    }
+  }
+
   return findings;
 }
 
@@ -100,15 +150,15 @@ export function checkTrackedFiles(cwd = process.cwd()) {
 function main() {
   const findings = checkTrackedFiles();
   if (findings.length === 0) {
-    console.log("Privacy fixture check passed: tracked and new files contain only clearly synthetic phone and WhatsApp identifiers.");
+    console.log("Privacy fixture check passed: publishable files contain no real-looking phone, WhatsApp, email, or local user path.");
     return;
   }
 
-  console.error("Potential personal identifiers found in publishable text:");
+  console.error("Potential personal data found in publishable text:");
   for (const finding of findings) {
     console.error(`- ${finding.path}:${finding.line} (${finding.kind})`);
   }
-  console.error("Replace them with obvious fixtures such as +5500000000000, 900000000000001@lid, or 120363000000000000@g.us.");
+  console.error("Replace them with obvious fixtures such as +5500000000000, pessoa@example.test, 900000000000001@lid, or 120363000000000000@g.us.");
   process.exitCode = 1;
 }
 
