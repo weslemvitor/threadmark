@@ -42,6 +42,11 @@ const validTurn = {
   assistantMessage: "A investigação readonly foi concluída.",
   phase: "conclusion",
   threadSummary: "Investigação concluída.",
+  findings: [{
+    statement: "A conversa atual sustenta a orientação proposta.",
+    kind: "fact",
+    evidenceReferences: ["message-thread"],
+  }],
   evidence: [{
     source: "conversation",
     summary: "A conversa atual sustenta a orientação proposta.",
@@ -425,6 +430,11 @@ test("runner Codex rejeita precedente resolvido que não veio no contexto", asyn
         JSON.stringify(isTurn
           ? {
               ...validTurn,
+              findings: [{
+                statement: "O precedente inventado confirmaria a orientação.",
+                kind: "fact",
+                evidenceReferences: ["ticket-inventado"],
+              }],
               evidence: [{
                 source: "resolved_ticket",
                 summary: "Precedente inventado.",

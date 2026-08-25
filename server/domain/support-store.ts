@@ -13650,6 +13650,7 @@ export class SupportStore {
       assistantMessage,
       phase: phase as InvestigationTurnResultDto["phase"],
       threadSummary,
+      findings: this.parseInvestigationFindings(parsed.findings),
       evidence: this.parseInvestigationEvidence(
         JSON.stringify(parsed.evidence ?? []),
       ),
@@ -13658,6 +13659,28 @@ export class SupportStore {
       confidence,
       toolExecutions: this.parseInvestigationToolExecutions(json),
     };
+  }
+
+  private parseInvestigationFindings(
+    value: unknown,
+  ): InvestigationTurnResultDto["findings"] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const statement = trimmedString(item.statement);
+      const kind = item.kind;
+      if (
+        !statement ||
+        (kind !== "fact" && kind !== "hypothesis" && kind !== "missing_information")
+      ) return [];
+      const evidenceReferences = Array.isArray(item.evidenceReferences)
+        ? item.evidenceReferences.flatMap((reference) => {
+            const parsed = trimmedString(reference);
+            return parsed ? [parsed] : [];
+          })
+        : [];
+      return [{ statement, kind, evidenceReferences }];
+    });
   }
 
   private parseInvestigationToolExecutions(

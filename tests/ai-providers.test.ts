@@ -77,6 +77,11 @@ const validTurn = {
   assistantMessage: "A investigação foi concluída.",
   phase: "conclusion",
   threadSummary: "Investigação concluída.",
+  findings: [{
+    statement: "A demanda foi confirmada no contexto atual do ticket.",
+    kind: "fact",
+    evidenceReferences: ["message-1"],
+  }],
   evidence: [{
     source: "conversation",
     summary: "A demanda foi confirmada no contexto atual do ticket.",
@@ -548,6 +553,11 @@ test("investigação profunda remota só cita precedentes recebidos no ticket", 
     async generateJson() {
       return {
         ...validTurn,
+        findings: [{
+          statement: "O precedente citado confirmaria a orientação.",
+          kind: "fact",
+          evidenceReferences: ["ticket-inventado"],
+        }],
         evidence: [{
           source: "resolved_ticket",
           summary: "Precedente citado.",
@@ -570,6 +580,11 @@ test("investigação profunda descarta citação de conversa inválida sem perde
     async generateJson() {
       return {
         ...validTurn,
+        findings: [{
+          statement: "A mensagem inventada confirmaria a orientação.",
+          kind: "fact",
+          evidenceReferences: ["message-inventada"],
+        }],
         evidence: [{
           source: "conversation",
           summary: "Mensagem supostamente presente.",
@@ -598,6 +613,11 @@ test("investigação profunda audita leitura knowledge por ferramenta", async ()
     async generateJson() {
       return {
         ...validTurn,
+        findings: [{
+          statement: "A regra documentada confirma a orientação.",
+          kind: "fact",
+          evidenceReferences: [reference],
+        }],
         evidence: [{
           source: "knowledge",
           summary: "Regra documentada.",

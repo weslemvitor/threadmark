@@ -316,6 +316,11 @@ export interface InvestigationTurnResult {
   assistantMessage: string;
   phase: InvestigationTurnPhase;
   threadSummary: string;
+  findings: Array<{
+    statement: string;
+    kind: "fact" | "hypothesis" | "missing_information";
+    evidenceReferences: string[];
+  }>;
   evidence: Array<{
     source:
       | "conversation"

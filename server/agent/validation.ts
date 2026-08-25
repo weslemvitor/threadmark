@@ -301,6 +301,13 @@ export const investigationTurnResultSchema = z
     assistantMessage: z.string().trim().min(1).max(40_000),
     phase: z.enum(["analysis", "needs_information", "conclusion"]),
     threadSummary: z.string().trim().min(1).max(12_000),
+    findings: z.array(
+      z.object({
+        statement: z.string().trim().min(1).max(4_000),
+        kind: z.enum(["fact", "hypothesis", "missing_information"]),
+        evidenceReferences: z.array(z.string().trim().min(1).max(4_000)).max(10),
+      }).strict(),
+    ).min(1).max(30),
     evidence: z.array(
       z.object({
         source: z.enum([
@@ -334,6 +341,27 @@ export const investigationTurnResultSchema = z
       .max(5),
   })
   .superRefine((result, context) => {
+    const evidenceReferences = new Set(
+      result.evidence.flatMap((item) => item.reference ? [item.reference] : []),
+    );
+    for (const [index, finding] of result.findings.entries()) {
+      if (finding.kind === "fact" && finding.evidenceReferences.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "evidenceReferences"],
+          message: "fato comprovado exige ao menos uma referência auditável",
+        });
+      }
+      for (const [referenceIndex, reference] of finding.evidenceReferences.entries()) {
+        if (evidenceReferences.has(reference)) continue;
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "evidenceReferences", referenceIndex],
+          message: "a referência da descoberta deve existir em evidence",
+        });
+      }
+    }
+
     for (const [index, evidence] of result.evidence.entries()) {
       if (
         evidence.source !== "conversation" &&
@@ -452,21 +480,39 @@ export function parseInvestigationTurnResult(
   );
   const discardedConversationEvidence =
     evidence.length !== parsed.evidence.length;
-  const lostAllEvidence =
-    discardedConversationEvidence && evidence.length === 0;
+  const retainedReferences = new Set(
+    evidence.flatMap((item) => item.reference ? [item.reference] : []),
+  );
+  const findings = parsed.findings.flatMap((finding) => {
+    const evidenceReferences = finding.evidenceReferences.filter((reference) =>
+      retainedReferences.has(reference)
+    );
+    if (finding.kind === "fact" && evidenceReferences.length === 0) return [];
+    return [{ ...finding, evidenceReferences }];
+  });
+  const discardedFinding = findings.length !== parsed.findings.length;
+  const lostRequiredGrounding = discardedConversationEvidence &&
+    (evidence.length === 0 || discardedFinding);
   const normalized = discardedConversationEvidence
     ? {
         ...parsed,
         phase:
-          lostAllEvidence && parsed.phase === "conclusion"
+          lostRequiredGrounding && parsed.phase === "conclusion"
             ? "analysis" as const
             : parsed.phase,
         evidence,
-        suggestedResponse: lostAllEvidence ? null : parsed.suggestedResponse,
-        nextAction: lostAllEvidence
+        findings: lostRequiredGrounding
+          ? [{
+              statement: "A conclusão perdeu a evidência necessária durante a validação.",
+              kind: "missing_information" as const,
+              evidenceReferences: [],
+            }]
+          : findings,
+        suggestedResponse: lostRequiredGrounding ? null : parsed.suggestedResponse,
+        nextAction: lostRequiredGrounding
           ? "Continue a investigação e cite o ID exato de uma mensagem fornecida antes de concluir."
           : parsed.nextAction,
-        confidence: lostAllEvidence
+        confidence: lostRequiredGrounding
           ? Math.min(parsed.confidence, 0.5)
           : parsed.confidence,
       }

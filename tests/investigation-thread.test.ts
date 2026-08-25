@@ -70,6 +70,11 @@ function turnResult(
     assistantMessage: "Investiguei o caso em modo somente leitura.",
     phase: "conclusion",
     threadSummary: "Pedidos ausentes; consulta readonly concluída.",
+    findings: [{
+      statement: "O cliente relatou pedidos ausentes.",
+      kind: "fact",
+      evidenceReferences: ["wa-thread-message"],
+    }],
     evidence: [
       {
         source: "conversation",

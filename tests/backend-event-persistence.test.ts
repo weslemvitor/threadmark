@@ -90,6 +90,7 @@ test("timeline persiste e expõe eventos descritivos da sala manual e do status"
     assistantMessage: "Regra confirmada.",
     phase: "conclusion",
     threadSummary: "Regra da métrica confirmada.",
+    findings: [],
     evidence: [],
     suggestedResponse: "A composição foi confirmada.",
     nextAction: "Revisar resposta.",

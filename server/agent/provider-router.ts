@@ -313,6 +313,11 @@ function stalledInvestigationResult(
     assistantMessage:
       "A investigação entrou em repetição sem solicitar uma nova operação válida. As leituras já realizadas foram preservadas, mas o agente precisa de uma nova orientação para prosseguir com segurança.",
     phase: "needs_information",
+    findings: [{
+      statement: "A investigação repetiu operações sem produzir uma nova verificação válida.",
+      kind: "missing_information",
+      evidenceReferences: [],
+    }],
     suggestedResponse: null,
     nextAction:
       "Revise as operações repetidas e oriente um novo caminho de investigação.",
@@ -456,6 +461,11 @@ function enforceVerifiedTechnicalEvidence(
       "A orientação técnica não foi liberada porque as referências apresentadas não correspondem a uma execução local concluída com sucesso.",
     phase: blocksOperationalResponse ? "needs_information" : result.phase,
     threadSummary: "Orientação técnica aguardando evidência local auditável.",
+    findings: [{
+      statement: "A orientação técnica ainda não possui uma referência local validada.",
+      kind: "missing_information",
+      evidenceReferences: [],
+    }],
     evidence: verifiedEvidence,
     suggestedResponse: null,
     nextAction:

@@ -1139,11 +1139,18 @@ export interface InvestigationTurnResultDto {
   assistantMessage: string;
   phase: InvestigationTurnPhase;
   threadSummary: string;
+  findings: InvestigationFindingDto[];
   evidence: InvestigationEvidenceDto[];
   suggestedResponse: string | null;
   nextAction: string | null;
   confidence: number;
   toolExecutions: InvestigationToolExecutionDto[];
+}
+
+export interface InvestigationFindingDto {
+  statement: string;
+  kind: "fact" | "hypothesis" | "missing_information";
+  evidenceReferences: string[];
 }
 
 export interface InvestigationThreadTurnDto {

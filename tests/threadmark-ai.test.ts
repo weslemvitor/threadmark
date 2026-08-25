@@ -81,6 +81,11 @@ function result(): InvestigationTurnResult {
     assistantMessage: "O ticket relata uma divergência no dashboard.",
     phase: "conclusion",
     threadSummary: "Ticket localizado e contexto lido.",
+    findings: [{
+      statement: "O ticket relata uma divergência no dashboard.",
+      kind: "fact",
+      evidenceReferences: ["message-ai"],
+    }],
     evidence: [
       {
         source: "conversation",

@@ -79,6 +79,7 @@ const threadResult: InvestigationTurnResult = {
   assistantMessage: "Analisei o caso completo.",
   phase: "conclusion",
   threadSummary: "Caso analisado e concluído.",
+  findings: [],
   evidence: [],
   suggestedResponse: "Esta é a resposta segura.",
   nextAction: "Revisar a resposta.",

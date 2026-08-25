@@ -7,7 +7,10 @@ import test from "node:test";
 import { CodexSupportAgent } from "../server/agent/codex-runner.js";
 import { buildInvestigationThreadPrompt } from "../server/agent/prompt.js";
 import type { InvestigationThreadInput } from "../server/agent/types.js";
-import { investigationTurnResultSchema } from "../server/agent/validation.js";
+import {
+  investigationTurnResultSchema,
+  parseInvestigationTurnResult,
+} from "../server/agent/validation.js";
 
 function input(): InvestigationThreadInput {
   return {
@@ -48,6 +51,11 @@ const validTurn = {
   assistantMessage: "A consulta readonly confirmou o comportamento.",
   phase: "conclusion",
   threadSummary: "Comportamento confirmado em consulta readonly.",
+  findings: [{
+    statement: "A consulta retornou o pedido.",
+    kind: "fact",
+    evidenceReferences: ["SELECT ... LIMIT 10"],
+  }],
   evidence: [
     {
       source: "database",
@@ -78,6 +86,9 @@ test("prompt conversacional mantém WhatsApp inbound e fontes técnicas readonly
   assert.match(prompt, /pelo menos uma evidence auditavel/i);
   assert.match(prompt, /Siga esta ordem em todo turno/i);
   assert.match(prompt, /Nao transforme correlacao em causa/i);
+  assert.match(prompt, /Registre cada descoberta material em findings/i);
+  assert.match(prompt, /kind=fact somente quando evidenceReferences/i);
+  assert.match(prompt, /Toda afirmacao factual material apresentada em assistantMessage/i);
 });
 
 test("schema do turno exige conteúdo completo e bloqueia resposta durante análise", () => {
@@ -97,6 +108,61 @@ test("schema do turno exige conteúdo completo e bloqueia resposta durante anál
     }).success,
     false,
   );
+});
+
+test("schema exige referência auditável para fatos estruturados", () => {
+  assert.equal(
+    investigationTurnResultSchema.safeParse({ ...validTurn, findings: [] }).success,
+    false,
+  );
+  assert.equal(
+    investigationTurnResultSchema.safeParse({
+      ...validTurn,
+      findings: [{
+        statement: "A causa foi confirmada.",
+        kind: "fact",
+        evidenceReferences: [],
+      }],
+    }).success,
+    false,
+  );
+  assert.equal(
+    investigationTurnResultSchema.safeParse({
+      ...validTurn,
+      findings: [{
+        statement: "A causa foi confirmada.",
+        kind: "fact",
+        evidenceReferences: ["referência-inventada"],
+      }],
+    }).success,
+    false,
+  );
+});
+
+test("parser rebaixa conclusão sustentada por mensagem de conversa inventada", () => {
+  const parsed = parseInvestigationTurnResult({
+    ...validTurn,
+    findings: [{
+      statement: "A mensagem inexistente confirmou a causa.",
+      kind: "fact",
+      evidenceReferences: ["message-invented"],
+    }],
+    evidence: [{
+      source: "conversation",
+      summary: "Mensagem que não existe no contexto fornecido.",
+      reference: "message-invented",
+    }],
+  }, input());
+
+  assert.equal(parsed.phase, "analysis");
+  assert.equal(parsed.suggestedResponse, null);
+  assert.equal(parsed.confidence, 0.5);
+  assert.deepEqual(parsed.evidence, []);
+  assert.deepEqual(parsed.findings, [{
+    statement: "A conclusão perdeu a evidência necessária durante a validação.",
+    kind: "missing_information",
+    evidenceReferences: [],
+  }]);
 });
 
 test("runner usa schema conversacional e devolve resultado estruturado", async () => {

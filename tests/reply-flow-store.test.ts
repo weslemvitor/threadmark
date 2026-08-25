@@ -137,6 +137,7 @@ function threadResult(
     assistantMessage: "A investigação foi concluída com as evidências disponíveis.",
     phase: "conclusion",
     threadSummary: "Investigação concluída.",
+    findings: [],
     evidence: [],
     suggestedResponse: "Estamos verificando os pedidos informados.",
     nextAction: "Acompanhar o processamento.",
