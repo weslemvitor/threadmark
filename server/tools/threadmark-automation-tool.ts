@@ -26,13 +26,25 @@ const MUTATION_ROLES = new Set<AuthRole>(["owner", "admin"]);
 const WORKFLOW_STATUSES = ["draft", "active", "paused", "archived"] as const;
 const TRIGGER_EVENTS = [
   "ticket_created",
+  "message_attached",
   "priority_changed",
   "status_changed",
+  "ticket_entered_triage",
+  "ticket_entered_in_progress",
+  "ticket_waiting_customer",
+  "ticket_waiting_internal",
   "ticket_resolved",
+  "ticket_cancelled",
+  "ticket_archived",
+  "ticket_assigned",
+  "ticket_unassigned",
+  "ticket_category_added",
+  "ticket_category_removed",
 ] as const;
 const CONDITION_FIELDS = ["priority", "status", "category", "assignee"] as const;
 const INTERNAL_ACTIONS = [
   "assign_ticket",
+  "assign_ticket_by_capacity",
   "change_priority",
   "change_status",
   "add_internal_note",
@@ -88,16 +100,18 @@ const deleteSchema = z.object({
 }).strict();
 
 interface OperatorIdentity {
+  messageId: string;
+  messageOrder: number;
   threadId: string;
   actor: string;
   role: AuthRole;
   body: string;
-  createdAt: string;
 }
 
 interface AutomationDraftRow {
   id: string;
   thread_id: string;
+  operator_message_id: string;
   intent: "create" | "update";
   target_workflow_id: string | null;
   name: string;
@@ -106,7 +120,6 @@ interface AutomationDraftRow {
   base_updated_at: string | null;
   state: "pending" | "applied";
   applied_workflow_id: string | null;
-  created_at: string;
 }
 
 export class ThreadmarkAutomationTool {
@@ -243,6 +256,13 @@ export class ThreadmarkAutomationTool {
       },
       internalActions: [
         { actionId: "assign_ticket", input: { assigneeId: "<active-user-id>" } },
+        {
+          actionId: "assign_ticket_by_capacity",
+          input: {
+            members: [{ assigneeId: "<active-user-id>", maxTickets: 5 }],
+          },
+          behavior: "menor ocupação proporcional, fila FIFO quando todos atingirem o limite",
+        },
         { actionId: "change_priority", input: { priority: PRIORITIES } },
         { actionId: "change_status", input: { status: TICKET_STATUSES } },
         { actionId: "add_internal_note", input: { body: "texto com variáveis opcionais" } },
@@ -378,7 +398,16 @@ export class ThreadmarkAutomationTool {
     if (!draft || draft.thread_id !== operator.threadId) {
       throw new Error("A proposta não pertence a esta conversa do Threadmark AI.");
     }
-    if (Date.parse(operator.createdAt) <= Date.parse(draft.created_at)) {
+    const sourceMessage = this.database.prepare(`
+      SELECT rowid AS message_order
+      FROM investigation_thread_messages
+      WHERE id = ?
+    `).get(draft.operator_message_id) as { message_order: number } | undefined;
+    if (
+      !sourceMessage ||
+      operator.messageId === draft.operator_message_id ||
+      operator.messageOrder <= sourceMessage.message_order
+    ) {
       throw new Error("A confirmação precisa ser enviada depois da apresentação da proposta.");
     }
     if (draft.state === "applied" && draft.applied_workflow_id) {
@@ -479,6 +508,31 @@ export class ThreadmarkAutomationTool {
         const user = this.database.prepare("SELECT active FROM local_users WHERE id = ?").get(assigneeId) as { active: number } | undefined;
         if (!user?.active) throw new Error("O responsável escolhido não é um usuário ativo do Threadmark.");
       }
+      if (node.config.actionId === "assign_ticket_by_capacity") {
+        const members = input.members;
+        if (!Array.isArray(members) || members.length === 0) {
+          throw new Error("Selecione ao menos um usuário para a distribuição por capacidade.");
+        }
+        const seen = new Set<string>();
+        for (const member of members) {
+          if (!member || Array.isArray(member) || typeof member !== "object") {
+            throw new Error("A capacidade da equipe é inválida.");
+          }
+          const assigneeId = requiredString(member.assigneeId, "assigneeId");
+          const maxTickets = Number(member.maxTickets);
+          if (seen.has(assigneeId)) throw new Error("Um usuário aparece mais de uma vez na capacidade.");
+          seen.add(assigneeId);
+          if (!Number.isInteger(maxTickets) || maxTickets < 1 || maxTickets > 500) {
+            throw new Error("O limite de tickets precisa estar entre 1 e 500.");
+          }
+          const user = this.database.prepare(
+            "SELECT active FROM local_users WHERE id = ?",
+          ).get(assigneeId) as { active: number } | undefined;
+          if (!user?.active) {
+            throw new Error("Todos os responsáveis da capacidade precisam estar ativos.");
+          }
+        }
+      }
       if (node.config.actionId === "change_priority" && !PRIORITIES.includes(input.priority as typeof PRIORITIES[number])) {
         throw new Error("A prioridade da automação é inválida.");
       }
@@ -509,7 +563,8 @@ export class ThreadmarkAutomationTool {
 
   private requireMutationOperator(messageId: string): OperatorIdentity {
     const row = this.database.prepare(`
-      SELECT message.thread_id, message.body, message.created_at,
+      SELECT message.id, message.rowid AS message_order,
+             message.thread_id, message.body,
              message.actor_user_id, message.actor_role,
              COALESCE(user.display_name, thread.created_by, 'Operador local') AS actor,
              user.role AS current_role, user.active AS user_active
@@ -518,9 +573,10 @@ export class ThreadmarkAutomationTool {
       LEFT JOIN local_users user ON user.id = message.actor_user_id
       WHERE message.id = ? AND message.role = 'operator' AND thread.scope = 'workspace'
     `).get(messageId) as {
+      id: string;
+      message_order: number;
       thread_id: string;
       body: string;
-      created_at: string;
       actor_user_id: string | null;
       actor_role: AuthRole | null;
       actor: string;
@@ -533,7 +589,14 @@ export class ThreadmarkAutomationTool {
     if (!role || !MUTATION_ROLES.has(role)) {
       throw new Error("Somente proprietário ou administrador pode alterar automações pelo Threadmark AI.");
     }
-    return { threadId: row.thread_id, actor: row.actor, role, body: row.body, createdAt: row.created_at };
+    return {
+      messageId: row.id,
+      messageOrder: row.message_order,
+      threadId: row.thread_id,
+      actor: row.actor,
+      role,
+      body: row.body,
+    };
   }
 
   private success(

@@ -129,7 +129,11 @@ test("upsert persiste o número e o read model corrige registro privado legado",
     const conversations = store.listConversations({ attention: "all" }).items;
     assert.equal(
       conversations.find((conversation) => conversation.id === direct.id)?.subject,
-      "90000000000101",
+      "Usuário não identificado",
+    );
+    assert.equal(
+      store.getConversationMessages(direct.id).conversation.subject,
+      "Usuário não identificado",
     );
     assert.equal(
       conversations.find((conversation) => conversation.id === namedContact.id)

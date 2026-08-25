@@ -177,6 +177,27 @@ test("readiness exige HTML, CSS e JavaScript do mesmo build", async () => {
   );
 });
 
+test("readiness aceita os assets de produção emitidos pelo Vinext", async () => {
+  const responses = new Map<string, { status: number; body?: string }>([
+    [
+      "http://127.0.0.1:3999/",
+      {
+        status: 200,
+        body: '<link rel="stylesheet" href="/_next/static/css/layout.css"><script src="/_next/static/chunks/index.js"></script>',
+      },
+    ],
+    ["http://127.0.0.1:3999/_next/static/css/layout.css", { status: 200 }],
+    ["http://127.0.0.1:3999/_next/static/chunks/index.js", { status: 200 }],
+  ]);
+  const fetcher = (async (input: string | URL | Request) => {
+    const key = input instanceof Request ? input.url : String(input);
+    const fixture = responses.get(key) ?? { status: 404 };
+    return new Response(fixture.body ?? "", { status: fixture.status });
+  }) as typeof fetch;
+
+  await verifyWebBuild("http://127.0.0.1:3999", fetcher);
+});
+
 test("lock impede dois builds de escrever no dist ao mesmo tempo", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-web-lock-"));
   const lockPath = webBuildLockPath(root);

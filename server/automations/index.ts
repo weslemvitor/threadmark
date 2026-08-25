@@ -1,4 +1,4 @@
-export { AutomationEngine } from "./engine.js";
+export { AutomationCapacityDeferredError, AutomationEngine } from "./engine.js";
 export { AutomationStore } from "./store.js";
 export {
   AutomationValidationError,

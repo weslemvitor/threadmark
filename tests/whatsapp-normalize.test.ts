@@ -267,6 +267,30 @@ describe("WhatsApp inbound normalization", () => {
     assert.equal(envelope.eligibleForTicket, false);
   });
 
+  it("trata atualização administrativa de grupo como metadado não elegível", () => {
+    const update: WAMessage = {
+      key: {
+        id: "GROUP-STUB-1",
+        remoteJid: groupJid,
+        participant: customerJid,
+        fromMe: false,
+      },
+      messageTimestamp: 1_710_000_000,
+      messageStubType: 27 as proto.WebMessageInfo.StubType,
+      messageStubParameters: [
+        '{"id":"900000000000108@lid","admin":null}',
+      ],
+    };
+    const [envelope] = normalizeMessagesUpsert(
+      { messages: [update], type: "notify" },
+      { allowlistedGroupJids: [groupJid] },
+    );
+
+    assert.ok(envelope);
+    assert.equal(envelope.content.kind, "system");
+    assert.equal(envelope.eligibleForTicket, false);
+  });
+
   it("normaliza reação com alvo, emoji e horário sem torná-la elegível para ticket", () => {
     const [envelope] = normalizeMessagesUpsert(
       {

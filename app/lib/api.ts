@@ -20,6 +20,8 @@ import type {
   ThreadmarkAiThreadListResponse,
   TicketListResponse,
   CreateCategoryInput,
+  DeleteCategoryInput,
+  DeleteCategoryResponse,
   TicketCategoryAttachInput,
   TicketAssigneeDto,
   TriageAiSettingsDto,
@@ -267,6 +269,19 @@ export async function createCategory(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function deleteCategory(
+  categoryId: string,
+  input: DeleteCategoryInput = {},
+): Promise<DeleteCategoryResponse> {
+  return request<DeleteCategoryResponse>(
+    `/api/categories/${encodeURIComponent(categoryId)}`,
+    {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function attachCategoryToTicket(

@@ -80,6 +80,40 @@ function createTicket(
   });
 }
 
+function addSupportUser(
+  database: ReturnType<typeof createDatabase>,
+  id: string,
+  displayName: string,
+) {
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO local_users (
+      id, username, display_name, role, password_hash, active,
+      failed_login_attempts, locked_until, last_login_at,
+      password_changed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'operator', 'test-only', 1, 0, NULL, NULL, ?, ?, ?)
+  `).run(id, id, displayName, now, now, now);
+}
+
+function capacityWorkflowDefinition(
+  members: Array<{ assigneeId: string; maxTickets: number }>,
+) {
+  return {
+    nodes: [
+      { id: "created", type: "trigger" as const, config: { eventType: "ticket_created" } },
+      {
+        id: "capacity",
+        type: "internal_action" as const,
+        config: {
+          actionId: "assign_ticket_by_capacity",
+          input: { members },
+        },
+      },
+    ],
+    edges: [{ id: "created-capacity", source: "created", target: "capacity" }],
+  };
+}
+
 test("ponte captura evento inserido depois do cursor mesmo com data retroativa", async () => {
   const current = await fixture();
   try {
@@ -232,6 +266,72 @@ test("ponte captura apenas eventos novos e executa ação interna uma única vez
   }
 });
 
+test("mudanças de etapa disparam os gatilhos específicos do ciclo do ticket", async () => {
+  const current = await fixture();
+  try {
+    assert.equal(current.runtime.pumpTicketEvents(), 0);
+    const expectedRuns = new Map<string, number>([
+      ["ticket_entered_triage", 1],
+      ["ticket_entered_in_progress", 3],
+      ["ticket_waiting_customer", 1],
+      ["ticket_waiting_internal", 1],
+      ["ticket_cancelled", 1],
+      ["ticket_archived", 1],
+    ]);
+    const workflows = new Map<string, string>();
+
+    for (const eventType of expectedRuns.keys()) {
+      const workflow = current.runtime.workflows.createWorkflow({
+        name: `Gatilho ${eventType}`,
+        actor: "Teste",
+        definition: {
+          nodes: [
+            { id: "trigger", type: "trigger", config: { eventType } },
+            {
+              id: "note",
+              type: "internal_action",
+              config: {
+                actionId: "add_internal_note",
+                input: { body: `Executado por ${eventType}.` },
+              },
+            },
+          ],
+          edges: [{ id: "trigger-note", source: "trigger", target: "note" }],
+        },
+      });
+      current.runtime.workflows.setWorkflowStatus(workflow.id, "active", "Teste");
+      workflows.set(eventType, workflow.id);
+    }
+
+    const ticket = createTicket(current.support, undefined, "status-trigger-message");
+    for (const status of [
+      "in_progress",
+      "triage",
+      "in_progress",
+      "waiting_customer",
+      "blocked",
+      "in_progress",
+      "cancelled",
+      "archived",
+    ] as const) {
+      current.support.updateTicketStatus(ticket.id, { status, actor: "Operador" });
+    }
+
+    assert.ok(current.runtime.pumpTicketEvents() > 0);
+    await current.runtime.engine.runUntilIdle();
+
+    for (const [eventType, expected] of expectedRuns) {
+      assert.equal(
+        current.runtime.workflows.listRuns({ workflowId: workflows.get(eventType)! }).length,
+        expected,
+        `quantidade de execuções para ${eventType}`,
+      );
+    }
+  } finally {
+    await current.close();
+  }
+});
+
 test("condição após espera consulta o estado atual do ticket", async () => {
   const current = await fixture();
   try {
@@ -345,6 +445,194 @@ test("automação arquiva um ticket resolvido após a etapa de espera", async ()
       current.runtime.workflows.listRuns({ workflowId: workflow.id })[0]?.status,
       "completed",
     );
+  } finally {
+    await current.close();
+  }
+});
+
+test("distribuição por capacidade atribui ao atendente disponível e persiste fila FIFO", async () => {
+  const current = await fixture();
+  try {
+    addSupportUser(current.database, "owner-user", "Pessoa Proprietária");
+    addSupportUser(current.database, "operator-user", "Pessoa Operadora");
+
+    const occupiedByOwner = Array.from({ length: 4 }, (_, index) =>
+      createTicket(current.support, undefined, `capacity-owner-${index}`));
+    for (const ticket of occupiedByOwner) {
+      current.support.updateTicketAssignee(ticket.id, "owner-user", "Teste");
+    }
+    const occupiedByOperator = createTicket(
+      current.support,
+      undefined,
+      "capacity-operator",
+    );
+    current.support.updateTicketAssignee(occupiedByOperator.id, "operator-user", "Teste");
+    assert.equal(current.runtime.pumpTicketEvents(), 0);
+
+    const workflow = current.runtime.workflows.createWorkflow({
+      name: "Distribuir por capacidade",
+      actor: "Teste",
+      definition: capacityWorkflowDefinition([
+        { assigneeId: "owner-user", maxTickets: 5 },
+        { assigneeId: "operator-user", maxTickets: 1 },
+      ]),
+    });
+    current.runtime.workflows.setWorkflowStatus(workflow.id, "active", "Teste");
+
+    const assigned = createTicket(current.support, undefined, "capacity-assigned");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+    assert.equal(current.support.getTicketDetail(assigned.id).assignee?.id, "owner-user");
+
+    const queuedFirst = createTicket(current.support, undefined, "capacity-queued-first");
+    const queuedSecond = createTicket(current.support, undefined, "capacity-queued-second");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+    assert.equal(current.support.getTicketDetail(queuedFirst.id).assignee, null);
+    assert.equal(current.support.getTicketDetail(queuedFirst.id).assignmentPending, true);
+    assert.equal(current.support.getTicketDetail(queuedSecond.id).assignmentPending, true);
+
+    const queuedRows = current.database.prepare(`
+      SELECT ticket_id FROM automation_assignment_queue ORDER BY queue_order
+    `).all() as Array<{ ticket_id: string }>;
+    assert.deepEqual(queuedRows.map((row) => row.ticket_id), [queuedFirst.id, queuedSecond.id]);
+
+    current.support.updateTicketStatus(occupiedByOperator.id, {
+      status: "cancelled",
+      actor: "Teste",
+      reason: "Liberar capacidade para validar a fila.",
+    });
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+
+    assert.equal(current.support.getTicketDetail(queuedFirst.id).assignee?.id, "operator-user");
+    assert.equal(current.support.getTicketDetail(queuedFirst.id).assignmentPending, false);
+    assert.equal(current.support.getTicketDetail(queuedSecond.id).assignee, null);
+    assert.equal(current.support.getTicketDetail(queuedSecond.id).assignmentPending, true);
+  } finally {
+    await current.close();
+  }
+});
+
+test("fila de capacidade sobrevive ao reinício do runtime e ignora tickets finalizados", async () => {
+  const current = await fixture();
+  try {
+    addSupportUser(current.database, "operator-only", "Pessoa operadora");
+    const occupied = createTicket(current.support, undefined, "restart-occupied");
+    current.support.updateTicketAssignee(occupied.id, "operator-only", "Teste");
+    assert.equal(current.runtime.pumpTicketEvents(), 0);
+    const workflow = current.runtime.workflows.createWorkflow({
+      name: "Fila persistente",
+      actor: "Teste",
+      definition: capacityWorkflowDefinition([
+        { assigneeId: "operator-only", maxTickets: 1 },
+      ]),
+    });
+    current.runtime.workflows.setWorkflowStatus(workflow.id, "active", "Teste");
+    const waiting = createTicket(current.support, undefined, "restart-waiting");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, true);
+
+    const restarted = new AutomationRuntime(
+      current.database,
+      current.support,
+      new LocalSecretVault(current.directory),
+      { pollIntervalMs: 5 },
+    );
+    current.support.updateTicketStatus(occupied.id, {
+      status: "resolved",
+      actor: "Teste",
+      resolution: { summary: "Vaga liberada.", validatedBy: "Teste" },
+    });
+    restarted.pumpTicketEvents();
+    await restarted.engine.runUntilIdle();
+
+    assert.equal(current.support.getTicketDetail(waiting.id).assignee?.id, "operator-only");
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, false);
+  } finally {
+    await current.close();
+  }
+});
+
+test("editar o limite reavalia imediatamente a fila sem tirar a automação do ar", async () => {
+  const current = await fixture();
+  try {
+    addSupportUser(current.database, "capacity-editor", "Pessoa da equipe");
+    const occupied = createTicket(current.support, undefined, "capacity-edit-occupied");
+    current.support.updateTicketAssignee(occupied.id, "capacity-editor", "Teste");
+    assert.equal(current.runtime.pumpTicketEvents(), 0);
+
+    const workflow = current.runtime.workflows.createWorkflow({
+      name: "Capacidade editável",
+      actor: "Teste",
+      definition: capacityWorkflowDefinition([
+        { assigneeId: "capacity-editor", maxTickets: 1 },
+      ]),
+    });
+    current.runtime.workflows.setWorkflowStatus(workflow.id, "active", "Teste");
+    const waiting = createTicket(current.support, undefined, "capacity-edit-waiting");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, true);
+
+    const updated = current.runtime.workflows.updateWorkflow(workflow.id, {
+      actor: "Teste",
+      definition: capacityWorkflowDefinition([
+        { assigneeId: "capacity-editor", maxTickets: 2 },
+      ]),
+    });
+    assert.equal(updated.status, "active");
+    await current.runtime.engine.runUntilIdle();
+
+    assert.equal(current.support.getTicketDetail(waiting.id).assignee?.id, "capacity-editor");
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, false);
+  } finally {
+    await current.close();
+  }
+});
+
+test("distribuição ignora atendente inativo e preserva atribuição manual da fila", async () => {
+  const current = await fixture();
+  try {
+    addSupportUser(current.database, "inactive-capacity", "Pessoa inativa");
+    addSupportUser(current.database, "active-capacity", "Pessoa ativa");
+    current.database.prepare(
+      "UPDATE local_users SET active = 0 WHERE id = ?",
+    ).run("inactive-capacity");
+    const occupied = createTicket(current.support, undefined, "manual-queue-occupied");
+    current.support.updateTicketAssignee(occupied.id, "active-capacity", "Teste");
+    assert.equal(current.runtime.pumpTicketEvents(), 0);
+
+    const workflow = current.runtime.workflows.createWorkflow({
+      name: "Capacidade com usuário inativo",
+      actor: "Teste",
+      definition: capacityWorkflowDefinition([
+        { assigneeId: "inactive-capacity", maxTickets: 5 },
+        { assigneeId: "active-capacity", maxTickets: 1 },
+      ]),
+    });
+    current.runtime.workflows.setWorkflowStatus(workflow.id, "active", "Teste");
+    const waiting = createTicket(current.support, undefined, "manual-queue-waiting");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+
+    assert.equal(current.support.getTicketDetail(waiting.id).assignee, null);
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, true);
+
+    current.support.updateTicketAssignee(waiting.id, "active-capacity", "Operador local");
+    current.runtime.pumpTicketEvents();
+    await current.runtime.engine.runUntilIdle();
+
+    assert.equal(
+      current.support.getTicketDetail(waiting.id).assignee?.id,
+      "active-capacity",
+    );
+    assert.equal(current.support.getTicketDetail(waiting.id).assignmentPending, false);
+    const remaining = current.database.prepare(
+      "SELECT COUNT(*) AS count FROM automation_assignment_queue WHERE ticket_id = ?",
+    ).get(waiting.id) as { count: number };
+    assert.equal(remaining.count, 0);
   } finally {
     await current.close();
   }

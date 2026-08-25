@@ -3334,4 +3334,143 @@ export const migrations: Migration[] = [
         );
     `,
   },
+  {
+    version: 60,
+    name: "remove_whatsapp_system_stub_messages",
+    sql: `
+      CREATE TEMP TABLE threadmark_system_stub_message_ids (
+        id TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+
+      INSERT INTO threadmark_system_stub_message_ids (id)
+      SELECT id
+      FROM messages
+      WHERE message_type = 'system'
+        AND json_valid(raw_json)
+        AND json_extract(raw_json, '$.messageStubType') IS NOT NULL;
+
+      CREATE TEMP TABLE threadmark_system_stub_block_ids (
+        id TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+      INSERT INTO threadmark_system_stub_block_ids (id)
+      SELECT DISTINCT block_id
+      FROM triage_block_messages
+      WHERE message_id IN (SELECT id FROM threadmark_system_stub_message_ids);
+
+      CREATE TEMP TABLE threadmark_system_stub_job_ids (
+        id TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+      INSERT INTO threadmark_system_stub_job_ids (id)
+      SELECT DISTINCT job_id
+      FROM triage_ai_job_messages
+      WHERE message_id IN (SELECT id FROM threadmark_system_stub_message_ids);
+
+      DELETE FROM ticket_messages
+      WHERE message_id IN (SELECT id FROM threadmark_system_stub_message_ids);
+      DELETE FROM triage_block_messages
+      WHERE message_id IN (SELECT id FROM threadmark_system_stub_message_ids);
+      DELETE FROM triage_ai_job_messages
+      WHERE message_id IN (SELECT id FROM threadmark_system_stub_message_ids);
+      DELETE FROM messages
+      WHERE id IN (SELECT id FROM threadmark_system_stub_message_ids);
+
+      DELETE FROM triage_blocks
+      WHERE id IN (SELECT id FROM threadmark_system_stub_block_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM triage_block_messages
+          WHERE triage_block_messages.block_id = triage_blocks.id
+        );
+      DELETE FROM triage_ai_jobs
+      WHERE id IN (SELECT id FROM threadmark_system_stub_job_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM triage_ai_job_messages
+          WHERE triage_ai_job_messages.job_id = triage_ai_jobs.id
+        );
+
+      DROP TABLE threadmark_system_stub_job_ids;
+      DROP TABLE threadmark_system_stub_block_ids;
+      DROP TABLE threadmark_system_stub_message_ids;
+    `,
+  },
+  {
+    version: 61,
+    name: "threadmark_ai_ticket_source_messages",
+    sql: `
+      ALTER TABLE threadmark_ai_ticket_drafts
+        ADD COLUMN message_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(message_ids_json) AND json_type(message_ids_json) = 'array');
+
+      ALTER TABLE threadmark_ai_ticket_drafts
+        ADD COLUMN source_messages_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(source_messages_json) AND json_type(source_messages_json) = 'array');
+
+      CREATE TABLE ticket_external_messages (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL,
+        source_conversation_id TEXT NOT NULL,
+        external_message_id TEXT NOT NULL,
+        author_name TEXT NOT NULL,
+        author_role TEXT NOT NULL CHECK (author_role IN ('customer', 'support')),
+        body TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(ticket_id, source_type, source_conversation_id, external_message_id)
+      ) STRICT;
+
+      CREATE INDEX ticket_external_messages_ticket_time_idx
+        ON ticket_external_messages(ticket_id, occurred_at, position, id);
+    `,
+  },
+  {
+    version: 62,
+    name: "automation_capacity_assignment_queue",
+    sql: `
+      CREATE TABLE automation_assignment_queue (
+        step_id TEXT PRIMARY KEY
+          REFERENCES automation_run_steps(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL
+          REFERENCES automation_runs(id) ON DELETE CASCADE,
+        workflow_id TEXT NOT NULL
+          REFERENCES automation_workflows(id) ON DELETE CASCADE,
+        node_id TEXT NOT NULL,
+        ticket_id TEXT NOT NULL
+          REFERENCES tickets(id) ON DELETE CASCADE,
+        queued_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(run_id, node_id)
+      ) STRICT;
+
+      CREATE INDEX automation_assignment_queue_order_idx
+        ON automation_assignment_queue(workflow_id, node_id, queued_at, step_id);
+      CREATE INDEX automation_assignment_queue_ticket_idx
+        ON automation_assignment_queue(ticket_id, queued_at, step_id);
+    `,
+  },
+  {
+    version: 63,
+    name: "automation_capacity_assignment_fifo_order",
+    sql: `
+      ALTER TABLE automation_assignment_queue
+        ADD COLUMN queue_order INTEGER;
+
+      UPDATE automation_assignment_queue
+      SET queue_order = rowid
+      WHERE queue_order IS NULL;
+
+      CREATE UNIQUE INDEX automation_assignment_queue_fifo_idx
+        ON automation_assignment_queue(queue_order);
+    `,
+  },
+  {
+    version: 64,
+    name: "automation_capacity_assignment_scoped_fifo",
+    sql: `
+      DROP INDEX IF EXISTS automation_assignment_queue_fifo_idx;
+
+      CREATE INDEX automation_assignment_queue_fifo_idx
+        ON automation_assignment_queue(workflow_id, node_id, queue_order, step_id);
+    `,
+  },
 ];

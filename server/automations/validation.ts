@@ -143,6 +143,9 @@ function validateNode(
       ) {
         validateNotificationAction(node.config.input, node.id, issues);
       }
+      if (node.config.actionId === "assign_ticket_by_capacity") {
+        validateCapacityAssignment(node.config.input, node.id, issues);
+      }
       validateRetry(node.config.retry, node.id, issues);
       break;
     case "app_action":
@@ -157,6 +160,33 @@ function validateNode(
       }
       validateRetry(node.config.retry, node.id, issues);
       break;
+  }
+}
+
+function validateCapacityAssignment(
+  input: unknown,
+  nodeId: string,
+  issues: string[],
+): void {
+  if (!isRecord(input) || !Array.isArray(input.members) || input.members.length === 0) {
+    issues.push(`capacidade da equipe obrigatória em ${nodeId}`);
+    return;
+  }
+  const seen = new Set<string>();
+  for (const member of input.members) {
+    if (!isRecord(member) || !isNonEmptyString(member.assigneeId)) {
+      issues.push(`atendente inválido em ${nodeId}`);
+      continue;
+    }
+    if (seen.has(member.assigneeId)) issues.push(`atendente duplicado em ${nodeId}`);
+    seen.add(member.assigneeId);
+    if (
+      !Number.isInteger(member.maxTickets) ||
+      Number(member.maxTickets) < 1 ||
+      Number(member.maxTickets) > 500
+    ) {
+      issues.push(`limite do atendente inválido em ${nodeId}`);
+    }
   }
 }
 

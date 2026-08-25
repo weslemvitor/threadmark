@@ -309,9 +309,33 @@ test("sink ignora MESSAGE_EDIT como bolha e preserva a mensagem original bruta",
     { allowlistedGroupJids: ["group@g.us"] },
   );
   assert.ok(edit);
+  const [groupUpdate] = normalizeMessagesUpsert(
+    {
+      type: "notify",
+      messages: [
+        {
+          key: {
+            id: "group-update-event",
+            remoteJid: "group@g.us",
+            participant: "5511999999999@s.whatsapp.net",
+            fromMe: false,
+          },
+          messageTimestamp: Math.floor(
+            Date.parse("2026-07-16T12:02:00.000Z") / 1_000,
+          ),
+          messageStubType: 27 as proto.WebMessageInfo.StubType,
+          messageStubParameters: [
+            '{"id":"900000000000108@lid","admin":null}',
+          ],
+        },
+      ],
+    },
+    { allowlistedGroupJids: ["group@g.us"] },
+  );
+  assert.ok(groupUpdate);
 
   try {
-    await sink.upsertMessages([original, edit]);
+    await sink.upsertMessages([original, edit, groupUpdate]);
 
     assert.deepEqual(
       database

@@ -379,6 +379,12 @@ const categoryCreateInputSchema = z
   })
   .strict();
 
+const categoryDeleteInputSchema = z
+  .object({
+    replacementCategoryId: z.string().trim().min(1).max(200).optional().nullable(),
+  })
+  .strict();
+
 const categoryAttachInputSchema = z
   .object({
     categoryId: z.string().trim().min(1).max(200),
@@ -2258,6 +2264,17 @@ function createApiAppInternal(
   app.post("/api/categories", async (context) => {
     const input = categoryCreateInputSchema.parse(await context.req.json());
     return context.json(store.createCategory(input), 201);
+  });
+
+  app.delete("/api/categories/:id", async (context) => {
+    const input = categoryDeleteInputSchema.parse(await context.req.json());
+    return context.json(
+      store.deleteCategory(
+        context.req.param("id"),
+        input.replacementCategoryId,
+        actorFor(context),
+      ),
+    );
   });
 
   app.get("/api/ticket-assignees", (context) =>

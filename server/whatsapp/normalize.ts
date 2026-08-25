@@ -238,7 +238,8 @@ function normalizeMessage(
   const isChatControlEvent = Boolean(
     content.reaction ||
       content.revocation ||
-      content.messageType === "protocolMessage",
+      content.messageType === "protocolMessage" ||
+      content.kind === "system",
   );
 
   return {

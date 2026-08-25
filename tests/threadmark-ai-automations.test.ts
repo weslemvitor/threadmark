@@ -46,9 +46,9 @@ test("Threadmark AI prepara, confirma, testa e gerencia automações com autoriz
     INSERT INTO local_users (
       id, username, display_name, role, password_hash, active,
       password_changed_at, created_at, updated_at
-    ) VALUES ('owner-1', 'weslem', 'Weslem', 'owner', 'test-only', 1, ?, ?, ?)
+    ) VALUES ('owner-1', 'owner-user', 'Pessoa Proprietária', 'owner', 'test-only', 1, ?, ?, ?)
   `).run(timestamp, timestamp, timestamp);
-  const thread = store.createThreadmarkAiThread({}, "Weslem");
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
   const executor = new DeepToolExecutor(
     new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
     { database, supportStore: store },
@@ -220,7 +220,11 @@ test("Threadmark AI prepara, confirma, testa e gerencia automações com autoriz
       }),
       purpose: "Aplicar a edição confirmada.",
     });
-    assert.equal(edited.status, "success");
+    assert.equal(
+      edited.status,
+      "success",
+      `${edited.summary}\n${edited.content}`,
+    );
     assert.match(edited.summary, /atualizada/);
     assert.equal(
       (database.prepare("SELECT name, status FROM automation_workflows WHERE id = ?").get(workflow.id) as { name: string; status: string }).name,
@@ -256,9 +260,9 @@ test("Threadmark AI bloqueia alterações de automação para operador sem privi
     INSERT INTO local_users (
       id, username, display_name, role, password_hash, active,
       password_changed_at, created_at, updated_at
-    ) VALUES ('operator-1', 'rodrigo', 'Rodrigo', 'operator', 'test-only', 1, ?, ?, ?)
+    ) VALUES ('operator-1', 'operator-user', 'Pessoa Operadora', 'operator', 'test-only', 1, ?, ?, ?)
   `).run(timestamp, timestamp, timestamp);
-  const thread = store.createThreadmarkAiThread({}, "Rodrigo");
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Operadora");
   const updated = store.addThreadmarkAiMessage(
     thread.id,
     { body: "Crie uma automação para mim." },

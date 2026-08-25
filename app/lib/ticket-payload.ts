@@ -42,6 +42,7 @@ export function ticketSummaryFromDetail(detail: TicketDetail): TicketSummary {
     group: detail.group,
     requester: detail.requester,
     assignee: detail.assignee,
+    assignmentPending: detail.assignmentPending,
     affectedStore: detail.affectedStore,
     productForwarding: detail.productForwarding
       ? {

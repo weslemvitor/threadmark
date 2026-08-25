@@ -327,7 +327,7 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
             source: {
               subject: "Campanhas",
               body: "<p>Não consigo criar uma campanha.</p>",
-              author: { id: "contact-1", name: "Bruno Alves", email: "bruno@example.test" },
+              author: { id: "contact-1", name: "Pessoa Cliente", email: "cliente@example.test" },
             },
           }],
         }), { status: 200 });
@@ -353,7 +353,7 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
         source: {
           id: "source-1",
           body: "Mensagem inicial",
-          author: { id: "contact-1", type: "user", name: "Bruno Alves" },
+          author: { id: "contact-1", type: "user", name: "Pessoa Cliente" },
         },
         conversation_parts: {
           conversation_parts: [{
@@ -361,7 +361,7 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
             part_type: "comment",
             created_at: 1_776_666_000,
             body: "<p>Preciso liberar o acesso.</p>",
-            author: { id: "contact-1", type: "user", name: "Bruno Alves" },
+            author: { id: "contact-1", type: "user", name: "Pessoa Cliente" },
           }],
         },
       }), { status: 200 });
@@ -374,11 +374,11 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
       requestId: "intercom-search-1",
       toolId,
       operation: "search_conversations",
-      argumentsJson: JSON.stringify({ query: "Bruno Alves", limit: 5 }),
+      argumentsJson: JSON.stringify({ query: "Pessoa Cliente", limit: 5 }),
       purpose: "Localizar a conversa recente do cliente.",
     });
     assert.equal(search.status, "success");
-    assert.match(search.content, /Bruno Alves/);
+    assert.match(search.content, /Pessoa Cliente/);
     assert.match(search.content, /Não consigo criar uma campanha/);
 
     const conversation = await executor.execute({
@@ -445,6 +445,23 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     externalJid: "ai-ticket@g.us",
     subject: "Cliente Intercom & Suporte",
   });
+  const participant = store.upsertParticipant({
+    id: "ai-ticket-participant",
+    externalJid: "5548999999333@s.whatsapp.net",
+    phoneE164: "+5548999999333",
+    displayName: "Pessoa Cliente",
+  });
+  store.addGroupParticipant(group.id, participant.id);
+  const sourceMessage = store.upsertMessage({
+    id: "ai-ticket-source-message",
+    externalId: "ai-ticket-source-message-external",
+    groupId: group.id,
+    senderId: participant.id,
+    occurredAt: "2026-08-20T12:00:00.000Z",
+    text: "Não consigo criar campanhas e preciso que liberem meu acesso.",
+    messageType: "text",
+    triageKind: "demand",
+  });
   const productCategory = store.createCategory({
     facet: "product",
     label: "CRM",
@@ -455,7 +472,7 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     label: "Acesso indisponível",
     color: "#ef4444",
   });
-  const thread = store.createThreadmarkAiThread({}, "Weslem");
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
   const withRequest = store.addInvestigationThreadMessage(thread.id, {
     body: "Transforme a conversa 987 do Intercom em um ticket do Threadmark.",
   });
@@ -478,6 +495,7 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
         summary: "Tentativa com categoria inventada.",
         priority: "high",
         categoryIds: ["categoria-inventada"],
+        messageIds: [sourceMessage.id],
       }),
       purpose: "Garantir que apenas o catálogo real seja aceito.",
     });
@@ -492,9 +510,17 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
         operatorMessageId: requestMessage.id,
         groupId: group.id,
         title: "Acesso para criar campanhas",
-        summary: "Bruno informou no Intercom que não consegue criar campanhas e pediu liberação de acesso.",
+        summary: "A pessoa cliente informou no Intercom que não consegue criar campanhas e pediu liberação de acesso.",
         priority: "high",
         categoryIds: [productCategory.id, symptomCategory.id],
+        messageIds: [sourceMessage.id],
+        sourceMessages: [{
+          id: "intercom-part-987-1",
+          author: "Pessoa Cliente",
+          authorRole: "customer",
+          body: "No Intercom também confirmei que preciso da liberação para criar campanhas.",
+          occurredAt: "2026-08-20T12:05:00.000Z",
+        }],
         externalSource: { type: "intercom_conversation", id: "987" },
       }),
       purpose: "Preparar a prévia solicitada sem criar o ticket.",
@@ -533,13 +559,23 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     assert.equal(ticket.title, "Acesso para criar campanhas");
     assert.equal(ticket.priority, "high");
     assert.equal(ticket.group.id, group.id);
+    assert.equal(ticket.messageCount, 2);
+    assert.deepEqual(
+      ticket.timeline
+        .filter((item) => item.type === "message")
+        .map((message) => message.text),
+      [
+        "Não consigo criar campanhas e preciso que liberem meu acesso.",
+        "No Intercom também confirmei que preciso da liberação para criar campanhas.",
+      ],
+    );
     assert.deepEqual(
       ticket.categories.map((category) => category.label).sort(),
       ["Acesso indisponível", "CRM"],
     );
     const persistedDraft = database.prepare(
       `SELECT state, external_source_type, external_source_id, created_ticket_id,
-              category_ids_json
+              category_ids_json, message_ids_json, source_messages_json
        FROM threadmark_ai_ticket_drafts WHERE id = ?`,
     ).get(draftId) as {
       state: string;
@@ -547,6 +583,8 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
       external_source_id: string;
       created_ticket_id: string;
       category_ids_json: string;
+      message_ids_json: string;
+      source_messages_json: string;
     };
     assert.deepEqual(persistedDraft, {
       state: "created",
@@ -554,6 +592,14 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
       external_source_id: "987",
       created_ticket_id: ticket.id,
       category_ids_json: JSON.stringify([productCategory.id, symptomCategory.id].sort()),
+      message_ids_json: JSON.stringify([sourceMessage.id]),
+      source_messages_json: JSON.stringify([{
+        id: "intercom-part-987-1",
+        author: "Pessoa Cliente",
+        authorRole: "customer",
+        body: "No Intercom também confirmei que preciso da liberação para criar campanhas.",
+        occurredAt: "2026-08-20T12:05:00.000Z",
+      }]),
     });
 
     const replay = await executor.execute({
@@ -606,10 +652,10 @@ test("Threadmark AI atualiza metadados e categorias somente após confirmação 
     title: "Dúvida genérica",
     summary: "Cliente relatou uma dúvida.",
     priority: "normal",
-    actor: "Weslem",
+    actor: "Pessoa Proprietária",
   });
-  store.attachCategoryToTicket(ticket.id, originalCategory.id, "Weslem");
-  const thread = store.createThreadmarkAiThread({}, "Weslem");
+  store.attachCategoryToTicket(ticket.id, originalCategory.id, "Pessoa Proprietária");
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
   const request = store.addInvestigationThreadMessage(thread.id, {
     body: `Atualize o ticket #${ticket.number}: o problema real são dados incorretos no Dashboard.`,
   }).messages.filter((message) => message.role === "operator").at(-1);

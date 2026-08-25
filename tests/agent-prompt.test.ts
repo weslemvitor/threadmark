@@ -226,6 +226,8 @@ test("prompt aprofundado encadeia ferramentas e mant√©m um mapa de trabalho dur√
   assert.match(prompt, /suggestedResponse=null/i);
   assert.match(prompt, /prepare_ticket_draft/i);
   assert.match(prompt, /create_ticket_from_draft/i);
+  assert.match(prompt, /ticket nunca pode nascer vazio/i);
+  assert.match(prompt, /sourceMessages/i);
   assert.match(prompt, /list_ticket_categories/i);
   assert.match(prompt, /prepare_ticket_update_draft/i);
   assert.match(prompt, /apply_ticket_update_draft/i);

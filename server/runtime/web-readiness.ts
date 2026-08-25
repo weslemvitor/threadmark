@@ -48,9 +48,9 @@ export async function verifyWebBuild(
   const html = await root.text();
   const assetPaths = [
     ...new Set(
-      [...html.matchAll(/(?:href|src)="(\/assets\/[^"?#]+\.(?:css|js))[^\"]*"/g)].map(
-        (match) => match[1],
-      ),
+      [...html.matchAll(
+        /(?:href|src)="((?:\/assets\/|\/_next\/static\/)[^"?#]+\.(?:css|js))[^\"]*"/g,
+      )].map((match) => match[1]),
     ),
   ];
   if (!assetPaths.some((asset) => asset.endsWith(".css"))) {

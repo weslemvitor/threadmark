@@ -12,6 +12,7 @@ export const THREADMARK_APP = {
   capabilities: ["ticket_management", "internal_note"],
   actions: [
     action("assign_ticket", "Atribuir responsável", "Atribui um membro da equipe ao ticket.", "ticket_management"),
+    action("assign_ticket_by_capacity", "Distribuir por capacidade", "Atribui pela carga configurada de cada membro e mantém fila FIFO quando necessário.", "ticket_management"),
     action("change_status", "Alterar status", "Move o ticket para outro estado do fluxo.", "ticket_management"),
     action("change_priority", "Alterar prioridade", "Atualiza a prioridade interna do ticket.", "ticket_management"),
     action("add_category", "Adicionar categoria", "Vincula uma categoria existente ao ticket.", "ticket_management"),

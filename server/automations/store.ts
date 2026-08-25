@@ -122,6 +122,19 @@ interface SleepingWaitRow {
   current_definition_json: string;
 }
 
+interface CapacityQueueRow {
+  queue_order: number;
+}
+
+export interface CapacityQueueInput {
+  workflowId: string;
+  nodeId: string;
+  ticketId: string;
+  retryAfterMs: number;
+  sourceOrder?: number;
+  reason: "capacity_full" | "no_active_assignees" | "fifo_wait";
+}
+
 export class AutomationStore {
   private readonly clock: () => Date;
   private readonly idFactory: () => string;
@@ -195,6 +208,7 @@ export class AutomationStore {
         id,
       );
       this.reconcileSleepingWaitSchedules(id, now);
+      this.wakeCapacityAssignmentSteps({ workflowId: id }, now);
     })();
     return this.getWorkflow(id);
   }
@@ -553,10 +567,14 @@ export class AutomationStore {
         SELECT step.*
         FROM automation_run_steps AS step
         JOIN automation_runs AS run ON run.id = step.run_id
+        LEFT JOIN automation_assignment_queue capacity_queue
+          ON capacity_queue.step_id = step.id
         WHERE step.status IN ('queued', 'retry', 'sleeping')
           AND step.available_at <= ?
           AND run.status IN ('queued', 'running', 'waiting')
-        ORDER BY step.available_at, step.created_at, step.id
+        ORDER BY step.available_at,
+                 COALESCE(capacity_queue.queue_order, 9223372036854775807),
+                 step.id
         LIMIT 1
       `).get(now) as StepRow | undefined;
       if (!row) return null;
@@ -590,6 +608,108 @@ export class AutomationStore {
       `).run(addMs(now, durationMs), now, stepId);
       this.refreshRunStatus(step.runId, now);
     })();
+  }
+
+  deferStepForCapacity(stepId: string, input: CapacityQueueInput): void {
+    const step = this.getStep(stepId);
+    const now = this.now();
+    const retryAfterMs = Math.max(250, Math.min(60_000, Math.floor(input.retryAfterMs)));
+    this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO automation_assignment_queue (
+          step_id, run_id, workflow_id, node_id, ticket_id,
+          queued_at, updated_at, queue_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, (
+          SELECT COALESCE(MAX(queue_order), 0) + 1
+          FROM automation_assignment_queue
+          WHERE workflow_id = ? AND node_id = ?
+        )))
+        ON CONFLICT(step_id) DO UPDATE SET
+          ticket_id = excluded.ticket_id,
+          updated_at = excluded.updated_at
+      `).run(
+        stepId,
+        step.runId,
+        input.workflowId,
+        input.nodeId,
+        input.ticketId,
+        now,
+        now,
+        input.sourceOrder ?? null,
+        input.workflowId,
+        input.nodeId,
+      );
+      this.database.prepare(`
+        UPDATE automation_run_steps
+        SET status = 'sleeping', available_at = ?, lease_expires_at = NULL,
+            output_json = ?, error = NULL, updated_at = ?
+        WHERE id = ? AND status = 'running'
+      `).run(
+        addMs(now, retryAfterMs),
+        toJson({ __capacityWait: true, reason: input.reason }),
+        now,
+        stepId,
+      );
+      this.refreshRunStatus(step.runId, now);
+    })();
+  }
+
+  hasEarlierCapacityAssignment(
+    workflowId: string,
+    nodeId: string,
+    stepId: string,
+  ): boolean {
+    const current = this.database.prepare(`
+      SELECT queue_order FROM automation_assignment_queue WHERE step_id = ?
+    `).get(stepId) as CapacityQueueRow | undefined;
+    const row = this.database.prepare(`
+      SELECT 1
+      FROM automation_assignment_queue queue
+      JOIN automation_run_steps step ON step.id = queue.step_id
+      JOIN automation_runs run ON run.id = queue.run_id
+      WHERE queue.workflow_id = ? AND queue.node_id = ?
+        AND queue.step_id != ?
+        AND step.status = 'sleeping'
+        AND run.status IN ('queued', 'running', 'waiting')
+        AND (? IS NULL OR queue.queue_order < ?)
+      LIMIT 1
+    `).get(
+      workflowId,
+      nodeId,
+      stepId,
+      current?.queue_order ?? null,
+      current?.queue_order ?? null,
+    );
+    return Boolean(row);
+  }
+
+  wakeCapacityAssignmentSteps(
+    filters: { workflowId?: string; nodeId?: string } = {},
+    timestamp?: string,
+  ): number {
+    const now = timestamp ?? this.now();
+    const result = this.database.prepare(`
+      UPDATE automation_run_steps
+      SET available_at = ?, updated_at = ?
+      WHERE id IN (
+        SELECT queue.step_id
+        FROM automation_assignment_queue queue
+        JOIN automation_run_steps step ON step.id = queue.step_id
+        JOIN automation_runs run ON run.id = queue.run_id
+        WHERE step.status = 'sleeping'
+          AND run.status IN ('queued', 'running', 'waiting')
+          AND (? IS NULL OR queue.workflow_id = ?)
+          AND (? IS NULL OR queue.node_id = ?)
+      )
+    `).run(
+      now,
+      now,
+      filters.workflowId ?? null,
+      filters.workflowId ?? null,
+      filters.nodeId ?? null,
+      filters.nodeId ?? null,
+    );
+    return result.changes;
   }
 
   markStepAwaitingApproval(stepId: string): void {
@@ -631,6 +751,9 @@ export class AutomationStore {
             error = NULL, completed_at = ?, updated_at = ?
         WHERE id = ?
       `).run(toJson(output), now, now, stepId);
+      this.database.prepare(
+        "DELETE FROM automation_assignment_queue WHERE step_id = ?",
+      ).run(stepId);
 
       const outgoing = definition.edges.filter(
         (edge) =>
@@ -658,6 +781,9 @@ export class AutomationStore {
     const step = this.getStep(stepId);
     const now = this.now();
     this.database.transaction(() => {
+      this.database.prepare(
+        "DELETE FROM automation_assignment_queue WHERE step_id = ?",
+      ).run(stepId);
       const run = this.getRun(step.runId);
       if (run.status === "cancelled") {
         this.markStepCancelled(step.id, now);
@@ -717,6 +843,9 @@ export class AutomationStore {
             updated_at = ?, finished_at = ?
         WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
       `).run(now, now, runId);
+      this.database.prepare(
+        "DELETE FROM automation_assignment_queue WHERE run_id = ?",
+      ).run(runId);
       this.database.prepare(`
         UPDATE automation_run_steps
         SET status = 'cancelled', lease_expires_at = NULL,
@@ -760,6 +889,9 @@ export class AutomationStore {
               completed_at = ?, updated_at = ?
           WHERE id = ?
         `).run(now, now, row.id);
+        this.database.prepare(
+          "DELETE FROM automation_assignment_queue WHERE step_id = ?",
+        ).run(row.id);
         this.database.prepare(`
           UPDATE automation_runs
           SET status = 'failed',

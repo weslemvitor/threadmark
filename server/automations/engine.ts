@@ -1,4 +1,5 @@
 import { AutomationStore } from "./store.js";
+import type { CapacityQueueInput } from "./store.js";
 import type {
   AutomationActionContext,
   AutomationActionHandler,
@@ -18,6 +19,13 @@ import { matchesFilter } from "./validation.js";
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_EVENT_RETRY_DELAY_MS = 1_000;
+
+export class AutomationCapacityDeferredError extends Error {
+  constructor(readonly queue: CapacityQueueInput) {
+    super("Aguardando capacidade disponível para atribuir o ticket.");
+    this.name = "AutomationCapacityDeferredError";
+  }
+}
 
 export class AutomationEngine {
   private readonly leaseMs: number;
@@ -152,6 +160,10 @@ export class AutomationEngine {
       await this.executeNode(workflow, run, step, node, signal);
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (error instanceof AutomationCapacityDeferredError) {
+        this.store.deferStepForCapacity(step.id, error.queue);
+        return;
+      }
       this.store.failStep(step.id, errorMessage(error), retryDelay(node));
     }
   }

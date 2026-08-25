@@ -333,6 +333,12 @@ export function createSqliteInboundSink(
               // never become a blank message or enter supervised triage.
               continue;
             }
+            if (envelope.content.kind === "system") {
+              // Group administration and participant stubs are transport
+              // metadata, not conversation messages. Current membership is
+              // maintained by the roster and participant update handlers.
+              continue;
+            }
             if (tracksConversationCursor(envelope) && envelope.occurredAt) {
               const current = latestObservedByConversation.get(group.id);
               if (!current || envelope.occurredAt > current.occurredAt) {

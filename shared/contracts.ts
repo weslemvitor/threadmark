@@ -84,6 +84,16 @@ export interface CreateCategoryInput {
   color?: string | null;
 }
 
+export interface DeleteCategoryInput {
+  replacementCategoryId?: string | null;
+}
+
+export interface DeleteCategoryResponse {
+  deletedCategoryId: string;
+  replacementCategoryId: string | null;
+  migratedTicketCount: number;
+}
+
 export interface TicketCategoryAttachInput {
   categoryId: string;
   actor?: string;
@@ -161,6 +171,8 @@ export interface TicketSummaryDto {
   };
   requester: TicketRequesterDto | null;
   assignee: TicketAssigneeDto | null;
+  /** True while an automation is waiting for an attendant capacity slot. */
+  assignmentPending: boolean;
   affectedStore: AffectedStoreDto | null;
   productForwarding: TicketProductForwardingSummaryDto | null;
   categories: CategoryDto[];
@@ -171,6 +183,8 @@ export interface TicketSummaryDto {
   resolvedAt: string | null;
   /** Present on current API responses; optional for backwards-compatible clients. */
   archivedAt?: string | null;
+  /** Terminal state from which the ticket was archived. */
+  archivedFromStatus?: "resolved" | "cancelled" | null;
   messageCount: number;
   latestSuggestion: {
     id: string;

@@ -3,6 +3,7 @@ import type { SupportStore } from "../domain/index.js";
 import { LocalSecretVault } from "../runtime/secret-vault.js";
 import {
   AutomationEngine,
+  AutomationCapacityDeferredError,
   AutomationStore,
   type AutomationActionContext,
   type AutomationActionHandlers,
@@ -260,6 +261,13 @@ export class AutomationRuntime {
     parsedData?: Record<string, unknown>,
     selectedTypes?: string[],
   ): number {
+    if (
+      row.event_type === "status_changed" ||
+      row.event_type === "ticket_assigned" ||
+      row.event_type === "ticket_unassigned"
+    ) {
+      this.workflows.wakeCapacityAssignmentSteps();
+    }
     if (row.actor.startsWith(AUTOMATION_ACTOR_PREFIX)) return 0;
     const data = parsedData ?? parseObject(row.data_json);
     const ticket = this.support.getTicketDetail(row.ticket_id);
@@ -292,6 +300,7 @@ export class AutomationRuntime {
     const internal = Object.fromEntries(
       [
         "assign_ticket",
+        "assign_ticket_by_capacity",
         "change_status",
         "change_priority",
         "add_category",
@@ -341,6 +350,8 @@ export class AutomationRuntime {
           nullableString(input.assigneeId),
           actor,
         );
+      case "assign_ticket_by_capacity":
+        return this.assignTicketByCapacity(ticketId, context, actor);
       case "change_status":
         return this.support.updateTicketStatus(ticketId, {
           status: requireString(input.status, "status") as Parameters<SupportStore["updateTicketStatus"]>[1]["status"],
@@ -389,6 +400,64 @@ export class AutomationRuntime {
       default:
         throw new Error(`Ação interna não suportada: ${actionId}.`);
     }
+  }
+
+  private assignTicketByCapacity(
+    ticketId: string,
+    context: AutomationActionContext,
+    actor: string,
+  ): unknown {
+    const currentWorkflow = this.workflows.getWorkflow(context.workflow.id);
+    const currentNode = currentWorkflow.definition.nodes.find(
+      (node) => node.id === context.node.id,
+    );
+    const currentConfig =
+      currentNode?.type === "internal_action" &&
+      currentNode.config.actionId === "assign_ticket_by_capacity"
+        ? currentNode.config.input
+        : (context.node.config as AutomationInternalActionConfig).input;
+    const members = capacityLimits(currentConfig?.members);
+    const queue = {
+      workflowId: context.workflow.id,
+      nodeId: context.node.id,
+      ticketId,
+      retryAfterMs: 15_000,
+      sourceOrder: sourceEventSequence(context.input),
+    } as const;
+    const currentTicket = this.support.getTicketDetail(ticketId);
+    if (
+      currentTicket.assignee ||
+      currentTicket.status === "resolved" ||
+      currentTicket.status === "cancelled" ||
+      currentTicket.status === "archived"
+    ) {
+      const result = this.support.assignTicketByCapacity(ticketId, members, actor);
+      this.workflows.wakeCapacityAssignmentSteps({
+        workflowId: context.workflow.id,
+        nodeId: context.node.id,
+      });
+      return result;
+    }
+
+    if (
+      this.workflows.hasEarlierCapacityAssignment(
+        context.workflow.id,
+        context.node.id,
+        context.step.id,
+      )
+    ) {
+      throw new AutomationCapacityDeferredError({ ...queue, reason: "fifo_wait" });
+    }
+
+    const result = this.support.assignTicketByCapacity(ticketId, members, actor);
+    if (result.kind === "waiting") {
+      throw new AutomationCapacityDeferredError({ ...queue, reason: result.reason });
+    }
+    this.workflows.wakeCapacityAssignmentSteps({
+      workflowId: context.workflow.id,
+      nodeId: context.node.id,
+    });
+    return result;
   }
 
   private createInAppNotification(
@@ -504,8 +573,18 @@ function mcpAutomationArguments(value: Record<string, unknown>): Record<string, 
 
 function eventTypesFor(row: TicketEventRow, data: Record<string, unknown>): string[] {
   const types = [row.event_type];
-  if (row.event_type === "status_changed" && row.to_status === "resolved") {
-    types.push("ticket_resolved");
+  if (row.event_type === "status_changed") {
+    const eventTypeByStatus: Partial<Record<NonNullable<TicketEventRow["to_status"]>, string>> = {
+      triage: "ticket_entered_triage",
+      in_progress: "ticket_entered_in_progress",
+      waiting_customer: "ticket_waiting_customer",
+      blocked: "ticket_waiting_internal",
+      resolved: "ticket_resolved",
+      cancelled: "ticket_cancelled",
+      archived: "ticket_archived",
+    };
+    const specificType = row.to_status ? eventTypeByStatus[row.to_status] : undefined;
+    if (specificType) types.push(specificType);
   }
   if (
     row.event_type === "ticket_metadata_updated" &&
@@ -618,6 +697,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function capacityLimits(
+  value: unknown,
+): Array<{ assigneeId: string; maxTickets: number }> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("Selecione ao menos um atendente para a distribuição por capacidade.");
+  }
+  return value.map((item) => {
+    if (!isRecord(item)) throw new Error("A configuração de capacidade é inválida.");
+    const assigneeId = requireString(item.assigneeId, "members.assigneeId");
+    const maxTickets = Number(item.maxTickets);
+    if (!Number.isInteger(maxTickets) || maxTickets < 1 || maxTickets > 500) {
+      throw new Error("O limite por atendente deve ser um número inteiro entre 1 e 500.");
+    }
+    return { assigneeId, maxTickets };
+  });
+}
+
+function sourceEventSequence(input: Record<string, unknown>): number | undefined {
+  const payload = isRecord(input.payload) ? input.payload : {};
+  const sequence = Number(payload.sourceEventSequence);
+  return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : undefined;
 }
 
 function nullableString(value: unknown): string | null {

@@ -1242,6 +1242,11 @@ test("transições de status preservam o ciclo manual e rejeitam saltos inválid
   });
   assert.equal(archived.status, "archived");
   assert.equal(archived.resolvedAt, resolved.resolvedAt);
+  assert.equal(
+    current.store.listTickets({ statuses: ["archived"] }).items[0]
+      ?.archivedFromStatus,
+    "resolved",
+  );
   assert.throws(
     () => current.store.updateTicketStatus(ticket.id, { status: "in_progress" }),
     ConflictError,
@@ -1333,6 +1338,11 @@ test("ticket cancelado é terminal, aparece no dashboard e restaura como cancela
   });
   assert.equal(archived.status, "archived");
   assert.ok(archived.archivedAt);
+  assert.equal(
+    current.store.listTickets({ statuses: ["archived"] }).items[0]
+      ?.archivedFromStatus,
+    "cancelled",
+  );
 
   const restored = current.store.updateTicketStatus(ticket.id, {
     status: "resolved",

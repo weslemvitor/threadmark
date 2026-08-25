@@ -87,8 +87,8 @@ function dashboardFixture() {
   );
   insertUser.run(
     "dashboard-user-b",
-    "bruno.suporte",
-    "Bruno Suporte",
+    "operador.fixture",
+    "Pessoa Operadora",
     timestamp,
     timestamp,
     timestamp,
@@ -361,7 +361,7 @@ test("dashboard interpreta o intervalo inclusivo em America/Sao_Paulo", () => {
     {
       assignee: {
         id: "dashboard-user-b",
-        displayName: "Bruno Suporte",
+        displayName: "Pessoa Operadora",
         role: "operator",
         active: true,
       },

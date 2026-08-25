@@ -350,6 +350,22 @@ export interface TicketListFilters {
   offset?: number;
 }
 
+export interface TicketCapacityLimit {
+  assigneeId: string;
+  maxTickets: number;
+}
+
+export type TicketCapacityAssignmentResult =
+  | {
+      kind: "assigned";
+      assignee: TicketAssigneeDto;
+      openTickets: number;
+      maxTickets: number;
+    }
+  | { kind: "already_assigned"; assignee: TicketAssigneeDto }
+  | { kind: "terminal_ticket"; status: TicketStatus }
+  | { kind: "waiting"; reason: "capacity_full" | "no_active_assignees" };
+
 export interface InvestigationJobListFilters {
   states?: InvestigationJobState[];
   limit?: number;
@@ -636,6 +652,8 @@ function describeTicketEvent(input: {
       return "Categoria vinculada ao ticket.";
     case "ticket_category_removed":
       return "Categoria removida do ticket.";
+    case "ticket_category_replaced":
+      return `Categoria substituída por ${input.actor}.`;
     case "ticket_assigned":
       return `Ticket atribuído por ${input.actor}.`;
     case "ticket_unassigned":
@@ -662,6 +680,7 @@ interface TicketSummaryRow {
   updated_at: string;
   resolved_at: string | null;
   archived_at: string | null;
+  archived_from_status: "resolved" | "cancelled" | null;
   client_id: string;
   client_name: string;
   client_kind: ClientKind;
@@ -676,6 +695,7 @@ interface TicketSummaryRow {
   assignee_user_id: string | null;
   assignee_display_name: string | null;
   assignee_role: AuthRole | null;
+  assignment_pending: number;
   store_id: string | null;
   store_name: string | null;
   store_business_id: string | null;
@@ -701,6 +721,8 @@ interface CategoryCatalogRow extends CategoryRow {
 function ticketSelect(
   requesterOverrideAvailable: boolean,
   assigneeColumnAvailable: boolean,
+  externalTicketMessagesAvailable: boolean,
+  assignmentQueueAvailable: boolean,
 ): string {
   const requesterOverride = requesterOverrideAvailable
     ? "t.requester_id"
@@ -715,6 +737,17 @@ function ticketSelect(
   const assigneeJoin = assigneeColumnAvailable
     ? "LEFT JOIN local_users assignee ON assignee.id = t.assignee_user_id"
     : "";
+  const externalMessageCount = externalTicketMessagesAvailable
+    ? `(SELECT COUNT(*) FROM ticket_external_messages external_message
+       WHERE external_message.ticket_id = t.id)`
+    : "0";
+  const assignmentPending = assignmentQueueAvailable
+    ? `EXISTS (
+        SELECT 1
+        FROM automation_assignment_queue assignment_queue
+        WHERE assignment_queue.ticket_id = t.id
+      )`
+    : "0";
   return `
   SELECT
     t.id,
@@ -733,6 +766,17 @@ function ticketSelect(
     t.updated_at,
     t.resolved_at,
     t.archived_at,
+    CASE WHEN t.status = 'archived' THEN (
+      SELECT archived_event.from_status
+      FROM ticket_events archived_event
+      WHERE archived_event.ticket_id = t.id
+        AND archived_event.event_type = 'status_changed'
+        AND archived_event.to_status = 'archived'
+        AND archived_event.from_status IN ('resolved', 'cancelled')
+      ORDER BY archived_event.occurred_at DESC,
+               archived_event.id DESC
+      LIMIT 1
+    ) ELSE NULL END AS archived_from_status,
     c.id AS client_id,
     c.name AS client_name,
     c.kind AS client_kind,
@@ -745,11 +789,13 @@ function ticketSelect(
     requester.display_name AS requester_display_name,
     requester.phone_e164 AS requester_phone_e164,
     ${assigneeSelect}
+    ${assignmentPending} AS assignment_pending,
     s.id AS store_id,
     s.name AS store_name,
     s.business_id AS store_business_id,
     s.platform AS store_platform,
-    (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id) AS message_count,
+    ((SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id) +
+     ${externalMessageCount}) AS message_count,
     latest_suggestion.id AS suggestion_id,
     latest_suggestion.confidence AS suggestion_confidence,
     latest_suggestion.status AS suggestion_status
@@ -789,6 +835,41 @@ function nowUtc(): string {
 
 function isTerminalTicketStatus(status: TicketStatus): boolean {
   return status === "resolved" || status === "cancelled" || status === "archived";
+}
+
+function normalizeCapacityLimits(limits: TicketCapacityLimit[]): TicketCapacityLimit[] {
+  if (!Array.isArray(limits) || limits.length === 0) {
+    throw new ValidationError("Configure pelo menos um atendente para distribuir tickets");
+  }
+  const normalized = limits.map((limit) => ({
+    assigneeId: normalizedBoundedText(limit.assigneeId, "Responsável", 200),
+    maxTickets: limit.maxTickets,
+  }));
+  if (normalized.some((limit) => !Number.isInteger(limit.maxTickets) || limit.maxTickets < 1 || limit.maxTickets > 500)) {
+    throw new ValidationError("O limite de cada atendente deve ser um inteiro entre 1 e 500");
+  }
+  if (new Set(normalized.map((limit) => limit.assigneeId)).size !== normalized.length) {
+    throw new ValidationError("O mesmo atendente foi configurado mais de uma vez");
+  }
+  return normalized;
+}
+
+function compareCapacityCandidates(
+  left: { id: string; open_tickets: number; max_tickets: number; last_assigned_at: string | null },
+  right: { id: string; open_tickets: number; max_tickets: number; last_assigned_at: string | null },
+): number {
+  const utilization = left.open_tickets * right.max_tickets
+    - right.open_tickets * left.max_tickets;
+  if (utilization !== 0) return utilization;
+  if (left.open_tickets !== right.open_tickets) {
+    return left.open_tickets - right.open_tickets;
+  }
+  if (left.last_assigned_at !== right.last_assigned_at) {
+    if (left.last_assigned_at === null) return -1;
+    if (right.last_assigned_at === null) return 1;
+    return left.last_assigned_at.localeCompare(right.last_assigned_at);
+  }
+  return left.id.localeCompare(right.id);
 }
 
 function attachmentMateriallyDiffers(
@@ -1345,6 +1426,8 @@ export class SupportStore {
   private readonly requesterOverrideAvailable: boolean;
   private readonly assigneeColumnAvailable: boolean;
   private readonly ticketEventSequenceAvailable: boolean;
+  private readonly externalTicketMessagesAvailable: boolean;
+  private readonly assignmentQueueAvailable: boolean;
 
   constructor(readonly database: SupportDatabase) {
     this.requesterOverrideAvailable = Boolean(
@@ -1381,12 +1464,22 @@ export class SupportStore {
         )
         .get(),
     );
+    this.externalTicketMessagesAvailable = databaseHasTable(
+      this.database,
+      "ticket_external_messages",
+    );
+    this.assignmentQueueAvailable = databaseHasTable(
+      this.database,
+      "automation_assignment_queue",
+    );
   }
 
   private ticketSelect(): string {
     return ticketSelect(
       this.requesterOverrideAvailable,
       this.assigneeColumnAvailable,
+      this.externalTicketMessagesAvailable,
+      this.assignmentQueueAvailable,
     );
   }
 
@@ -2097,6 +2190,99 @@ export class SupportStore {
       });
 
       return this.getTicketDetail(ticketId);
+    })();
+  }
+
+  assignTicketByCapacity(
+    ticketId: string,
+    limits: TicketCapacityLimit[],
+    actor = "Automação do Threadmark",
+  ): TicketCapacityAssignmentResult {
+    const normalizedLimits = normalizeCapacityLimits(limits);
+    return this.database.transaction((): TicketCapacityAssignmentResult => {
+      const ticket = this.database.prepare(`
+        SELECT ticket.id, ticket.status, ticket.assignee_user_id,
+               assignee.display_name AS assignee_display_name,
+               assignee.role AS assignee_role
+        FROM tickets ticket
+        LEFT JOIN local_users assignee ON assignee.id = ticket.assignee_user_id
+        WHERE ticket.id = ?
+      `).get(ticketId) as {
+        id: string;
+        status: TicketStatus;
+        assignee_user_id: string | null;
+        assignee_display_name: string | null;
+        assignee_role: AuthRole | null;
+      } | undefined;
+      if (!ticket) throw new NotFoundError("Ticket", ticketId);
+      if (
+        ticket.assignee_user_id &&
+        ticket.assignee_display_name &&
+        ticket.assignee_role
+      ) {
+        return {
+          kind: "already_assigned",
+          assignee: {
+            id: ticket.assignee_user_id,
+            displayName: ticket.assignee_display_name,
+            role: ticket.assignee_role,
+          },
+        };
+      }
+      if (isTerminalTicketStatus(ticket.status)) {
+        return { kind: "terminal_ticket", status: ticket.status };
+      }
+
+      const limitByUser = new Map(
+        normalizedLimits.map((limit) => [limit.assigneeId, limit.maxTickets]),
+      );
+      const placeholders = normalizedLimits.map(() => "?").join(", ");
+      const candidates = this.database.prepare(`
+        SELECT user.id, user.display_name, user.role,
+               (SELECT COUNT(*)
+                FROM tickets occupied
+                WHERE occupied.assignee_user_id = user.id
+                  AND occupied.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_tickets,
+               (SELECT MAX(event.occurred_at)
+                FROM ticket_events event
+                WHERE event.event_type = 'ticket_assigned'
+                  AND json_extract(event.data_json, '$.assigneeId') = user.id) AS last_assigned_at
+        FROM local_users user
+        WHERE user.active = 1
+          AND user.role IN ('owner', 'admin', 'operator')
+          AND user.id IN (${placeholders})
+      `).all(...normalizedLimits.map((limit) => limit.assigneeId)) as Array<{
+        id: string;
+        display_name: string;
+        role: AuthRole;
+        open_tickets: number;
+        last_assigned_at: string | null;
+      }>;
+      if (!candidates.length) {
+        return { kind: "waiting", reason: "no_active_assignees" };
+      }
+
+      const available = candidates
+        .map((candidate) => ({
+          ...candidate,
+          max_tickets: limitByUser.get(candidate.id) ?? 0,
+        }))
+        .filter((candidate) => candidate.open_tickets < candidate.max_tickets)
+        .sort(compareCapacityCandidates);
+      const selected = available[0];
+      if (!selected) return { kind: "waiting", reason: "capacity_full" };
+
+      this.updateTicketAssignee(ticketId, selected.id, actor);
+      return {
+        kind: "assigned",
+        assignee: {
+          id: selected.id,
+          displayName: selected.display_name,
+          role: selected.role,
+        },
+        openTickets: selected.open_tickets + 1,
+        maxTickets: selected.max_tickets,
+      };
     })();
   }
 
@@ -4616,6 +4802,90 @@ export class SupportStore {
       categories: input.categories,
       actor: input.actor ?? "Operador local",
     });
+  }
+
+  attachExternalSourceMessagesToTicket(
+    ticketId: string,
+    input: {
+      sourceType: string;
+      sourceConversationId: string;
+      messages: ReadonlyArray<{
+        id: string;
+        author: string;
+        authorRole: "customer" | "support";
+        body: string;
+        occurredAt: string;
+      }>;
+      createdAt?: string;
+    },
+  ): void {
+    this.database.transaction(() => {
+      if (!this.externalTicketMessagesAvailable) {
+        throw new ValidationError("Mensagens de origem externa não estão disponíveis neste banco");
+      }
+      this.assertEntityExists("Ticket", "tickets", ticketId);
+      const sourceType = normalizedBoundedText(input.sourceType, "Tipo da origem", 100);
+      const sourceConversationId = normalizedBoundedText(
+        input.sourceConversationId,
+        "Conversa de origem",
+        200,
+      );
+      const createdAt = input.createdAt ?? nowUtc();
+      const insert = this.database.prepare(
+        `INSERT INTO ticket_external_messages (
+           id, ticket_id, source_type, source_conversation_id,
+           external_message_id, author_name, author_role, body,
+           occurred_at, position, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(ticket_id, source_type, source_conversation_id, external_message_id)
+         DO NOTHING`,
+      );
+      let firstOccurredAt: string | null = null;
+      let lastOccurredAt: string | null = null;
+      input.messages.forEach((message, position) => {
+        const externalMessageId = normalizedBoundedText(
+          message.id,
+          "Identificador da mensagem externa",
+          200,
+        );
+        const author = normalizedBoundedText(message.author, "Autor da mensagem externa", 200);
+        const body = normalizedBoundedText(message.body, "Conteúdo da mensagem externa", 20_000);
+        if (Number.isNaN(Date.parse(message.occurredAt))) {
+          throw new ValidationError("Data da mensagem externa é inválida");
+        }
+        const id = `ticket-external-message:${createHash("sha256")
+          .update(`${ticketId}\0${sourceType}\0${sourceConversationId}\0${externalMessageId}`)
+          .digest("hex")}`;
+        insert.run(
+          id,
+          ticketId,
+          sourceType,
+          sourceConversationId,
+          externalMessageId,
+          author,
+          message.authorRole,
+          body,
+          message.occurredAt,
+          position,
+          createdAt,
+        );
+        firstOccurredAt = firstOccurredAt === null || message.occurredAt < firstOccurredAt
+          ? message.occurredAt
+          : firstOccurredAt;
+        lastOccurredAt = lastOccurredAt === null || message.occurredAt > lastOccurredAt
+          ? message.occurredAt
+          : lastOccurredAt;
+      });
+      if (firstOccurredAt && lastOccurredAt) {
+        this.database.prepare(
+          `UPDATE tickets
+           SET first_message_at = MIN(first_message_at, ?),
+               last_message_at = MAX(last_message_at, ?),
+               updated_at = MAX(updated_at, ?)
+           WHERE id = ?`,
+        ).run(firstOccurredAt, lastOccurredAt, createdAt, ticketId);
+      }
+    })();
   }
 
   attachMessageToTicket(ticketId: string, messageId: string, actor = "system"): void {
@@ -9241,22 +9511,53 @@ export class SupportStore {
       throw new NotFoundError("Ticket", ticketId);
     }
 
-    const messageRowsDescending = this.database
-      .prepare(
-        `SELECT
-          m.id, m.occurred_at, m.text, m.quoted_external_id,
-          p.display_name,
-          CASE WHEN staff.participant_id IS NULL THEN 'external' ELSE 'staff' END AS role
+    const messageQuery = this.externalTicketMessagesAvailable
+      ? `SELECT id, occurred_at, text, quoted_external_id, display_name, role
+         FROM (
+           SELECT
+             m.id, m.occurred_at, m.text, m.quoted_external_id,
+             p.display_name,
+             CASE WHEN staff.participant_id IS NULL THEN 'external' ELSE 'staff' END AS role,
+             m.rowid AS source_order
+           FROM ticket_messages tm
+           JOIN messages m ON m.id = tm.message_id
+           JOIN participants p ON p.id = m.sender_id
+           LEFT JOIN staff_members staff
+             ON staff.participant_id = p.id AND staff.active = 1
+           WHERE tm.ticket_id = ?
+
+           UNION ALL
+
+           SELECT
+             external_message.id,
+             external_message.occurred_at,
+             external_message.body AS text,
+             NULL AS quoted_external_id,
+             external_message.author_name AS display_name,
+             CASE WHEN external_message.author_role = 'support' THEN 'staff' ELSE 'external' END AS role,
+             external_message.position AS source_order
+           FROM ticket_external_messages external_message
+           WHERE external_message.ticket_id = ?
+         )
+         ORDER BY occurred_at DESC, source_order DESC
+         LIMIT ?`
+      : `SELECT
+           m.id, m.occurred_at, m.text, m.quoted_external_id,
+           p.display_name,
+           CASE WHEN staff.participant_id IS NULL THEN 'external' ELSE 'staff' END AS role
          FROM ticket_messages tm
          JOIN messages m ON m.id = tm.message_id
          JOIN participants p ON p.id = m.sender_id
          LEFT JOIN staff_members staff
-          ON staff.participant_id = p.id AND staff.active = 1
+           ON staff.participant_id = p.id AND staff.active = 1
          WHERE tm.ticket_id = ?
          ORDER BY m.occurred_at DESC, m.rowid DESC
-         LIMIT ?`,
-      )
-      .all(ticketId, safeMessageLimit) as Array<{
+         LIMIT ?`;
+    const messageRowsDescending = this.database
+      .prepare(messageQuery)
+      .all(...(this.externalTicketMessagesAvailable
+        ? [ticketId, ticketId, safeMessageLimit]
+        : [ticketId, safeMessageLimit])) as Array<{
       id: string;
       occurred_at: string;
       text: string | null;
@@ -10508,6 +10809,113 @@ export class SupportStore {
       ...category,
       ticketCount: this.countCategoryTickets(category.id),
     };
+  }
+
+  deleteCategory(
+    categoryId: string,
+    replacementCategoryId?: string | null,
+    actor = "Operador local",
+  ): {
+    deletedCategoryId: string;
+    replacementCategoryId: string | null;
+    migratedTicketCount: number;
+  } {
+    return this.database.transaction(() => {
+      const category = this.database
+        .prepare("SELECT id, facet, label FROM categories WHERE id = ?")
+        .get(categoryId) as
+        | { id: string; facet: CategoryFacet; label: string }
+        | undefined;
+      if (!category) throw new NotFoundError("Categoria", categoryId);
+
+      const links = this.database
+        .prepare(
+          `SELECT ticket_id, source, confidence, added_at
+           FROM ticket_categories
+           WHERE category_id = ?
+           ORDER BY ticket_id`,
+        )
+        .all(categoryId) as Array<{
+        ticket_id: string;
+        source: "ai" | "manual" | "rule";
+        confidence: number | null;
+        added_at: string;
+      }>;
+      const normalizedReplacementId = normalizedNullableText(replacementCategoryId);
+
+      if (links.length > 0 && !normalizedReplacementId) {
+        throw new ConflictError(
+          `A categoria “${category.label}” está vinculada a ${links.length} ticket${links.length === 1 ? "" : "s"}. Escolha outra categoria para substituí-la antes de excluir.`,
+          {
+            categoryId,
+            ticketCount: links.length,
+            replacementRequired: true,
+          },
+        );
+      }
+
+      let replacement: { id: string; facet: CategoryFacet; label: string } | null = null;
+      if (normalizedReplacementId) {
+        if (normalizedReplacementId === category.id) {
+          throw new ValidationError("A categoria substituta deve ser diferente da categoria excluída.");
+        }
+        const candidate = this.database
+          .prepare("SELECT id, facet, label FROM categories WHERE id = ?")
+          .get(normalizedReplacementId) as
+          | { id: string; facet: CategoryFacet; label: string }
+          | undefined;
+        if (!candidate) throw new NotFoundError("Categoria substituta", normalizedReplacementId);
+        if (candidate.facet !== category.facet) {
+          throw new ValidationError(
+            "A categoria substituta deve pertencer à mesma faceta da categoria excluída.",
+            {
+              categoryFacet: category.facet,
+              replacementFacet: candidate.facet,
+            },
+          );
+        }
+        replacement = candidate;
+      }
+
+      const timestamp = nowUtc();
+      for (const link of links) {
+        this.addTicketCategoryInternal(
+          link.ticket_id,
+          replacement!.id,
+          link.source,
+          link.confidence,
+          link.added_at,
+        );
+        this.database
+          .prepare("DELETE FROM ticket_categories WHERE ticket_id = ? AND category_id = ?")
+          .run(link.ticket_id, category.id);
+        this.database
+          .prepare("UPDATE tickets SET updated_at = ? WHERE id = ?")
+          .run(timestamp, link.ticket_id);
+        this.insertTicketEvent({
+          ticketId: link.ticket_id,
+          eventType: "ticket_category_replaced",
+          actor,
+          fromStatus: null,
+          toStatus: null,
+          data: {
+            categoryId: category.id,
+            categoryLabel: category.label,
+            replacementCategoryId: replacement!.id,
+            replacementCategoryLabel: replacement!.label,
+            description: `${actor} substituiu a categoria “${category.label}” por “${replacement!.label}”.`,
+          },
+          occurredAt: timestamp,
+        });
+      }
+
+      this.database.prepare("DELETE FROM categories WHERE id = ?").run(category.id);
+      return {
+        deletedCategoryId: category.id,
+        replacementCategoryId: replacement?.id ?? null,
+        migratedTicketCount: links.length,
+      };
+    })();
   }
 
   attachCategoryToTicket(
@@ -12475,6 +12883,7 @@ export class SupportStore {
               role: row.assignee_role,
             }
           : null,
+      assignmentPending: Boolean(row.assignment_pending),
       affectedStore: row.store_id
         ? {
             id: row.store_id,
@@ -12491,6 +12900,7 @@ export class SupportStore {
       updatedAt: row.updated_at,
       resolvedAt: row.resolved_at,
       archivedAt: row.archived_at,
+      archivedFromStatus: row.archived_from_status,
       messageCount: row.message_count,
       latestSuggestion:
         row.suggestion_id && row.suggestion_confidence !== null && row.suggestion_status
@@ -12644,6 +13054,25 @@ export class SupportStore {
       phone_e164: string | null;
       is_staff: number;
     }>;
+    const externalMessageRows = this.externalTicketMessagesAvailable
+      ? this.database
+          .prepare(
+            `SELECT id, external_message_id, occurred_at, author_name, author_role,
+                    body, source_type, position
+             FROM ticket_external_messages
+             WHERE ticket_id = ?`,
+          )
+          .all(ticketId) as Array<{
+      id: string;
+      external_message_id: string;
+      occurred_at: string;
+      author_name: string;
+      author_role: "customer" | "support";
+      body: string;
+      source_type: string;
+      position: number;
+    }>
+      : [];
     const hasAudioTranscriptions = databaseHasTable(
       this.database,
       "audio_transcriptions",
@@ -12743,7 +13172,7 @@ export class SupportStore {
         )
       : new Map<string, string>();
     const messages: TimelineMessageDto[] = messageRows.map((row) => ({
-      type: "message",
+      type: "message" as const,
       id: row.id,
       externalId: row.external_id,
       occurredAt: row.occurred_at,
@@ -12757,9 +13186,27 @@ export class SupportStore {
       messageType: row.message_type,
       canDetach: Boolean(row.can_detach),
       attachments: attachmentsByMessage.get(row.id) ?? [],
-    }));
+    })).concat(externalMessageRows.map((row) => ({
+      type: "message" as const,
+      id: row.id,
+      externalId: row.external_message_id,
+      occurredAt: row.occurred_at,
+      sender: {
+        id: `${row.source_type}:${row.author_name}`,
+        displayName: row.author_name,
+        phoneE164: null,
+        isStaff: row.author_role === "support",
+      },
+      text: row.body,
+      messageType: row.source_type,
+      canDetach: false,
+      attachments: [],
+    })));
     const messageOrderById = new Map(
-      messageRows.map((row) => [row.id, row.message_rowid]),
+      [
+        ...messageRows.map((row) => [row.id, row.message_rowid] as const),
+        ...externalMessageRows.map((row) => [row.id, row.position] as const),
+      ],
     );
 
     const events = (this.database
@@ -14171,10 +14618,7 @@ export class SupportStore {
       return normalizedStoredSubject;
     }
 
-    return (
-      candidates.find((candidate) => candidate.phone_e164)?.phone_e164?.trim() ||
-      normalizedStoredSubject
-    );
+    return "Usuário não identificado";
   }
 
   private resolveMentionDisplayNames(

@@ -261,7 +261,7 @@ test("leitura nativa do Intercom não exige confirmação de mutação", async (
             requestId: "intercom-read-without-confirmation",
             toolId: "connected-app:intercom",
             operation: "search_conversations",
-            argumentsJson: JSON.stringify({ query: "Bruno Alves", limit: 5 }),
+            argumentsJson: JSON.stringify({ query: "Pessoa Cliente", limit: 5 }),
             purpose: "Localizar conversa recente.",
           }],
         };

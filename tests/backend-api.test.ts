@@ -333,6 +333,63 @@ test("API cria categoria personalizada e permite vincular e remover do ticket", 
   );
 });
 
+test("API exclui categoria sem uso e exige substituição segura quando há tickets vinculados", async () => {
+  const { app, store, ticketId } = apiFixture();
+  const oldCategory = store.createCategory({
+    facet: "product",
+    label: "Produto legado",
+  });
+  const replacement = store.createCategory({
+    facet: "product",
+    label: "Produto atual",
+  });
+  const unused = store.createCategory({
+    facet: "symptom",
+    label: "Sintoma temporário",
+  });
+  store.attachCategoryToTicket(ticketId, oldCategory.id, "Teste");
+
+  const blocked = await app.request(`/api/categories/${oldCategory.id}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(blocked.status, 409);
+  assert.deepEqual(
+    store.getTicketDetail(ticketId).categories.map((item) => item.label),
+    ["Produto legado"],
+  );
+
+  const replaced = await app.request(`/api/categories/${oldCategory.id}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ replacementCategoryId: replacement.id }),
+  });
+  assert.equal(replaced.status, 200);
+  assert.deepEqual(await replaced.json(), {
+    deletedCategoryId: oldCategory.id,
+    replacementCategoryId: replacement.id,
+    migratedTicketCount: 1,
+  });
+  assert.deepEqual(
+    store.getTicketDetail(ticketId).categories.map((item) => item.label),
+    ["Produto atual"],
+  );
+  assert.equal(store.listCategories().some((item) => item.id === oldCategory.id), false);
+
+  const deletedUnused = await app.request(`/api/categories/${unused.id}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(deletedUnused.status, 200);
+  assert.deepEqual(await deletedUnused.json(), {
+    deletedCategoryId: unused.id,
+    replacementCategoryId: null,
+    migratedTicketCount: 0,
+  });
+});
+
 test("API associa o contexto do ticket a um cliente existente", async () => {
   const { app, store, ticketId } = apiFixture();
   const target = store.upsertClient({
