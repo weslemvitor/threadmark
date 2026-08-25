@@ -173,6 +173,19 @@ const listTicketCategoriesSchema = z.object({
   limit: z.number().int().min(1).max(200).default(100),
 }).strict();
 
+const externalTicketSourceMessageSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  author: z.string().trim().min(1).max(200),
+  authorRole: z.enum(["customer", "support"]),
+  body: z.string().trim().min(1).max(20_000),
+  occurredAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
+
+const externalTicketSourceSchema = z.object({
+  type: z.literal("intercom_conversation"),
+  id: z.string().trim().min(1).max(200),
+}).strict();
+
 const prepareThreadmarkTicketDraftSchema = z.object({
   operatorMessageId: z.string().trim().min(1).max(200),
   groupId: z.string().trim().min(1).max(200),
@@ -181,17 +194,8 @@ const prepareThreadmarkTicketDraftSchema = z.object({
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
   categoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
   messageIds: z.array(z.string().trim().min(1).max(200)).max(500).default([]),
-  sourceMessages: z.array(z.object({
-    id: z.string().trim().min(1).max(200),
-    author: z.string().trim().min(1).max(200),
-    authorRole: z.enum(["customer", "support"]),
-    body: z.string().trim().min(1).max(20_000),
-    occurredAt: z.string().datetime({ offset: true }).optional(),
-  }).strict()).max(100).default([]),
-  externalSource: z.object({
-    type: z.literal("intercom_conversation"),
-    id: z.string().trim().min(1).max(200),
-  }).strict().optional(),
+  sourceMessages: z.array(externalTicketSourceMessageSchema).max(100).default([]),
+  externalSource: externalTicketSourceSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.messageIds.length === 0 && value.sourceMessages.length === 0) {
     context.addIssue({
@@ -222,15 +226,32 @@ const prepareThreadmarkTicketUpdateDraftSchema = z.object({
   priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
   addCategoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
   removeCategoryIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]),
-}).strict().refine(
-  (value) =>
+  messageIds: z.array(z.string().trim().min(1).max(200)).max(500).default([]),
+  sourceMessages: z.array(externalTicketSourceMessageSchema).max(100).default([]),
+  externalSource: externalTicketSourceSchema.optional(),
+}).strict().superRefine((value, context) => {
+  const hasChange =
     value.title !== undefined ||
     value.summary !== undefined ||
     value.priority !== undefined ||
     value.addCategoryIds.length > 0 ||
-    value.removeCategoryIds.length > 0,
-  { message: "Informe ao menos uma alteração para o ticket." },
-);
+    value.removeCategoryIds.length > 0 ||
+    value.messageIds.length > 0 ||
+    value.sourceMessages.length > 0;
+  if (!hasChange) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Informe ao menos uma alteração para o ticket.",
+    });
+  }
+  if (value.sourceMessages.length > 0 && !value.externalSource) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Mensagens externas exigem a identificação da conversa de origem.",
+      path: ["externalSource"],
+    });
+  }
+});
 
 const applyThreadmarkTicketUpdateDraftSchema = z.object({
   confirmationMessageId: z.string().trim().min(1).max(200),
@@ -434,9 +455,9 @@ export class DeepToolExecutor {
         }, {
           name: "prepare_ticket_update_draft",
           description:
-            "Prepara uma prévia auditável para atualizar título, descrição, prioridade e categorias de um ticket existente. Não altera nada antes da confirmação.",
+            "Prepara uma prévia auditável para atualizar título, descrição, prioridade, categorias e anexar mensagens locais ou do Intercom a um ticket existente. Use messageIds retornados pela busca para mensagens locais ou sourceMessages copiados da conversa externa autorizada. Não altera nada antes da confirmação.",
           argumentsExample:
-            '{"operatorMessageId":"<currentOperatorMessageId>","ticketId":"<ticketId encontrado>","title":"Título corrigido","addCategoryIds":["<categoryId real>"],"removeCategoryIds":[]}',
+            '{"operatorMessageId":"<currentOperatorMessageId>","ticketId":"<ticketId encontrado>","title":"Título corrigido","addCategoryIds":["<categoryId real>"],"removeCategoryIds":[],"messageIds":["<messageId real>"],"sourceMessages":[],"externalSource":null}',
         }, {
           name: "apply_ticket_update_draft",
           description:
@@ -1196,6 +1217,29 @@ export class DeepToolExecutor {
     const args = prepareThreadmarkTicketUpdateDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
     const ticket = this.supportStore.getTicketDetail(args.ticketId);
+    const hasRequestedMessages = args.messageIds.length > 0 || args.sourceMessages.length > 0;
+    if (hasRequestedMessages && ticket.status === "archived") {
+      throw new Error("Não é possível anexar mensagens a um ticket arquivado.");
+    }
+    const localMessages = resolveThreadmarkTicketMessagesForAttachment(
+      this.database,
+      ticket.id,
+      ticket.group.id,
+      args.messageIds,
+    );
+    const normalizedSourceMessages = normalizeExternalTicketSourceMessages(
+      args.sourceMessages,
+      executedAt,
+    );
+    const sourceMessages = args.externalSource
+      ? resolveNewExternalTicketSourceMessages(
+          this.database,
+          ticket.id,
+          args.externalSource.type,
+          args.externalSource.id,
+          normalizedSourceMessages,
+        )
+      : [];
     const requestedAdds = resolveTicketCategories(this.database, args.addCategoryIds);
     const requestedRemovals = resolveTicketCategories(this.database, args.removeCategoryIds);
     const rawConflicts = requestedAdds
@@ -1221,7 +1265,11 @@ export class DeepToolExecutor {
     const title = args.title !== undefined && args.title !== ticket.title ? args.title : null;
     const summary = args.summary !== undefined && args.summary !== ticket.summary ? args.summary : null;
     const priority = args.priority !== undefined && args.priority !== ticket.priority ? args.priority : null;
-    if (title === null && summary === null && priority === null && !addIds.length && !removeIds.length) {
+    if (
+      title === null && summary === null && priority === null &&
+      !addIds.length && !removeIds.length &&
+      !localMessages.messageIds.length && !sourceMessages.length
+    ) {
       throw new Error("A prévia não contém nenhuma alteração em relação ao ticket atual.");
     }
     const fingerprint = JSON.stringify({
@@ -1232,6 +1280,9 @@ export class DeepToolExecutor {
       priority,
       addIds,
       removeIds,
+      messageIds: localMessages.messageIds,
+      sourceMessages,
+      externalSource: args.externalSource ?? null,
       baseUpdatedAt: ticket.updatedAt,
       currentCategoryIds,
     });
@@ -1240,8 +1291,9 @@ export class DeepToolExecutor {
       `INSERT OR IGNORE INTO threadmark_ai_ticket_update_drafts (
          id, thread_id, operator_message_id, ticket_id, title, summary, priority,
          add_category_ids_json, remove_category_ids_json, base_updated_at,
-         base_category_ids_json, state, created_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+         base_category_ids_json, state, created_by, created_at, updated_at,
+         message_ids_json, source_messages_json, external_source_type, external_source_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       draftId,
       operator.threadId,
@@ -1257,6 +1309,10 @@ export class DeepToolExecutor {
       operator.actor,
       executedAt,
       executedAt,
+      JSON.stringify(localMessages.messageIds),
+      JSON.stringify(sourceMessages),
+      args.externalSource?.type ?? null,
+      args.externalSource?.id ?? null,
     );
     const preview = {
       draftId,
@@ -1268,6 +1324,12 @@ export class DeepToolExecutor {
         priority: priority === null ? null : { from: ticket.priority, to: priority },
         addCategories,
         removeCategories,
+        messages: {
+          local: localMessages.messageIds.length,
+          external: sourceMessages.length,
+          total: localMessages.messageIds.length + sourceMessages.length,
+        },
+        externalSource: sourceMessages.length > 0 ? args.externalSource ?? null : null,
       },
       confirmationRequired:
         "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a atualização.",
@@ -1303,7 +1365,9 @@ export class DeepToolExecutor {
     const draft = this.database.prepare(
       `SELECT id, thread_id, ticket_id, title, summary, priority,
               add_category_ids_json, remove_category_ids_json, base_updated_at,
-              base_category_ids_json, state, created_by, created_at
+              base_category_ids_json, state, created_by, created_at,
+              message_ids_json, source_messages_json,
+              external_source_type, external_source_id
        FROM threadmark_ai_ticket_update_drafts WHERE id = ?`,
     ).get(args.draftId) as ThreadmarkAiTicketUpdateDraftRow | undefined;
     if (!draft || draft.thread_id !== operator.threadId) {
@@ -1325,6 +1389,29 @@ export class DeepToolExecutor {
     }
     const addCategoryIds = parseJsonStringArray(draft.add_category_ids_json);
     const removeCategoryIds = parseJsonStringArray(draft.remove_category_ids_json);
+    const messageIds = parseJsonStringArray(draft.message_ids_json);
+    const sourceMessages = parseExternalTicketSourceMessages(draft.source_messages_json);
+    if ((messageIds.length > 0 || sourceMessages.length > 0) && current.status === "archived") {
+      throw new Error("Não é possível anexar mensagens a um ticket arquivado.");
+    }
+    const localMessages = resolveThreadmarkTicketMessagesForAttachment(
+      this.database,
+      current.id,
+      current.group.id,
+      messageIds,
+    );
+    const externalMessages = draft.external_source_type && draft.external_source_id
+      ? resolveNewExternalTicketSourceMessages(
+          this.database,
+          current.id,
+          draft.external_source_type,
+          draft.external_source_id,
+          sourceMessages,
+        )
+      : [];
+    if (sourceMessages.length > 0 && (!draft.external_source_type || !draft.external_source_id)) {
+      throw new Error("O rascunho perdeu a identificação da conversa externa de origem.");
+    }
     resolveTicketCategories(this.database, [...addCategoryIds, ...removeCategoryIds]);
     const updated = this.database.transaction(() => {
       let result = current;
@@ -1342,6 +1429,25 @@ export class DeepToolExecutor {
           { addCategoryIds, removeCategoryIds },
           draft.created_by,
         );
+      }
+      if (localMessages.messageIds.length > 0) {
+        this.supportStore!.attachConversationMessages(current.group.id, {
+          ticketId: current.id,
+          messageIds: localMessages.messageIds,
+          clientRequestId: draft.id,
+          actor: draft.created_by,
+          reason: "Mensagens anexadas pelo Threadmark AI após confirmação explícita.",
+        });
+        result = this.supportStore!.getTicketDetail(current.id);
+      }
+      if (externalMessages.length > 0 && draft.external_source_type && draft.external_source_id) {
+        this.supportStore!.attachExternalSourceMessagesToTicket(current.id, {
+          sourceType: draft.external_source_type,
+          sourceConversationId: draft.external_source_id,
+          messages: externalMessages,
+          createdAt: executedAt,
+        });
+        result = this.supportStore!.getTicketDetail(current.id);
       }
       this.database!.prepare(
         `UPDATE threadmark_ai_ticket_update_drafts
@@ -2301,6 +2407,10 @@ interface ThreadmarkAiTicketUpdateDraftRow {
   remove_category_ids_json: string;
   base_updated_at: string;
   base_category_ids_json: string;
+  message_ids_json: string;
+  source_messages_json: string;
+  external_source_type: "intercom_conversation" | null;
+  external_source_id: string | null;
   state: "pending" | "applied";
   created_by: string;
   created_at: string;
@@ -2391,7 +2501,7 @@ function normalizeConfirmationMessage(message: string): string {
 function parseJsonStringArray(value: string): string[] {
   const parsed = JSON.parse(value) as unknown;
   if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
-    throw new Error("A lista de categorias persistida é inválida.");
+    throw new Error("A lista persistida é inválida.");
   }
   return [...new Set(parsed)];
 }
@@ -2449,6 +2559,60 @@ function resolveThreadmarkTicketSourceMessages(
   };
 }
 
+function resolveThreadmarkTicketMessagesForAttachment(
+  database: SupportDatabase,
+  ticketId: string,
+  groupId: string,
+  messageIds: readonly string[],
+): { messageIds: string[] } {
+  const uniqueIds = [...new Set(messageIds.map((id) => id.trim()).filter(Boolean))];
+  if (!uniqueIds.length) return { messageIds: [] };
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  const rows = database.prepare(
+    `SELECT message.id, message.group_id, message.occurred_at,
+            (SELECT membership.ticket_id
+             FROM ticket_messages membership
+             WHERE membership.message_id = message.id
+             ORDER BY membership.ticket_id LIMIT 1) AS linked_ticket_id,
+            (SELECT ticket.number
+             FROM ticket_messages membership
+             JOIN tickets ticket ON ticket.id = membership.ticket_id
+             WHERE membership.message_id = message.id
+             ORDER BY ticket.number LIMIT 1) AS linked_ticket_number
+     FROM messages message
+     WHERE message.id IN (${placeholders})
+     ORDER BY message.occurred_at, message.rowid`,
+  ).all(...uniqueIds) as Array<{
+    id: string;
+    group_id: string;
+    occurred_at: string;
+    linked_ticket_id: string | null;
+    linked_ticket_number: number | null;
+  }>;
+  if (rows.length !== uniqueIds.length) {
+    const found = new Set(rows.map((row) => row.id));
+    const missing = uniqueIds.find((id) => !found.has(id));
+    throw new Error(`A mensagem ${missing ?? "informada"} não existe no Threadmark.`);
+  }
+  const foreign = rows.find((row) => row.group_id !== groupId);
+  if (foreign) {
+    throw new Error(`A mensagem ${foreign.id} não pertence à conversa do ticket.`);
+  }
+  const linkedElsewhere = rows.find(
+    (row) => row.linked_ticket_id !== null && row.linked_ticket_id !== ticketId,
+  );
+  if (linkedElsewhere) {
+    throw new Error(
+      `A mensagem ${linkedElsewhere.id} já está vinculada ao ticket #${linkedElsewhere.linked_ticket_number}.`,
+    );
+  }
+  return {
+    messageIds: rows
+      .filter((row) => row.linked_ticket_id === null)
+      .map((row) => row.id),
+  };
+}
+
 function normalizeExternalTicketSourceMessages(
   messages: ReadonlyArray<{
     id: string;
@@ -2471,6 +2635,37 @@ function normalizeExternalTicketSourceMessages(
       occurredAt: message.occurredAt ?? fallbackOccurredAt,
     }];
   });
+}
+
+function resolveNewExternalTicketSourceMessages(
+  database: SupportDatabase,
+  ticketId: string,
+  sourceType: "intercom_conversation",
+  sourceConversationId: string,
+  messages: readonly ExternalTicketSourceMessage[],
+): ExternalTicketSourceMessage[] {
+  if (!messages.length) return [];
+  const messageIds = messages.map((message) => message.id);
+  const placeholders = messageIds.map(() => "?").join(", ");
+  const rows = database.prepare(
+    `SELECT ticket_id, external_message_id
+     FROM ticket_external_messages
+     WHERE source_type = ? AND source_conversation_id = ?
+       AND external_message_id IN (${placeholders})`,
+  ).all(sourceType, sourceConversationId, ...messageIds) as Array<{
+    ticket_id: string;
+    external_message_id: string;
+  }>;
+  const linkedElsewhere = rows.find((row) => row.ticket_id !== ticketId);
+  if (linkedElsewhere) {
+    throw new Error(
+      `A mensagem externa ${linkedElsewhere.external_message_id} já pertence a outro ticket.`,
+    );
+  }
+  const alreadyAttached = new Set(
+    rows.filter((row) => row.ticket_id === ticketId).map((row) => row.external_message_id),
+  );
+  return messages.filter((message) => !alreadyAttached.has(message.id));
 }
 
 function parseExternalTicketSourceMessages(value: string): ExternalTicketSourceMessage[] {

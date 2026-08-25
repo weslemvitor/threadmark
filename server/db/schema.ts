@@ -3473,4 +3473,24 @@ export const migrations: Migration[] = [
         ON automation_assignment_queue(workflow_id, node_id, queue_order, step_id);
     `,
   },
+  {
+    version: 65,
+    name: "threadmark_ai_ticket_update_source_messages",
+    sql: `
+      ALTER TABLE threadmark_ai_ticket_update_drafts
+        ADD COLUMN message_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(message_ids_json) AND json_type(message_ids_json) = 'array');
+
+      ALTER TABLE threadmark_ai_ticket_update_drafts
+        ADD COLUMN source_messages_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(source_messages_json) AND json_type(source_messages_json) = 'array');
+
+      ALTER TABLE threadmark_ai_ticket_update_drafts
+        ADD COLUMN external_source_type TEXT
+          CHECK (external_source_type IS NULL OR external_source_type = 'intercom_conversation');
+
+      ALTER TABLE threadmark_ai_ticket_update_drafts
+        ADD COLUMN external_source_id TEXT;
+    `,
+  },
 ];

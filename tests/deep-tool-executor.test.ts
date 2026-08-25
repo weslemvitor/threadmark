@@ -744,6 +744,194 @@ test("Threadmark AI atualiza metadados e categorias somente após confirmação 
   }
 });
 
+test("Threadmark AI anexa mensagens locais e externas a ticket existente somente após confirmação", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-ticket-attach-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "ai-attach-account",
+    phoneNumber: "+5548999999333",
+    displayName: "Comercial",
+  });
+  const client = store.upsertClient({
+    id: "ai-attach-client",
+    name: "Cliente Anexo",
+    slug: "cliente-anexo",
+    kind: "ecommerce",
+  });
+  const group = store.upsertGroup({
+    id: "ai-attach-group",
+    accountId: account.id,
+    clientId: client.id,
+    externalJid: "ai-attach@g.us",
+    subject: "Cliente Anexo & Suporte",
+  });
+  const participant = store.upsertParticipant({
+    id: "ai-attach-participant",
+    externalJid: "ai-attach-user@s.whatsapp.net",
+    displayName: "Pessoa Cliente",
+  });
+  store.addGroupParticipant(group.id, participant.id);
+  const localMessage = store.upsertMessage({
+    id: "ai-attach-message",
+    externalId: "ai-attach-message-external",
+    groupId: group.id,
+    senderId: participant.id,
+    occurredAt: "2026-08-25T12:00:00.000Z",
+    text: "O Google Ads continua desconectado e o GA4 também caiu.",
+    messageType: "text",
+    triageKind: "demand",
+  });
+  const ticket = store.createManualTicket({
+    clientRequestId: "ai-attach-ticket",
+    groupId: group.id,
+    title: "Desconexão do Google Ads",
+    summary: "Cliente relatou desconexão da conta de anúncios.",
+    priority: "high",
+    actor: "Pessoa Proprietária",
+  });
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+  const request = store.addInvestigationThreadMessage(thread.id, {
+    body: `Anexe ao ticket #${ticket.number} a mensagem local e as duas mensagens da conversa 240 do Intercom.`,
+  }).messages.filter((message) => message.role === "operator").at(-1);
+  assert.ok(request);
+  const executor = new DeepToolExecutor(
+    new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
+    { database, supportStore: store },
+  );
+
+  try {
+    const archivedTicket = store.createManualTicket({
+      clientRequestId: "ai-attach-archived-ticket",
+      groupId: group.id,
+      title: "Atendimento já arquivado",
+      summary: "Ticket usado para validar o limite de segurança.",
+      actor: "Pessoa Proprietária",
+    });
+    store.updateTicketStatus(archivedTicket.id, { status: "in_progress" });
+    store.updateTicketStatus(archivedTicket.id, {
+      status: "resolved",
+      resolution: {
+        summary: "Demanda concluída.",
+        outcome: "Contexto preservado para o teste.",
+      },
+    });
+    store.updateTicketStatus(archivedTicket.id, { status: "archived" });
+    const archivedAttempt = await executor.execute({
+      requestId: "prepare-attach-archived",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: request.id,
+        ticketId: archivedTicket.id,
+        messageIds: [localMessage.id],
+      }),
+      purpose: "Validar que ticket arquivado continua imutável.",
+    });
+    assert.equal(archivedAttempt.status, "error");
+    assert.match(archivedAttempt.summary, /ticket arquivado/i);
+
+    const prepared = await executor.execute({
+      requestId: "prepare-attach-1",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: request.id,
+        ticketId: ticket.id,
+        messageIds: [localMessage.id],
+        sourceMessages: [{
+          id: "intercom-part-240-4",
+          author: "Pessoa Cliente",
+          authorRole: "customer",
+          body: "O GA4 também aparece desconectado.",
+          occurredAt: "2026-08-25T12:05:00.000Z",
+        }, {
+          id: "intercom-part-240-5",
+          author: "Pessoa Suporte",
+          authorRole: "support",
+          body: "Vou reunir as evidências no mesmo atendimento.",
+          occurredAt: "2026-08-25T12:06:00.000Z",
+        }],
+        externalSource: { type: "intercom_conversation", id: "240" },
+      }),
+      purpose: "Preparar o anexo das mensagens sem alterar o ticket.",
+    });
+    assert.equal(prepared.status, "success");
+    assert.match(prepared.summary, /nenhuma alteração foi aplicada/i);
+    const preview = JSON.parse(prepared.content) as {
+      draftId: string;
+      changes: { messages: { local: number; external: number; total: number } };
+    };
+    assert.deepEqual(preview.changes.messages, { local: 1, external: 2, total: 3 });
+    assert.equal(store.getTicketDetail(ticket.id).messageCount, 0);
+
+    const unconfirmed = await executor.execute({
+      requestId: "apply-attach-without-confirmation",
+      toolId: "threadmark-context",
+      operation: "apply_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: request.id,
+        draftId: preview.draftId,
+      }),
+      purpose: "Validar que a prévia não pode se autoaplicar.",
+    });
+    assert.equal(unconfirmed.status, "error");
+    assert.match(unconfirmed.summary, /não confirma explicitamente/i);
+    assert.equal(store.getTicketDetail(ticket.id).messageCount, 0);
+
+    database.prepare(
+      `UPDATE investigation_thread_jobs
+       SET state = 'completed', finished_at = requested_at, result_json = '{}'
+       WHERE thread_id = ?`,
+    ).run(thread.id);
+    const confirmation = store.addInvestigationThreadMessage(thread.id, {
+      body: "Confirmo, pode anexar essas mensagens ao ticket conforme a prévia.",
+    }).messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(confirmation);
+
+    const applied = await executor.execute({
+      requestId: "apply-attach-1",
+      toolId: "threadmark-context",
+      operation: "apply_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId: preview.draftId,
+      }),
+      purpose: "Anexar as mensagens confirmadas ao ticket.",
+    });
+    assert.equal(applied.status, "success");
+    const updated = store.getTicketDetail(ticket.id);
+    assert.equal(updated.messageCount, 3);
+    assert.deepEqual(
+      updated.timeline
+        .filter((item) => item.type === "message")
+        .map((message) => message.text),
+      [
+        "O Google Ads continua desconectado e o GA4 também caiu.",
+        "O GA4 também aparece desconectado.",
+        "Vou reunir as evidências no mesmo atendimento.",
+      ],
+    );
+
+    const replay = await executor.execute({
+      requestId: "apply-attach-2",
+      toolId: "threadmark-context",
+      operation: "apply_ticket_update_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId: preview.draftId,
+      }),
+      purpose: "Repetir a confirmação sem duplicar mensagens.",
+    });
+    assert.equal(replay.status, "success");
+    assert.match(replay.summary, /já havia sido atualizado/i);
+    assert.equal(store.getTicketDetail(ticket.id).messageCount, 3);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("executor profundo lê somente dentro da raiz explicitamente autorizada", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-deep-tool-"));
   const root = path.join(temporary, "code");
