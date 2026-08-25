@@ -2,7 +2,6 @@ import {
   BarChart3,
   Bell,
   BookOpenText,
-  Boxes,
   ChevronLeft,
   CircleGauge,
   LayoutDashboard,
@@ -13,6 +12,7 @@ import {
   UsersRound,
   Workflow,
 } from "lucide-react";
+import Image from "next/image";
 import type { ComponentType } from "react";
 import type { RuntimeState } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
@@ -211,9 +211,15 @@ export function Sidebar(props: SidebarProps) {
         )}
       >
         <div className="flex h-[72px] shrink-0 items-center gap-3 border-b border-white/5 px-4">
-          <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-white shadow-sm" aria-hidden="true">
-            <Boxes size={21} strokeWidth={2.2} />
-          </div>
+          <Image
+            alt=""
+            aria-hidden="true"
+            className="size-9 shrink-0 rounded-xl shadow-sm"
+            height={36}
+            priority
+            src="/threadmark-icon.png"
+            width={36}
+          />
           <div className="min-w-0 flex-1">
             <strong className="block text-sm font-semibold text-white">Threadmark</strong>
             <span className="mt-0.5 block text-xs text-slate-400">Suporte local</span>

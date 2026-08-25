@@ -22,8 +22,9 @@ export const metadata: Metadata = {
   description:
     "Threadmark organiza conversas, tickets e conhecimento de suporte com dados locais.",
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/threadmark-icon.png",
+    shortcut: "/threadmark-icon.png",
+    apple: "/threadmark-icon.png",
   },
 };
 

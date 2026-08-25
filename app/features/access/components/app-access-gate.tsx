@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   createContext,
   type FormEvent,
@@ -11,7 +12,6 @@ import {
 } from "react";
 import {
   ArrowRight,
-  Boxes,
   CheckCircle2,
   Database,
   KeyRound,
@@ -142,7 +142,14 @@ function AccessFrame({ children }: { children: ReactNode }) {
     <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-muted/40 px-4 py-16">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.12),transparent_38%),radial-gradient(circle_at_bottom_right,hsl(var(--primary)/0.08),transparent_42%)]" aria-hidden="true" />
       <div className="absolute left-5 top-5 z-10 flex items-center gap-2.5">
-        <span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><Boxes size={20} /></span>
+        <Image
+          alt="Logo do Threadmark"
+          className="size-9 rounded-xl shadow-sm"
+          height={36}
+          priority
+          src="/threadmark-icon.png"
+          width={36}
+        />
         <strong className="text-sm font-semibold text-foreground">Threadmark</strong>
       </div>
       <div className="relative z-10 grid w-full place-items-center">{children}</div>
