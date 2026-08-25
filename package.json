@@ -1,6 +1,6 @@
 {
   "name": "threadmark",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Central de suporte local-first para transformar conversas inbound do WhatsApp em contexto e tickets.",
   "keywords": [
     "whatsapp",

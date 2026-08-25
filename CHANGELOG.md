@@ -6,6 +6,12 @@ As mudanças relevantes do Threadmark são registradas neste arquivo. O projeto 
 
 ## [Não publicado]
 
+## [0.3.1] - 2026-08-25
+
+### Corrigido
+
+- Empacotamento por tag não tenta mais publicar implicitamente pelo `electron-builder`; somente o passo auditado do GitHub Actions envia o DMG e o checksum.
+
 ## [0.3.0] - 2026-08-25
 
 ### Adicionado
@@ -65,6 +71,7 @@ As mudanças relevantes do Threadmark são registradas neste arquivo. O projeto 
 - API e Web UI limitadas a loopback por padrão.
 - Credenciais cifradas fora do SQLite e excluídas dos backups integrados.
 
-[0.3.0]: https://github.com/weslemvitor/threadmark/releases/tag/v0.3.0
+[0.3.1]: https://github.com/weslemvitor/threadmark/releases/tag/v0.3.1
+[0.3.0]: https://github.com/weslemvitor/threadmark/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/weslemvitor/threadmark/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/weslemvitor/threadmark/releases/tag/v0.1.0

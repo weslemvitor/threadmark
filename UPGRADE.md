@@ -33,7 +33,7 @@ O cache dos modelos locais de transcrição também não entra no backup. As tra
 2. Valide os arquivos na mesma pasta, substituindo o nome pela versão baixada:
 
    ```bash
-   shasum -a 256 -c Threadmark-0.3.0-arm64.dmg.sha256
+   shasum -a 256 -c Threadmark-0.3.1-arm64.dmg.sha256
    ```
 
 3. Execute **Threadmark → Encerrar aplicativo e serviço local…** na versão atual.

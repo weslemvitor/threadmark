@@ -95,7 +95,7 @@ O shell desktop reutiliza a interface React, os componentes shadcn/ui e o Tailwi
 A distribuição atual suporta Macs com Apple Silicon (`arm64`) e é publicada como DMG nas [releases oficiais do projeto](https://github.com/weslemvitor/threadmark/releases). Cada release inclui o arquivo `.sha256` correspondente. Com os dois arquivos na mesma pasta, valide o download antes de instalar:
 
 ```bash
-shasum -a 256 -c Threadmark-0.3.0-arm64.dmg.sha256
+shasum -a 256 -c Threadmark-0.3.1-arm64.dmg.sha256
 ```
 
 Abra o DMG e arraste `Threadmark.app` para **Aplicativos**. Esta Developer Preview ainda não possui assinatura nem notarização da Apple. Depois de confirmar que o DMG veio da release oficial e que o checksum corresponde, remova somente o atributo de quarentena desse aplicativo e abra-o:

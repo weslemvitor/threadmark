@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("release desktop publica somente o DMG arm64 validado e seu checksum", async () => {
-  const [packageSource, workflow] = await Promise.all([
+  const [packageSource, workflow, desktopBuilder] = await Promise.all([
     readFile("package.json", "utf8"),
     readFile(".github/workflows/release-desktop.yml", "utf8"),
+    readFile("bin/build-desktop.mjs", "utf8"),
   ]);
   const metadata = JSON.parse(packageSource) as {
     version: string;
@@ -28,6 +29,7 @@ test("release desktop publica somente o DMG arm64 validado e seu checksum", asyn
   );
   assert.match(metadata.scripts["release:desktop"], /release:check/);
   assert.match(metadata.scripts["release:desktop"], /desktop:artifact:check/);
+  assert.match(desktopBuilder, /"--publish",\s*"never"/);
 
   const webProcess = await readFile("server/runtime/web-process.ts", "utf8");
   assert.match(webProcess, /bin["'], ["']start-web\.mjs/);

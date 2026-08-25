@@ -69,7 +69,15 @@ try {
     "--version",
     "44.0.0",
   ]);
-  await run(process.execPath, [builderCli, "--mac", target]);
+  // A publicação pertence exclusivamente ao workflow auditado. Em builds
+  // disparados por tag, o electron-builder tentaria publicar implicitamente.
+  await run(process.execPath, [
+    builderCli,
+    "--mac",
+    target,
+    "--publish",
+    "never",
+  ]);
 } catch (error) {
   buildError = error;
 } finally {
