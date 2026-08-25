@@ -86,6 +86,20 @@ function durationDisplayValue(
   return Number((durationMs / multiplier).toFixed(4));
 }
 
+function capacityRows(value: AutomationNodeConfigValue | undefined) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || Array.isArray(item) || typeof item !== "object") return [];
+    const assigneeId = item.assigneeId;
+    const maxTickets = item.maxTickets;
+    if (typeof assigneeId !== "string") return [];
+    return [{
+      assigneeId,
+      maxTickets: typeof maxTickets === "number" ? maxTickets : 5,
+    }];
+  });
+}
+
 export function NodeConfigSheet({
   definition,
   issues,
@@ -204,6 +218,9 @@ export function NodeConfigSheet({
                 ? automationConditionValueOptions(conditionField)
                 : [];
               const fieldId = `automation-${node.id}-${field.key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+              const configuredCapacities = field.type === "assignee_capacities"
+                ? capacityRows(storedValue)
+                : [];
               return (
                 <div className="grid gap-1.5 text-xs font-medium" key={field.key}>
                   <label htmlFor={fieldId}>{field.label}{field.required ? " *" : ""}</label>
@@ -309,6 +326,63 @@ export function NodeConfigSheet({
                         onCheckedChange={(checked) => change(field.key, checked)}
                       />
                     </span>
+                  ) : null}
+                  {field.type === "assignee_capacities" ? (
+                    <div className="grid gap-2" id={fieldId}>
+                      {field.options?.length ? field.options.map((option) => {
+                        const configured = configuredCapacities.find(
+                          (item) => item.assigneeId === option.value,
+                        );
+                        return (
+                          <div
+                            className="grid grid-cols-[minmax(0,1fr)_88px] items-center gap-3 rounded-lg border bg-muted/30 p-3"
+                            key={option.value}
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <Switch
+                                aria-label={`Incluir ${option.label} na distribuição`}
+                                checked={Boolean(configured)}
+                                onCheckedChange={(checked) => {
+                                  const next = checked
+                                    ? [...configuredCapacities, { assigneeId: option.value, maxTickets: 5 }]
+                                    : configuredCapacities.filter(
+                                        (item) => item.assigneeId !== option.value,
+                                      );
+                                  change(field.key, next);
+                                }}
+                              />
+                              <span className="min-w-0 truncate font-medium">{option.label}</span>
+                            </div>
+                            <label className="grid gap-1 text-[11px] text-muted-foreground">
+                              Máximo
+                              <Input
+                                aria-label={`Máximo de tickets para ${option.label}`}
+                                disabled={!configured}
+                                max={500}
+                                min={1}
+                                onChange={(event) => {
+                                  const maxTickets = Number(event.target.value);
+                                  change(
+                                    field.key,
+                                    configuredCapacities.map((item) =>
+                                      item.assigneeId === option.value
+                                        ? { ...item, maxTickets }
+                                        : item,
+                                    ),
+                                  );
+                                }}
+                                type="number"
+                                value={configured?.maxTickets ?? 5}
+                              />
+                            </label>
+                          </div>
+                        );
+                      }) : (
+                        <p className="rounded-lg border border-dashed p-3 text-xs font-normal text-muted-foreground">
+                          Nenhum usuário ativo está disponível. Cadastre a equipe nas configurações.
+                        </p>
+                      )}
+                    </div>
                   ) : null}
                   {field.description ? <span className="font-normal text-muted-foreground">{field.description}</span> : null}
                   {field.supportsVariables ? (

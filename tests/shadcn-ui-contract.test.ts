@@ -265,9 +265,23 @@ test("contexto do ticket ocupa a página sem recriar uma listagem lateral", asyn
   assert.match(context, /<h3 className="text-sm font-semibold/);
   assert.match(categories, /<h3 className="text-sm font-semibold/);
   assert.match(categories, /from "@\/app\/components\/ui\/select"/);
+  assert.match(categories, /from "@\/app\/components\/ui\/combobox"/);
+  assert.match(categories, /<Combobox/);
   assert.match(categories, /<SelectTrigger[^>]*className="w-full text-xs"/);
   assert.match(categories, /categoryFacetOrder/);
   assert.match(categories, /grid-cols-\[68px_minmax\(0,1fr\)\]/);
+});
+
+test("catálogo de categorias usa diálogo e busca Shadcn na exclusão segura", async () => {
+  const source = await readFile(
+    new URL("../app/features/categories/components/categories-view.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /from "@\/app\/components\/ui\/dialog"/);
+  assert.match(source, /from "@\/app\/components\/ui\/combobox"/);
+  assert.match(source, /Migrar e excluir/);
+  assert.match(source, /Excluir definitivamente/);
 });
 
 test("Threadmark AI abre compacto, expande sem bloquear a tela e preserva gráficos responsivos", async () => {

@@ -17,6 +17,7 @@ export type ComboboxOption = {
   label: string
   description?: string
   keywords?: string[]
+  group?: string
 }
 
 function normalizeSearch(value: string): string {
@@ -189,36 +190,45 @@ export function Combobox({
             filteredOptions.map((option, index) => {
               const selected = option.value === value
               const active = index === boundedActiveIndex
+              const showGroup = Boolean(
+                option.group && filteredOptions[index - 1]?.group !== option.group,
+              )
               return (
-                <Button
-                  aria-selected={selected}
-                  className={cn(
-                    "h-auto w-full min-w-0 justify-start gap-2 rounded-md px-2 py-2 text-left whitespace-normal",
-                    active && "bg-accent text-accent-foreground",
-                  )}
-                  id={`${listboxId}-option-${index}`}
-                  key={option.value}
-                  onClick={() => selectOption(option)}
-                  onMouseMove={() => setActiveIndex(index)}
-                  role="option"
-                  size="unstyled"
-                  type="button"
-                  variant="ghost"
-                >
-                  <span className="flex size-4 shrink-0 items-center justify-center">
-                    {selected ? <Check className="text-primary" size={14} /> : null}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <strong className="block truncate text-xs font-medium">
-                      {option.label}
-                    </strong>
-                    {option.description ? (
-                      <small className="mt-0.5 block truncate text-xs text-muted-foreground">
-                        {option.description}
-                      </small>
-                    ) : null}
-                  </span>
-                </Button>
+                <React.Fragment key={option.value}>
+                  {showGroup ? (
+                    <p className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground first:pt-1">
+                      {option.group}
+                    </p>
+                  ) : null}
+                  <Button
+                    aria-selected={selected}
+                    className={cn(
+                      "h-auto w-full min-w-0 justify-start gap-2 rounded-md px-2 py-2 text-left whitespace-normal",
+                      active && "bg-accent text-accent-foreground",
+                    )}
+                    id={`${listboxId}-option-${index}`}
+                    onClick={() => selectOption(option)}
+                    onMouseMove={() => setActiveIndex(index)}
+                    role="option"
+                    size="unstyled"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <span className="flex size-4 shrink-0 items-center justify-center">
+                      {selected ? <Check className="text-primary" size={14} /> : null}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <strong className="block truncate text-xs font-medium">
+                        {option.label}
+                      </strong>
+                      {option.description ? (
+                        <small className="mt-0.5 block truncate text-xs text-muted-foreground">
+                          {option.description}
+                        </small>
+                      ) : null}
+                    </span>
+                  </Button>
+                </React.Fragment>
               )
             })
           ) : (

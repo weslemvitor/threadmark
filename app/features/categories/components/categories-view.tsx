@@ -1,10 +1,19 @@
-import { Boxes, CircleDot, Layers3, Tags } from "lucide-react";
+import { ArrowRightLeft, Boxes, CircleDot, Layers3, Tags, Trash2 } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { getCategoryName } from "@/app/lib/format";
 import { type CategoryFacetType, type TicketCategoryCatalog } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
+import { Combobox } from "@/app/components/ui/combobox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/app/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -38,6 +47,7 @@ export function CategoriesView({
   categories,
   loading,
   onCreate,
+  onDelete,
 }: {
   categories: TicketCategoryCatalog[];
   loading: boolean;
@@ -46,12 +56,17 @@ export function CategoriesView({
     label: string;
     color?: string;
   }) => Promise<unknown>;
+  onDelete: (categoryId: string, replacementCategoryId?: string) => Promise<unknown>;
 }) {
   const [facet, setFacet] = useState<CategoryFacetType>("reason");
   const [label, setLabel] = useState("");
   const [color, setColor] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<TicketCategoryCatalog | null>(null);
+  const [replacementCategoryId, setReplacementCategoryId] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const categoriesByFacet = useMemo(() => {
     const buckets = createFacetBuckets();
@@ -72,6 +87,21 @@ export function CategoriesView({
   );
 
   const totalCatalog = categories.length;
+  const replacementOptions = useMemo(() => {
+    if (!categoryToDelete) return [];
+    return categories
+      .filter(
+        (category) =>
+          category.id !== categoryToDelete.id &&
+          category.facet === categoryToDelete.facet,
+      )
+      .sort((left, right) => left.label.localeCompare(right.label, "pt-BR"))
+      .map((category) => ({
+        value: category.id,
+        label: getCategoryName(category),
+        description: `${category.ticketCount} vínculo${category.ticketCount === 1 ? "" : "s"}`,
+      }));
+  }, [categories, categoryToDelete]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -93,6 +123,24 @@ export function CategoriesView({
       );
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!categoryToDelete || isDeleting) return;
+    if (categoryToDelete.ticketCount > 0 && !replacementCategoryId) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(categoryToDelete.id, replacementCategoryId || undefined);
+      setCategoryToDelete(null);
+      setReplacementCategoryId("");
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Não foi possível excluir a categoria.",
+      );
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -203,12 +251,27 @@ export function CategoriesView({
                 </header>
                 <div className="grid px-3 py-2">
                   {items.map((category) => (
-                    <article className="grid min-h-9 grid-cols-[8px_minmax(0,1fr)] items-center gap-2 border-b border-border last:border-b-0" key={category.id}>
+                    <article className="group/category grid min-h-9 grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2 border-b border-border last:border-b-0" key={category.id}>
                       <i className="size-1.5 rounded-full bg-primary" style={{ backgroundColor: category.color ?? undefined }} />
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm text-foreground">{getCategoryName(category)}</span>
                         <small className="ml-auto shrink-0 text-xs text-muted-foreground">{category.ticketCount} vínculo{category.ticketCount === 1 ? "" : "s"}</small>
                       </span>
+                      <Button
+                        aria-label={`Excluir categoria ${getCategoryName(category)}`}
+                        className="text-muted-foreground opacity-60 hover:text-destructive group-hover/category:opacity-100"
+                        onClick={() => {
+                          setCategoryToDelete(category);
+                          setReplacementCategoryId("");
+                          setDeleteError(null);
+                        }}
+                        size="icon-xs"
+                        title="Excluir categoria"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Trash2 />
+                      </Button>
                     </article>
                   ))}
                   {!items.length ? (
@@ -223,6 +286,80 @@ export function CategoriesView({
           })}
         </div>
       )}
+
+      <Dialog
+        open={Boolean(categoryToDelete)}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) {
+            setCategoryToDelete(null);
+            setReplacementCategoryId("");
+            setDeleteError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Excluir categoria</DialogTitle>
+            <DialogDescription>
+              {categoryToDelete?.ticketCount
+                ? `“${getCategoryName(categoryToDelete)}” está vinculada a ${categoryToDelete.ticketCount} ticket${categoryToDelete.ticketCount === 1 ? "" : "s"}. Substitua os vínculos antes da exclusão.`
+                : `“${categoryToDelete ? getCategoryName(categoryToDelete) : ""}” ainda não foi utilizada e será excluída definitivamente.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {categoryToDelete?.ticketCount ? (
+            <div className="grid gap-3 rounded-xl border border-border bg-muted/35 p-3">
+              <div className="flex items-start gap-2">
+                <ArrowRightLeft className="mt-0.5 shrink-0 text-primary" size={16} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">Migrar tickets para</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                    Somente categorias da mesma faceta ({facetLabels[categoryToDelete.facet]}) podem substituir esta classificação.
+                  </p>
+                </div>
+              </div>
+              <Combobox
+                disabled={isDeleting}
+                emptyMessage="Crie outra categoria nesta faceta antes de excluir."
+                onValueChange={setReplacementCategoryId}
+                options={replacementOptions}
+                placeholder="Selecione a categoria substituta…"
+                searchPlaceholder="Buscar categoria…"
+                value={replacementCategoryId}
+              />
+            </div>
+          ) : null}
+
+          {deleteError ? <p className="text-xs text-destructive">{deleteError}</p> : null}
+
+          <DialogFooter>
+            <Button
+              disabled={isDeleting}
+              onClick={() => setCategoryToDelete(null)}
+              type="button"
+              variant="outline"
+            >
+              Cancelar
+            </Button>
+            <Button
+              disabled={
+                isDeleting ||
+                Boolean(categoryToDelete?.ticketCount && !replacementCategoryId)
+              }
+              onClick={() => void confirmDelete()}
+              type="button"
+              variant="destructive"
+            >
+              <Trash2 />
+              {isDeleting
+                ? "Excluindo…"
+                : categoryToDelete?.ticketCount
+                  ? "Migrar e excluir"
+                  : "Excluir definitivamente"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

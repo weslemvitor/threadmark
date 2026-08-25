@@ -21,6 +21,7 @@ import {
 import type { KanbanTab } from "@/app/lib/kanban-tabs";
 import type { TicketAssignee, TicketSummary } from "@/app/lib/types";
 import { cn } from "@/app/lib/utils";
+import { getArchivedTicketOrigin } from "@/app/lib/archived-ticket-origin";
 import {
   getKanbanTicketTimeLabel,
   getKanbanTicketTimestamp,
@@ -61,6 +62,7 @@ export function KanbanCard({
 }) {
   const requester = getRequesterPresentation(ticket.requester);
   const archived = mode === "archived";
+  const archivedOrigin = archived ? getArchivedTicketOrigin(ticket) : null;
   const draggable = Boolean(onDragStart) && !selectable && !busy && !assigning;
 
   return (
@@ -106,11 +108,28 @@ export function KanbanCard({
         type="button"
         variant="unstyled"
       >
-        <span className="mb-2 flex w-full min-w-0 items-center gap-1.5">
+        <span className="mb-2 flex w-full min-w-0 flex-wrap items-center gap-1.5">
           <b className="shrink-0 text-xs font-semibold text-primary">#{ticket.number}</b>
           <PriorityPill priority={ticket.priority} />
+          {archivedOrigin ? (
+            <Badge
+              className={cn(
+                "h-5 border-0 px-2 text-xs font-medium",
+                archivedOrigin === "cancelled"
+                  ? "bg-rose-50 text-rose-700"
+                  : "bg-emerald-50 text-emerald-700",
+              )}
+            >
+              {archivedOrigin === "cancelled" ? "Cancelado" : "Resolvido"}
+            </Badge>
+          ) : null}
           <time
-            className="ml-auto flex min-w-0 items-center justify-end gap-1 text-right text-xs leading-tight text-muted-foreground"
+            className={cn(
+              "flex min-w-0 items-center gap-1 text-xs leading-tight text-muted-foreground",
+              archived
+                ? "basis-full justify-start text-left"
+                : "ml-auto justify-end text-right",
+            )}
             dateTime={getKanbanTicketTimestamp(ticket, mode, columnId)}
           >
             <Clock3 size={12} /> {getKanbanTicketTimeLabel(ticket, mode, columnId)}
@@ -140,6 +159,11 @@ export function KanbanCard({
           </span>
         ) : null}
         <span className="mt-2.5 flex flex-wrap gap-1">
+          {ticket.assignmentPending ? (
+            <Badge className="h-5 gap-1 border-amber-200 bg-amber-50 px-2 text-xs font-medium text-amber-700">
+              <Clock3 size={11} /> Aguardando responsável
+            </Badge>
+          ) : null}
           {ticket.categories.slice(0, 2).map((category) => (
             <Badge className="h-5 px-2 text-xs font-medium not-italic" key={category.id} variant="secondary">
               {getCategoryName(category)}
@@ -175,7 +199,9 @@ export function KanbanCard({
           >
             {archived ? (
               <>
-                Arquivado
+                {archivedOrigin === "cancelled"
+                  ? "Cancelado · Arquivado"
+                  : "Resolvido · Arquivado"}
                 <Archive className="ml-auto text-primary" size={14} />
               </>
             ) : ticket.status === "resolved" ? (

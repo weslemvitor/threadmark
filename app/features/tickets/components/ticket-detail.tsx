@@ -40,6 +40,7 @@ import { TicketDeleteDialog } from "./ticket-delete-dialog";
 import { TicketMetadataEditor } from "./ticket-metadata-editor";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
 import { Button } from "@/app/components/ui/button";
+import { Badge } from "@/app/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -321,6 +322,11 @@ export function TicketDetail({
             <span className="text-xs font-bold text-primary">#{ticket.number}</span>
             <StatusPill status={ticket.status} />
             <PriorityPill priority={ticket.priority} />
+            {ticket.assignmentPending ? (
+              <Badge className="h-5 border-amber-200 bg-amber-50 px-2 text-xs font-medium text-amber-700">
+                Aguardando responsável
+              </Badge>
+            ) : null}
           </div>
           <h2 className="mt-1.5 max-w-3xl truncate text-lg font-semibold tracking-tight text-foreground max-[900px]:text-base">{ticket.title}</h2>
           <p className="mt-1 truncate text-xs text-muted-foreground">

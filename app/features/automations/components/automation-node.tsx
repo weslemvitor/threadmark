@@ -16,6 +16,7 @@ import {
   Trash2,
   UserCheck,
   UserRoundCheck,
+  UsersRound,
   Webhook,
 } from "lucide-react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
@@ -43,6 +44,7 @@ const icons: Record<string, ComponentType<{ size?: number }>> = {
   ticket: Ticket,
   "user-check": UserCheck,
   "user-round-check": UserRoundCheck,
+  "users-round": UsersRound,
   webhook: Webhook,
 };
 

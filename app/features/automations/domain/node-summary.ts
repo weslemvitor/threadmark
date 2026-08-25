@@ -86,6 +86,10 @@ export function automationNodeConfigurationSummary(
   node: AutomationNodeDto,
   definition: AutomationNodeDefinition,
 ): string | null {
+  if (node.type === "trigger") {
+    const eventType = getAutomationConfigValue(node.config, "eventType");
+    return optionLabel(definition, "eventType", eventType);
+  }
   if (node.type === "wait") return durationSummary(node);
 
   const actionId = String(getAutomationConfigValue(node.config, "actionId") ?? "");
@@ -104,6 +108,15 @@ export function automationNodeConfigurationSummary(
     const recipient = getAutomationConfigValue(node.config, "input.recipient");
     const label = optionLabel(definition, "input.recipient", recipient);
     return label ? `Destino: ${label}` : null;
+  }
+  if (actionId === "assign_ticket_by_capacity") {
+    const members = getAutomationConfigValue(node.config, "input.members");
+    if (!Array.isArray(members) || members.length === 0) return null;
+    const totalCapacity = members.reduce<number>((total, item) => {
+      if (!item || Array.isArray(item) || typeof item !== "object") return total;
+      return total + (typeof item.maxTickets === "number" ? item.maxTickets : 0);
+    }, 0);
+    return `${members.length} ${members.length === 1 ? "atendente" : "atendentes"} · ${totalCapacity} vagas`;
   }
   if (node.type === "condition") {
     const configuredField = getAutomationConfigValue(node.config, "field");

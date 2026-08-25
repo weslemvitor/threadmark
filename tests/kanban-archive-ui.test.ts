@@ -8,6 +8,33 @@ import {
   toggleKanbanSelection,
 } from "../app/lib/kanban-selection.js";
 import { getNextKanbanTab } from "../app/lib/kanban-tabs.js";
+import { getArchivedTicketOrigin } from "../app/lib/archived-ticket-origin.js";
+
+test("arquivado mantém a origem visível mesmo com uma API ainda no contrato anterior", () => {
+  assert.equal(
+    getArchivedTicketOrigin({ archivedFromStatus: "cancelled", resolvedAt: null }),
+    "cancelled",
+  );
+  assert.equal(
+    getArchivedTicketOrigin({ archivedFromStatus: "resolved", resolvedAt: null }),
+    "resolved",
+  );
+  assert.equal(
+    getArchivedTicketOrigin({ resolvedAt: "2026-08-23T18:55:25.724Z" }),
+    "resolved",
+  );
+  assert.equal(getArchivedTicketOrigin({ resolvedAt: null }), "cancelled");
+});
+
+test("card arquivado mantém o horário em uma linha própria alinhada à esquerda", async () => {
+  const card = await readFile(
+    new URL("../app/features/kanban/components/kanban-card.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(card, /archived\s*\?\s*"basis-full justify-start text-left"/);
+  assert.match(card, /:\s*"ml-auto justify-end text-right"/);
+});
 
 test("Kanban separa tickets ativos dos arquivados sem contaminar a carga global", async () => {
   const [api, view] = await Promise.all([

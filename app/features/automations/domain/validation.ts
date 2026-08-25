@@ -10,7 +10,9 @@ import type {
 } from "./automation-types.js";
 
 function isEmpty(value: unknown): boolean {
-  return value === null || value === undefined || (typeof value === "string" && !value.trim());
+  return value === null || value === undefined ||
+    (typeof value === "string" && !value.trim()) ||
+    (Array.isArray(value) && value.length === 0);
 }
 
 function cycleNodes(definition: AutomationDefinition): Set<string> {
@@ -190,6 +192,27 @@ export function validateAutomation(
             nodeId: node.id,
             severity: "error",
             message: `${field.label} deve ser no máximo 365 dias.`,
+          });
+        }
+      }
+      if (field.type === "assignee_capacities" && Array.isArray(value)) {
+        const seen = new Set<string>();
+        const invalid = value.some((item) => {
+          if (!item || Array.isArray(item) || typeof item !== "object") return true;
+          const assigneeId = item.assigneeId;
+          const maxTickets = item.maxTickets;
+          if (typeof assigneeId !== "string" || !assigneeId || seen.has(assigneeId)) {
+            return true;
+          }
+          seen.add(assigneeId);
+          return !Number.isInteger(maxTickets) || Number(maxTickets) < 1 || Number(maxTickets) > 500;
+        });
+        if (invalid) {
+          issues.push({
+            id: `capacity-${node.id}-${field.key}`,
+            nodeId: node.id,
+            severity: "error",
+            message: "Defina um limite entre 1 e 500 para cada atendente selecionado.",
           });
         }
       }

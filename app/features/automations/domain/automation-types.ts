@@ -20,6 +20,7 @@ export type AutomationFieldType =
   | "number"
   | "duration"
   | "select"
+  | "assignee_capacities"
   | "boolean";
 
 export type AutomationNodeConfigValue =

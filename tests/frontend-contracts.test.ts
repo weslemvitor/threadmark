@@ -522,11 +522,19 @@ test("interface remove salas por ticket e centraliza a IA no assistente global",
 });
 
 
-test("notificações internas são acessíveis e a timeline mostra a operação executada", async () => {
-  const [app, header, notifications, detail] = await Promise.all([
+test("notificações internas possuem prévia no cabeçalho e a timeline mostra a operação executada", async () => {
+  const [app, header, preview, livePreview, notifications, detail] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/components/layout/page-header.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/features/notifications/components/notification-preview.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/features/notifications/components/notification-live-preview.tsx", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -539,8 +547,18 @@ test("notificações internas são acessíveis e a timeline mostra a operação 
     ),
   ]);
 
-  assert.match(header, /Abrir notificações/);
-  assert.match(header, /onClick=\{onOpenNotifications\}/);
+  assert.match(header, /<NotificationPreview/);
+  assert.match(preview, /<Popover/);
+  assert.match(preview, /getNotifications\(\{ limit: PREVIEW_LIMIT \}\)/);
+  assert.match(preview, /Ver todas as notificações/);
+  assert.match(preview, /openNotification\(notification\)/);
+  assert.match(app, /collectNotificationArrivals/);
+  assert.match(app, /notificationBaselineReadyRef/);
+  assert.match(app, /<NotificationLivePreview/);
+  assert.match(livePreview, /Nova notificação/);
+  assert.doesNotMatch(livePreview, /setTimeout|AUTO_DISMISS_MS/);
+  assert.match(livePreview, /onClick=\{onDismiss\}/);
+  assert.match(livePreview, /Abrir/);
   assert.match(notifications, /Central de notificações/);
   assert.match(notifications, /markAllNotificationsRead/);
   assert.doesNotMatch(app, /Notification\.requestPermission|serviceWorker|toggleNotifications/);
@@ -752,16 +770,26 @@ test("mensagem destacável pode ser desvinculada sem apagar a conversa bruta", a
 });
 
 test("ticket permite criar, vincular e remover categorias sem sair do atendimento", async () => {
-  const detail = await readFile(
-    new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
-    "utf8",
-  );
+  const [detail, categoryPanel] = await Promise.all([
+    readFile(
+      new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/features/tickets/components/ticket-category-panel.tsx", import.meta.url),
+      "utf8",
+    ),
+  ]);
   assert.match(detail, /Criar nova categoria/);
   assert.match(detail, /Criar e vincular/);
   assert.match(detail, /Vincular categoria existente/);
   assert.match(detail, /Remover categoria/);
   assert.doesNotMatch(detail, /<div ref=\{categorySectionRef\}>/);
   assert.match(detail, /sectionRef=\{categorySectionRef\}/);
+  assert.match(categoryPanel, /<Combobox/);
+  assert.match(categoryPanel, /searchPlaceholder="Buscar por nome ou tipo…"/);
+  assert.match(categoryPanel, /group: categoryFacetLabels\[facet\]/);
+  assert.doesNotMatch(categoryPanel, /<SelectGroup/);
 });
 
 test("ticket mantém mensagens e notas visíveis, recolhe eventos e organiza bugs", async () => {
@@ -1023,4 +1051,16 @@ test("encaminhamento de bug persiste no ticket e pode finalizar o atendimento", 
   assert.match(api, /const limit = 200/);
   assert.match(api, /offset \+= result\.items\.length/);
   assert.match(api, /offset >= result\.total/);
+});
+
+test("cards arquivados distinguem tickets resolvidos de cancelados", async () => {
+  const card = await readFile(
+    new URL("../app/features/kanban/components/kanban-card.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(card, /getArchivedTicketOrigin\(ticket\)/);
+  assert.match(card, /archivedOrigin === "cancelled"/);
+  assert.match(card, /Cancelado · Arquivado/);
+  assert.match(card, /Resolvido · Arquivado/);
 });

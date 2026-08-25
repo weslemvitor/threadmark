@@ -8,6 +8,7 @@ import {
   addTicketInternalNote,
   attachCategoryToTicket,
   createCategory,
+  deleteCategory,
   detachCategoryFromTicket,
   getCategories,
   bulkUpdateTicketStatus,
@@ -19,8 +20,8 @@ import {
   getConversations,
   getDashboard,
   getDirectory,
+  getNotifications,
   getRuntime,
-  getUnreadNotificationCount,
   getTicket,
   getTicketAssignees,
   getTickets,
@@ -29,6 +30,7 @@ import {
   updateTicketInternalNote,
   updateTicketMetadata,
   updateTicketAssignee,
+  updateNotificationRead,
   updateTicketStatus,
 } from "./lib/api";
 import type {
@@ -46,6 +48,7 @@ import type {
 import {
   type UpsertTicketProductForwardingInput,
   type UpdateTicketMetadataInput,
+  type NotificationDto,
 } from "@/shared/contracts";
 import { activeStatuses, configureSupportTimeZone, statusLabels } from "./lib/format";
 import { isInvestigationActive } from "./lib/investigation";
@@ -71,6 +74,10 @@ import {
 import { PageHeader, Sidebar } from "./components/layout";
 import { ApiErrorBanner, SupportSearchOverlay } from "./components/shared";
 import { useAppAccess } from "./features/access";
+import {
+  collectNotificationArrivals,
+  NotificationLivePreview,
+} from "./features/notifications";
 import type {
   ManualTicketDraft,
   ProductForwardingDraft,
@@ -194,6 +201,7 @@ const ACTIVE_TICKET_POLL_INTERVAL_MS = 3_000;
 const IDLE_TICKET_POLL_INTERVAL_MS = 5_000;
 const MAX_TICKET_POLL_INTERVAL_MS = 30_000;
 const TICKET_LIST_SNAPSHOT_KEY = "ticket-list";
+const NOTIFICATION_POLL_INTERVAL_MS = 5_000;
 
 export function SupportApp({
   initialPath = "/conversations",
@@ -261,6 +269,9 @@ export function SupportApp({
   const [savingProductForwarding, setSavingProductForwarding] = useState(false);
   const [roomSearchOpen, setRoomSearchOpen] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notificationPreviewQueue, setNotificationPreviewQueue] = useState<
+    NotificationDto[]
+  >([]);
   const [conversationRefreshVersion, setConversationRefreshVersion] = useState(0);
   const [pendingConversations, setPendingConversations] = useState(0);
   const ticketDetailsRef = useRef(ticketDetails);
@@ -271,6 +282,8 @@ export function SupportApp({
     new TicketSnapshotCoordinator<TicketSummary[]>(),
   );
   const productForwardingReturnFocusRef = useRef<HTMLElement | null>(null);
+  const notificationBaselineReadyRef = useRef(false);
+  const knownNotificationIdsRef = useRef<Set<string>>(new Set());
 
   const applyLocationNavigation = useCallback(
     (navigation: ThreadmarkNavigation) => {
@@ -570,23 +583,50 @@ export function SupportApp({
     return () => window.clearTimeout(timer);
   }, [loadData]);
 
+  const accessUserId = access?.user.id ?? null;
+
   useEffect(() => {
-    if (!access) return;
+    if (!accessUserId) return;
     let active = true;
-    const refreshUnread = () => {
-      void getUnreadNotificationCount()
+    notificationBaselineReadyRef.current = false;
+    knownNotificationIdsRef.current = new Set();
+
+    const refreshNotifications = () => {
+      void getNotifications({ limit: 20 })
         .then((result) => {
-          if (active) setUnreadNotifications(result.unread);
+          if (!active) return;
+          setUnreadNotifications(result.unread);
+          if (!notificationBaselineReadyRef.current) {
+            setNotificationPreviewQueue([]);
+          }
+          const snapshot = collectNotificationArrivals(
+            result.items,
+            knownNotificationIdsRef.current,
+            notificationBaselineReadyRef.current,
+          );
+          knownNotificationIdsRef.current = snapshot.knownIds;
+          notificationBaselineReadyRef.current = true;
+          if (!snapshot.arrivals.length) return;
+          setNotificationPreviewQueue((current) => {
+            const queuedIds = new Set(current.map((item) => item.id));
+            return [
+              ...current,
+              ...snapshot.arrivals.filter((item) => !queuedIds.has(item.id)),
+            ];
+          });
         })
         .catch(() => undefined);
     };
-    refreshUnread();
-    const timer = window.setInterval(refreshUnread, 15_000);
+    refreshNotifications();
+    const timer = window.setInterval(
+      refreshNotifications,
+      NOTIFICATION_POLL_INTERVAL_MS,
+    );
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [access]);
+  }, [accessUserId]);
 
   useEffect(() => {
     if (activeView !== "inbox" || !currentSelectedId) return;
@@ -1056,6 +1096,35 @@ export function SupportApp({
     [showToast],
   );
 
+  const handleDeleteCategory = useCallback(
+    async (categoryId: string, replacementCategoryId?: string) => {
+      try {
+        const result = await deleteCategory(categoryId, { replacementCategoryId });
+        for (const ticket of tickets) invalidateTicketSnapshot(ticket.id);
+        setTicketDetails(new Map());
+        ticketDetailsRef.current = new Map();
+        await refreshTicketCollections();
+        showToast({
+          tone: "success",
+          message: result.migratedTicketCount > 0
+            ? `${result.migratedTicketCount} ticket${result.migratedTicketCount === 1 ? " foi migrado" : "s foram migrados"}; categoria excluída.`
+            : "Categoria excluída definitivamente.",
+        });
+        return result;
+      } catch (error) {
+        showToast({
+          tone: "warning",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Não foi possível excluir a categoria.",
+        });
+        throw error;
+      }
+    },
+    [invalidateTicketSnapshot, refreshTicketCollections, showToast, tickets],
+  );
+
   const handleAttachCategory = useCallback(
     async (ticketId: string, categoryId: string) => {
       if (!categoryId) return false;
@@ -1464,6 +1533,24 @@ export function SupportApp({
     applyLocationNavigation(navigation);
   }, [applyLocationNavigation]);
 
+  const dismissNotificationPreview = useCallback(() => {
+    setNotificationPreviewQueue((current) => current.slice(1));
+  }, []);
+
+  const openLiveNotification = useCallback(async (notification: NotificationDto) => {
+    if (!notification.readAt) {
+      try {
+        const result = await updateNotificationRead(notification.id, true);
+        setUnreadNotifications(result.unread);
+      } catch {
+        // A notificação permanece disponível na central mesmo se a leitura falhar.
+      }
+    }
+    dismissNotificationPreview();
+    if (notification.targetUrl) openNotificationTarget(notification.targetUrl);
+    else navigateToView("notifications");
+  }, [dismissNotificationPreview, navigateToView, openNotificationTarget]);
+
   const currentPage = pageContent[activeView];
   const threadmarkAiContext = useMemo(
     () => ({
@@ -1573,6 +1660,7 @@ export function SupportApp({
             categories={categoryCatalog}
             loading={loading}
             onCreate={handleCreateCategory}
+            onDelete={handleDeleteCategory}
           />
         );
       case "documentation":
@@ -1628,6 +1716,7 @@ export function SupportApp({
     handleAddTicketNote,
     handleBulkTicketStatusChange,
     handleCreateCategory,
+    handleDeleteCategory,
     handleDeleteTicket,
     handleDetachTicketMessage,
     handleAttachCategory,
@@ -1690,8 +1779,10 @@ export function SupportApp({
         {activeView !== "settings" && activeView !== "inbox" ? (
           <PageHeader
             onOpenMenu={() => setSidebarOpen(true)}
+            onOpenNotificationTarget={openNotificationTarget}
             onOpenNotifications={() => navigateToView("notifications")}
             onRefresh={() => void refreshAll()}
+            onUnreadNotificationsChange={setUnreadNotifications}
             refreshing={refreshing}
             runtime={runtime}
             subtitle={currentPage.subtitle}
@@ -1710,6 +1801,15 @@ export function SupportApp({
           {pageView}
         </div>
       </main>
+      {notificationPreviewQueue[0] ? (
+        <NotificationLivePreview
+          key={notificationPreviewQueue[0].id}
+          notification={notificationPreviewQueue[0]}
+          onDismiss={dismissNotificationPreview}
+          onOpen={(notification) => void openLiveNotification(notification)}
+          pendingCount={Math.max(0, notificationPreviewQueue.length - 1)}
+        />
+      ) : null}
       {toast ? (
         <div
           className={`fixed bottom-5 right-5 z-[200] flex max-w-sm items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-medium shadow-xl max-[520px]:left-3 max-[520px]:right-3 ${

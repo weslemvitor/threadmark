@@ -21,50 +21,47 @@ export const automationCategoryDescriptions: Record<AutomationNodeCategory, stri
   connected_app: "Execute ações em integrações autorizadas.",
 };
 
+const ticketTriggerOptions = [
+  { label: "Ticket criado", value: "ticket_created" },
+  { label: "Mensagem anexada", value: "message_attached" },
+  { label: "Prioridade alterada", value: "priority_changed" },
+  { label: "Qualquer alteração de status", value: "status_changed" },
+  { label: "Entrou em revisão", value: "ticket_entered_triage" },
+  { label: "Entrou em andamento", value: "ticket_entered_in_progress" },
+  { label: "Aguardando cliente", value: "ticket_waiting_customer" },
+  { label: "Aguardando time interno", value: "ticket_waiting_internal" },
+  { label: "Ticket resolvido", value: "ticket_resolved" },
+  { label: "Ticket cancelado", value: "ticket_cancelled" },
+  { label: "Ticket arquivado", value: "ticket_archived" },
+  { label: "Responsável atribuído", value: "ticket_assigned" },
+  { label: "Responsável removido", value: "ticket_unassigned" },
+  { label: "Categoria vinculada", value: "ticket_category_added" },
+  { label: "Categoria removida", value: "ticket_category_removed" },
+];
+
+const ticketTriggerEventTypes = new Set(
+  ticketTriggerOptions.map((option) => option.value),
+);
+
 export const defaultAutomationNodeCatalog: AutomationNodeDefinition[] = [
   {
-    id: "trigger.ticket_created",
+    id: "trigger.ticket",
     nodeType: "trigger",
     category: "trigger",
-    label: "Ticket criado",
-    description: "Inicia quando uma nova demanda é confirmada.",
+    label: "Ticket",
+    description: "Inicia quando o evento selecionado acontece em um ticket.",
     icon: "ticket",
     accent: "violet",
-    fields: [],
-    baseConfig: { eventType: "ticket_created" },
-  },
-  {
-    id: "trigger.priority_changed",
-    nodeType: "trigger",
-    category: "trigger",
-    label: "Prioridade alterada",
-    description: "Inicia quando a urgência de um ticket muda.",
-    icon: "flag",
-    accent: "violet",
-    fields: [],
-    baseConfig: { eventType: "priority_changed" },
-  },
-  {
-    id: "trigger.status_changed",
-    nodeType: "trigger",
-    category: "trigger",
-    label: "Status alterado",
-    description: "Inicia quando o ticket muda de etapa no atendimento.",
-    icon: "refresh-cw",
-    accent: "blue",
-    fields: [],
-    baseConfig: { eventType: "status_changed" },
-  },
-  {
-    id: "trigger.ticket_resolved",
-    nodeType: "trigger",
-    category: "trigger",
-    label: "Ticket resolvido",
-    description: "Inicia após a resolução ser registrada.",
-    icon: "circle-check",
-    accent: "violet",
-    fields: [],
-    baseConfig: { eventType: "ticket_resolved" },
+    fields: [
+      {
+        key: "eventType",
+        label: "Quando acontecer",
+        type: "select",
+        required: true,
+        defaultValue: "ticket_created",
+        options: ticketTriggerOptions,
+      },
+    ],
   },
   {
     id: "flow.wait",
@@ -174,6 +171,27 @@ export const defaultAutomationNodeCatalog: AutomationNodeDefinition[] = [
       },
     ],
     baseConfig: { actionId: "assign_ticket" },
+  },
+  {
+    id: "internal.assign_by_capacity",
+    nodeType: "internal_action",
+    category: "internal_action",
+    label: "Distribuir por capacidade",
+    description: "Atribui pela carga atual e mantém uma fila quando a equipe está no limite.",
+    icon: "users-round",
+    accent: "emerald",
+    fields: [
+      {
+        key: "input.members",
+        label: "Capacidade da equipe",
+        description: "Conta apenas tickets abertos. Quem estiver inativo é ignorado automaticamente.",
+        type: "assignee_capacities",
+        required: true,
+        options: [],
+        defaultValue: [],
+      },
+    ],
+    baseConfig: { actionId: "assign_ticket_by_capacity" },
   },
   {
     id: "internal.update_priority",
@@ -420,7 +438,12 @@ export function automationNodeDefinition(
 export function automationNodeCatalogId(
   node: { type: string; config: AutomationNodeConfig },
 ): string {
-  if (node.type === "trigger") return `trigger.${String(node.config.eventType ?? "")}`;
+  if (node.type === "trigger") {
+    const eventType = String(node.config.eventType ?? "");
+    return ticketTriggerEventTypes.has(eventType)
+      ? "trigger.ticket"
+      : `trigger.${eventType}`;
+  }
   if (node.type === "condition" || node.type === "wait" || node.type === "approval") {
     return `flow.${node.type}`;
   }
@@ -428,6 +451,7 @@ export function automationNodeCatalogId(
     const actionId = String(node.config.actionId ?? "");
     return {
       assign_ticket: "internal.assign",
+      assign_ticket_by_capacity: "internal.assign_by_capacity",
       change_priority: "internal.update_priority",
       change_status: "internal.update_status",
       add_internal_note: "internal.add_note",
@@ -494,11 +518,14 @@ export function catalogWithConnectedApps(
   const internal = defaultAutomationNodeCatalog
     .filter((definition) => definition.category !== "connected_app")
     .map((definition) => {
-      if (definition.id === "internal.assign") {
+      if (
+        definition.id === "internal.assign" ||
+        definition.id === "internal.assign_by_capacity"
+      ) {
         return {
           ...definition,
           fields: definition.fields.map((field) =>
-            field.key === "input.assigneeId"
+            field.key === "input.assigneeId" || field.key === "input.members"
               ? { ...field, options: teamMemberOptions }
               : field,
           ),

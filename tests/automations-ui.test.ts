@@ -340,6 +340,24 @@ test("atribuição de responsável oferece os usuários ativos do Threadmark", (
   ]);
 });
 
+test("distribuição por capacidade oferece limites individuais para a equipe", () => {
+  const catalog = catalogWithConnectedApps([], [
+    { id: "owner-user", displayName: "Pessoa Proprietária", role: "owner" },
+    { id: "operator-user", displayName: "Pessoa Operadora", role: "operator" },
+  ]);
+  const capacity = catalog.find(
+    (definition) => definition.id === "internal.assign_by_capacity",
+  );
+  const members = capacity?.fields.find((field) => field.key === "input.members");
+
+  assert.equal(capacity?.baseConfig?.actionId, "assign_ticket_by_capacity");
+  assert.equal(members?.type, "assignee_capacities");
+  assert.deepEqual(members?.options, [
+    { label: "Pessoa Proprietária · Proprietário", value: "owner-user" },
+    { label: "Pessoa Operadora · Operador", value: "operator-user" },
+  ]);
+});
+
 test("variável é inserida no cursor e substitui somente o texto selecionado", () => {
   assert.deepEqual(
     insertAutomationTemplateVariable(
@@ -363,7 +381,7 @@ test("variável é inserida no cursor e substitui somente o texto selecionado", 
 });
 
 test("condição de campo vazio não exige valor manual", () => {
-  const trigger = defaultAutomationNodeCatalog.find((item) => item.id === "trigger.ticket_created")!;
+  const trigger = defaultAutomationNodeCatalog.find((item) => item.id === "trigger.ticket")!;
   const push = defaultAutomationNodeCatalog.find((item) => item.id === "internal.create_notification")!;
   const definition: AutomationDefinition = {
     version: 1,
@@ -387,13 +405,38 @@ test("condição de campo vazio não exige valor manual", () => {
   assert.equal(issues.some((issue) => issue.id === "field-condition-value"), false);
 });
 
-test("catálogo permite iniciar fluxo quando o status do ticket muda", () => {
-  const trigger = defaultAutomationNodeCatalog.find(
-    (item) => item.id === "trigger.status_changed",
+test("catálogo concentra os eventos operacionais em um único nó de ticket", () => {
+  const expectedTriggers = [
+    "ticket_created",
+    "message_attached",
+    "priority_changed",
+    "status_changed",
+    "ticket_entered_triage",
+    "ticket_entered_in_progress",
+    "ticket_waiting_customer",
+    "ticket_waiting_internal",
+    "ticket_resolved",
+    "ticket_cancelled",
+    "ticket_archived",
+    "ticket_assigned",
+    "ticket_unassigned",
+    "ticket_category_added",
+    "ticket_category_removed",
+  ];
+
+  const configuredTriggers = defaultAutomationNodeCatalog.filter(
+    (item) => item.category === "trigger",
   );
-  assert.ok(trigger);
-  assert.equal(trigger.nodeType, "trigger");
-  assert.equal(trigger.baseConfig?.eventType, "status_changed");
+  const ticketTrigger = configuredTriggers[0];
+  const eventField = ticketTrigger?.fields.find((field) => field.key === "eventType");
+
+  assert.equal(configuredTriggers.length, 1);
+  assert.equal(ticketTrigger?.id, "trigger.ticket");
+  assert.deepEqual(eventField?.options?.map((option) => option.value), expectedTriggers);
+  assert.equal(
+    automationNodeCatalogId({ type: "trigger", config: { eventType: "ticket_cancelled" } }),
+    "trigger.ticket",
+  );
 });
 
 test("catálogo cria uma ação para cada instância ativa de app conectado", () => {
@@ -437,7 +480,7 @@ test("validação bloqueia fluxo vazio, campos obrigatórios e ciclos", () => {
   const emptyIssues = validateAutomation({ version: 1, nodes: [], edges: [] }, defaultAutomationNodeCatalog);
   assert.equal(emptyIssues.some((issue) => issue.id === "empty-flow"), true);
 
-  const triggerDefinition = defaultAutomationNodeCatalog.find((item) => item.id === "trigger.ticket_created");
+  const triggerDefinition = defaultAutomationNodeCatalog.find((item) => item.id === "trigger.ticket");
   const noteDefinition = defaultAutomationNodeCatalog.find((item) => item.id === "internal.add_note");
   assert.ok(triggerDefinition);
   assert.ok(noteDefinition);
@@ -494,7 +537,7 @@ test("fluxo mínimo configurado não possui erro impeditivo", () => {
   const catalog = defaultAutomationNodeCatalog.filter(
     (item) => item.category !== "connected_app",
   );
-  const triggerDefinition = catalog.find((item) => item.id === "trigger.ticket_created")!;
+  const triggerDefinition = catalog.find((item) => item.id === "trigger.ticket")!;
   const priorityDefinition = catalog.find((item) => item.id === "internal.update_priority")!;
   const definition: AutomationDefinition = {
     version: 1,

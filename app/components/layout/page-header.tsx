@@ -1,6 +1,7 @@
-import { Bell, Menu, RefreshCw } from "lucide-react";
+import { Menu, RefreshCw } from "lucide-react";
 import type { RuntimeState } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
+import { NotificationPreview } from "@/app/features/notifications";
 import { cn } from "@/app/lib/utils";
 
 type PageHeaderProps = {
@@ -12,6 +13,8 @@ type PageHeaderProps = {
   onOpenMenu: () => void;
   unreadNotifications: number;
   onOpenNotifications: () => void;
+  onOpenNotificationTarget: (targetUrl: string) => void;
+  onUnreadNotificationsChange: (count: number) => void;
 };
 
 export function PageHeader({
@@ -23,6 +26,8 @@ export function PageHeader({
   onOpenMenu,
   unreadNotifications,
   onOpenNotifications,
+  onOpenNotificationTarget,
+  onUnreadNotificationsChange,
 }: PageHeaderProps) {
   const online = runtime?.whatsappConnected === true;
   const localInvestigation =
@@ -41,10 +46,6 @@ export function PageHeader({
       : localInvestigation
         ? "Codex local ativo"
         : "Captura offline";
-  const notificationLabel = unreadNotifications > 0
-    ? `Abrir notificações (${unreadNotifications} não lidas)`
-    : "Abrir notificações";
-
   return (
     <header className="flex min-h-[72px] shrink-0 items-center gap-3 border-b border-border bg-card px-5 py-3 max-[760px]:min-h-16 max-[760px]:px-3">
       <Button
@@ -75,22 +76,12 @@ export function PageHeader({
           <span className={cn("size-1.5 rounded-full bg-muted-foreground", online && "bg-emerald-500", localInvestigation && !online && "bg-primary")} />
           {connectionLabel}
         </div>
-        <Button
-          aria-label={notificationLabel}
-          className="relative"
-          onClick={onOpenNotifications}
-          title={notificationLabel}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          <Bell size={17} />
-          {unreadNotifications > 0 ? (
-            <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-bold leading-4 text-primary-foreground">
-              {unreadNotifications > 99 ? "99+" : unreadNotifications}
-            </span>
-          ) : null}
-        </Button>
+        <NotificationPreview
+          onOpenAll={onOpenNotifications}
+          onOpenTarget={onOpenNotificationTarget}
+          onUnreadChange={onUnreadNotificationsChange}
+          unread={unreadNotifications}
+        />
         <Button
           aria-label="Atualizar dados"
           onClick={onRefresh}

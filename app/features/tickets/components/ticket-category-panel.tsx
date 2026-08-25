@@ -7,13 +7,12 @@ import {
 } from "react";
 
 import { Button } from "@/app/components/ui/button";
+import { Combobox, type ComboboxOption } from "@/app/components/ui/combobox";
 import { Input } from "@/app/components/ui/input";
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/app/components/ui/select";
@@ -84,20 +83,20 @@ export function CategoryPanel({
         .sort((left, right) => left.label.localeCompare(right.label)),
     [assignedIds, categoryCatalog],
   );
-  const availableByFacet = useMemo(() => {
-    const buckets = {
-      reason: [],
-      product: [],
-      platform: [],
-      symptom: [],
-      root_cause: [],
-      resolution: [],
-    } as Record<CategoryFacetType, TicketCategoryCatalog[]>;
-    for (const category of availableCategories) {
-      buckets[category.facet].push(category);
-    }
-    return buckets;
-  }, [availableCategories]);
+  const categoryOptions = useMemo<ComboboxOption[]>(
+    () => categoryFacetOrder.flatMap((facet) =>
+      availableCategories
+        .filter((category) => category.facet === facet)
+        .map((category) => ({
+          value: category.id,
+          label: getCategoryName(category),
+          description: categoryFacetLabels[facet],
+          group: categoryFacetLabels[facet],
+          keywords: [category.label, categoryFacetLabels[facet]],
+        })),
+    ),
+    [availableCategories],
+  );
   const assignedByFacet = useMemo(() => {
     const buckets = {
       reason: [],
@@ -223,36 +222,17 @@ export function CategoryPanel({
         <>
         <form className="mt-3 grid gap-2.5" onSubmit={submitAttach}>
           <label className="grid gap-1.5 text-xs font-medium text-foreground">
-            <span>Vincular categoria existente</span>
-            <Select
+            <span id="ticket-category-combobox-label">Vincular categoria existente</span>
+            <Combobox
+              ariaLabelledBy="ticket-category-combobox-label"
               disabled={mutationBusy || !availableCategories.length}
               onValueChange={setSelectedCategoryId}
+              options={categoryOptions}
+              placeholder="Selecione uma categoria…"
+              searchPlaceholder="Buscar por nome ou tipo…"
+              emptyMessage="Nenhuma categoria encontrada."
               value={selectedCategoryId}
-            >
-              <SelectTrigger aria-label="Vincular categoria existente" className="w-full text-xs" size="sm">
-                <SelectValue placeholder="Selecione uma categoria…" />
-              </SelectTrigger>
-              <SelectContent>
-              {Object.keys(availableByFacet).map((facetType) => {
-                const categories = availableByFacet[facetType as CategoryFacetType];
-                if (!categories.length) return null;
-                return (
-                  <SelectGroup key={facetType}>
-                    <SelectLabel>{categoryFacetLabels[facetType as CategoryFacetType]}</SelectLabel>
-                    {categories.map((category) => (
-                      <SelectItem
-                        key={category.id}
-                        style={{ color: category.color ?? undefined }}
-                        value={category.id}
-                      >
-                        {getCategoryName(category)}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                );
-              })}
-              </SelectContent>
-            </Select>
+            />
           </label>
           <Button
             className="w-full"
