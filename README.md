@@ -4,9 +4,40 @@ Threadmark é uma central de suporte local-first que organiza conversas recebida
 
 A persistência operacional de mensagens, anexos, configurações e investigações fica na máquina do operador. Quando um provedor remoto de IA é configurado, o recorte sanitizado necessário à tarefa é enviado a esse provedor. Uma sugestão de resposta só pode ser copiada e enviada manualmente pela equipe no aplicativo oficial.
 
+## Baixar o aplicativo
+
+> [!IMPORTANT]
+> **[Baixar o Threadmark 0.3.1 para macOS (Apple Silicon)](https://github.com/weslemvitor/threadmark/releases/download/v0.3.1/Threadmark-0.3.1-arm64.dmg)**
+>
+> Developer Preview para Macs com chips Apple M1, M2, M3, M4 ou posteriores. Macs Intel ainda não são suportados.
+
+Baixe também o **[arquivo de verificação SHA-256](https://github.com/weslemvitor/threadmark/releases/download/v0.3.1/Threadmark-0.3.1-arm64.dmg.sha256)** e mantenha os dois arquivos na mesma pasta. No Terminal, abra essa pasta e valide o instalador:
+
+```bash
+shasum -a 256 -c Threadmark-0.3.1-arm64.dmg.sha256
+```
+
+O resultado deve terminar em `OK`. Depois:
+
+1. Abra `Threadmark-0.3.1-arm64.dmg`.
+2. Arraste `Threadmark.app` para **Aplicativos**.
+3. Confirme que o DMG veio desta release oficial e passou na verificação acima.
+4. Como esta Developer Preview ainda não é assinada nem notarizada pela Apple, execute:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Threadmark.app"
+open -a Threadmark
+```
+
+O comando `xattr` reduz uma proteção do macOS. Use-o somente depois de validar um instalador baixado da release oficial, nunca em uma cópia recebida por terceiros. Para consultar os arquivos publicados, notas da versão e checksum, abra a **[release v0.3.1](https://github.com/weslemvitor/threadmark/releases/tag/v0.3.1)**.
+
+Na primeira abertura, o assistente cria o administrador e o workspace locais. Em seguida, use **Configurações** para cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. Seus dados ficam em `~/Library/Application Support/Threadmark`, fora do aplicativo, e permanecem no Mac ao atualizar o `.app`. Consulte [UPGRADE.md](UPGRADE.md) antes de atualizar, restaurar ou desinstalar.
+
+Se você quer contribuir ou executar a versão mais recente diretamente do repositório, siga [Executar pelo código-fonte](#executar-pelo-código-fonte).
+
 > Threadmark usa o Baileys, um cliente não oficial e não afiliado ao WhatsApp ou à Meta. Avalie os termos aplicáveis e use apenas uma conta autorizada pela sua organização.
 
-> A versão `0.2.x` continua em fase comunitária inicial e é validada de ponta a ponta somente no macOS. Faça backup antes de atualizar e não trate o conector não oficial como infraestrutura sem plano de contingência.
+> A versão `0.3.1` continua em fase de Developer Preview e é validada de ponta a ponta somente no macOS com Apple Silicon. Faça backup antes de atualizar e não trate o conector não oficial como infraestrutura sem plano de contingência.
 
 ## Principais recursos
 
@@ -62,7 +93,11 @@ As primeiras conexões disponíveis são Slack por webhook e API HTTP personaliz
 
 Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações também ignoram os eventos de ticket que elas próprias produziram, evitando ciclos involuntários. Na primeira inicialização do motor, o cursor começa no estado atual: eventos antigos não são reproduzidos em massa.
 
-## Requisitos
+## Executar pelo código-fonte
+
+Este caminho é destinado a desenvolvimento, contribuição ou diagnóstico. Para apenas usar o Threadmark no Mac, prefira o [download do aplicativo](#baixar-o-aplicativo).
+
+### Requisitos de desenvolvimento
 
 - Node.js `>=22.13.0`.
 - Uma conta do WhatsApp autorizada para o pareamento.
@@ -70,7 +105,7 @@ Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações tamb
 
 O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
 
-## Instalação local
+### Instalação a partir do repositório
 
 ```bash
 git clone https://github.com/weslemvitor/threadmark.git
@@ -82,32 +117,13 @@ npm link
 threadmark on
 ```
 
-Esta versão é instalada a partir do código-fonte e não está publicada no registro npm. Não use `npm install -g threadmark`: o `npm link` acima registra o executável do clone atual. O tarball e a instalação global já são validados pela CI para uma publicação futura, mas nenhum pacote será enviado ao registro sem uma release explícita. Para atualizar ou remover a instalação, consulte [UPGRADE.md](UPGRADE.md).
+O pacote não está publicado no registro npm. Não use `npm install -g threadmark`: o `npm link` acima registra o executável do clone atual. O tarball e a instalação global são validados pela CI para uma publicação futura, mas nenhum pacote será enviado ao registro sem uma release explícita. Para atualizar ou remover essa instalação, consulte [UPGRADE.md](UPGRADE.md).
 
 Abra [http://127.0.0.1:3000](http://127.0.0.1:3000). Em uma instalação nova, o assistente inicial cria o administrador local e identifica o workspace. Depois, a área **Configurações** permite cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. O login é local; não existe conta hospedada pelo projeto. Use esse endereço exato para que a sessão permaneça no mesmo host da API local.
 
-## Aplicativo para macOS
+## Como o aplicativo para macOS funciona
 
 O shell desktop reutiliza a interface React, os componentes shadcn/ui e o Tailwind existentes. No modo padrão, abrir o aplicativo inicia ou reutiliza o daemon local, sem criar um segundo SQLite ou outra captura do WhatsApp. Fechar a janela encerra somente a interface; o serviço local pode continuar capturando mensagens como já acontece com `threadmark on`.
-
-### Instalar a Developer Preview
-
-A distribuição atual suporta Macs com Apple Silicon (`arm64`) e é publicada como DMG nas [releases oficiais do projeto](https://github.com/weslemvitor/threadmark/releases). Cada release inclui o arquivo `.sha256` correspondente. Com os dois arquivos na mesma pasta, valide o download antes de instalar:
-
-```bash
-shasum -a 256 -c Threadmark-0.3.1-arm64.dmg.sha256
-```
-
-Abra o DMG e arraste `Threadmark.app` para **Aplicativos**. Esta Developer Preview ainda não possui assinatura nem notarização da Apple. Depois de confirmar que o DMG veio da release oficial e que o checksum corresponde, remova somente o atributo de quarentena desse aplicativo e abra-o:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Threadmark.app"
-open -a Threadmark
-```
-
-O comando `xattr` reduz uma proteção do macOS e não deve ser usado em cópias recebidas por terceiros. Assinatura, notarização e atualização automática permanecem planejadas para uma distribuição estável futura.
-
-O workspace do aplicativo fica em `~/Library/Application Support/Threadmark`, fora do `.app`. Substituir o aplicativo por uma versão nova não remove o SQLite, os anexos nem as configurações locais. Consulte o procedimento completo em [UPGRADE.md](UPGRADE.md).
 
 ### Desenvolvimento e empacotamento
 
