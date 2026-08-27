@@ -1,4 +1,4 @@
-import type { SupportStore } from "../domain/index.js";
+import type { ClaimedAgentJob, SupportStore } from "../domain/index.js";
 import {
   CodexRunAbortedError,
 } from "./codex-runner.js";
@@ -11,6 +11,9 @@ export interface InvestigationWorkerOptions {
   recoverOrphanedJobs?: boolean;
   automaticMessageLimit?: number;
   executionRegistry?: InvestigationExecutionRegistry;
+  concurrency?: number;
+  leaseMs?: number;
+  leaseHeartbeatMs?: number;
   onEvent?: (event: InvestigationWorkerEvent) => void;
 }
 
@@ -58,6 +61,9 @@ export class InvestigationWorker {
   private readonly recoverOrphanedJobs: boolean;
   private readonly automaticMessageLimit: number;
   private readonly executionRegistry: InvestigationExecutionRegistry;
+  private readonly concurrency: number;
+  private readonly leaseMs: number;
+  private readonly leaseHeartbeatMs: number;
   private readonly onEvent: (event: InvestigationWorkerEvent) => void;
 
   constructor(
@@ -65,7 +71,7 @@ export class InvestigationWorker {
     private readonly agent: Pick<
       SupportAgent,
       "analyse" | "investigateThread"
-    > & Partial<Pick<SupportAgent, "triage" | "generateDocumentation">>,
+    > & Partial<Pick<SupportAgent, "triage" | "generateDocumentation" | "extractKnowledge">>,
     options: InvestigationWorkerOptions = {},
   ) {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_500;
@@ -73,6 +79,12 @@ export class InvestigationWorker {
     this.automaticMessageLimit = options.automaticMessageLimit ?? 50;
     this.executionRegistry =
       options.executionRegistry ?? new InvestigationExecutionRegistry();
+    this.concurrency = options.concurrency ?? 2;
+    this.leaseMs = options.leaseMs ?? 10 * 60_000;
+    this.leaseHeartbeatMs = options.leaseHeartbeatMs ?? Math.min(
+      60_000,
+      Math.floor(this.leaseMs / 3),
+    );
     if (
       !Number.isInteger(this.automaticMessageLimit) ||
       this.automaticMessageLimit < 1 ||
@@ -82,6 +94,19 @@ export class InvestigationWorker {
         "automaticMessageLimit deve ser um inteiro entre 1 e 500",
       );
     }
+    if (!Number.isInteger(this.concurrency) || this.concurrency < 1 || this.concurrency > 4) {
+      throw new RangeError("concurrency deve ser um inteiro entre 1 e 4");
+    }
+    if (!Number.isFinite(this.leaseMs) || this.leaseMs < 1_000) {
+      throw new RangeError("leaseMs deve ser de pelo menos 1000ms");
+    }
+    if (
+      !Number.isFinite(this.leaseHeartbeatMs) ||
+      this.leaseHeartbeatMs < 100 ||
+      this.leaseHeartbeatMs >= this.leaseMs
+    ) {
+      throw new RangeError("leaseHeartbeatMs deve ser menor que o lease e de pelo menos 100ms");
+    }
     this.onEvent = options.onEvent ?? (() => undefined);
   }
 
@@ -90,6 +115,12 @@ export class InvestigationWorker {
       this.store.recoverRunningAgentJobs();
     }
 
+    await Promise.all(
+      Array.from({ length: this.concurrency }, () => this.runSlot(signal)),
+    );
+  }
+
+  private async runSlot(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       const processed = await this.runOne(signal);
       if (!processed) {
@@ -100,8 +131,9 @@ export class InvestigationWorker {
   }
 
   async runOne(signal?: AbortSignal): Promise<boolean> {
-    const job = this.store.claimNextAgentJob();
+    const job = this.store.claimNextAgentJob(this.leaseMs);
     if (!job) return false;
+    const stopLeaseHeartbeat = this.startLeaseHeartbeat(job);
 
     this.onEvent({
       type: "started",
@@ -138,13 +170,23 @@ export class InvestigationWorker {
         const input = this.store.getTriageAiJobInput(job.id);
         const result = await this.agent.triage(input, job.model, jobSignal);
         this.store.completeTriageAiJob(job.id, result);
-      } else {
-        if (!this.agent.generateDocumentation) {
-          throw new Error("Agente de documentação não está configurado.");
+      } else if (job.phase === "extraction") {
+        if (!this.agent.extractKnowledge) {
+          // Compatibilidade com provedores legados durante a migração. Novos provedores
+          // sempre executam a extração estruturada antes da renderização.
+          if (!this.agent.generateDocumentation) {
+            throw new Error("Agente de extração de conhecimento não está configurado.");
+          }
+          const input = this.store.getDocumentationJobInput(job.id);
+          const result = await this.agent.generateDocumentation(input, jobSignal);
+          this.store.completeDocumentationJob(job.id, result);
+        } else {
+          const input = this.store.getKnowledgeExtractionJobInput(job.id);
+          const result = await this.agent.extractKnowledge(input, jobSignal);
+          this.store.completeKnowledgeExtractionJob(job.id, result);
         }
-        const input = this.store.getDocumentationJobInput(job.id);
-        const result = await this.agent.generateDocumentation(input, jobSignal);
-        this.store.completeDocumentationJob(job.id, result);
+      } else {
+        this.store.completeDocumentationFromKnowledgeJob(job.id);
       }
       this.onEvent({
         type: "completed",
@@ -265,10 +307,23 @@ export class InvestigationWorker {
         error: message,
       });
     } finally {
+      stopLeaseHeartbeat();
       execution?.release();
     }
 
     return true;
+  }
+
+  private startLeaseHeartbeat(job: ClaimedAgentJob): () => void {
+    const timer = setInterval(() => {
+      try {
+        if (!this.store.renewAgentJobLease(job, this.leaseMs)) clearInterval(timer);
+      } catch {
+        clearInterval(timer);
+      }
+    }, this.leaseHeartbeatMs);
+    timer.unref();
+    return () => clearInterval(timer);
   }
 }
 

@@ -112,6 +112,22 @@ describe("WhatsApp inbound normalization", () => {
     assert.equal(notify?.eligibleForTicket, true);
   });
 
+  it("considera grupos ativos quando nenhuma allowlist legada e aplicada", () => {
+    const message = textMessage({
+      id: "GROUP-AUTO-MONITOR-1",
+      participant: customerJid,
+      remoteJid: otherGroupJid,
+      text: "Precisamos ajustar a migracao deste cliente",
+    });
+    const [notify] = normalizeMessagesUpsert({
+      messages: [message],
+      type: "notify",
+    });
+
+    assert.equal(notify?.isAllowlistedGroup, true);
+    assert.equal(notify?.eligibleForTicket, true);
+  });
+
   it("uses the same idempotency key for history and real-time redelivery", () => {
     const message = textMessage({
       id: "DUPLICATE-1",

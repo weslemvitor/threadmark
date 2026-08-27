@@ -621,6 +621,114 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
   }
 });
 
+test("Threadmark AI cria ticket manual a partir de mensagem interna confirmada sem liberar triagem automática", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-internal-ticket-"));
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+  const account = store.upsertAccount({
+    id: "ai-internal-account",
+    phoneNumber: "+5548999999000",
+    displayName: "Comercial",
+  });
+  const client = store.upsertClient({
+    id: "ai-internal-client",
+    name: "Cliente interno de teste",
+    slug: "cliente-interno-teste",
+    kind: "ecommerce",
+  });
+  const group = store.upsertGroup({
+    id: "ai-internal-group",
+    accountId: account.id,
+    clientId: client.id,
+    externalJid: "ai-internal@g.us",
+    subject: "Cliente interno & Suporte",
+  });
+  const staff = store.upsertParticipant({
+    id: "ai-internal-staff",
+    externalJid: "5548999999222@s.whatsapp.net",
+    phoneE164: "+5548999999222",
+    displayName: "Pessoa da equipe",
+  });
+  store.setStaffMember(staff.id, "Pessoa da equipe");
+  store.addGroupParticipant(group.id, staff.id);
+  const sourceMessage = store.upsertMessage({
+    id: "ai-internal-source-message",
+    externalId: "ai-internal-source-message-external",
+    groupId: group.id,
+    senderId: staff.id,
+    occurredAt: "2026-08-26T12:00:00.000Z",
+    text: "Migração confirmada para a nova operação.",
+    messageType: "text",
+  });
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+  const request = store.addInvestigationThreadMessage(thread.id, {
+    body: "Crie um ticket a partir da mensagem interna que confirma a migração.",
+  }).messages.filter((message) => message.role === "operator").at(-1);
+  assert.ok(request);
+  const executor = new DeepToolExecutor(
+    new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
+    { database, supportStore: store },
+  );
+
+  try {
+    const prepared = await executor.execute({
+      requestId: "prepare-internal-ticket",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: request.id,
+        groupId: group.id,
+        title: "Migração da operação",
+        summary: "A equipe confirmou a migração para a nova operação.",
+        priority: "normal",
+        messageIds: [sourceMessage.id],
+      }),
+      purpose: "Preparar uma demanda operacional interna solicitada pelo operador.",
+    });
+    assert.equal(prepared.status, "success");
+    const preview = JSON.parse(prepared.content) as {
+      draftId: string;
+      sourceMessageCount: number;
+      sourceKind: string;
+    };
+    assert.equal(preview.sourceMessageCount, 1);
+    assert.equal(preview.sourceKind, "internal_manual");
+
+    database.prepare(
+      `UPDATE investigation_thread_jobs
+       SET state = 'completed', finished_at = requested_at, result_json = '{}'
+       WHERE thread_id = ?`,
+    ).run(thread.id);
+    const confirmation = store.addInvestigationThreadMessage(thread.id, {
+      body: "Pode criar o ticket exatamente como está na prévia.",
+    }).messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(confirmation);
+    const created = await executor.execute({
+      requestId: "create-internal-ticket",
+      toolId: "threadmark-context",
+      operation: "create_ticket_from_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: confirmation.id,
+        draftId: preview.draftId,
+      }),
+      purpose: "Criar o ticket interno confirmado pelo operador.",
+    });
+    assert.equal(created.status, "success");
+    const ticket = database.prepare(
+      `SELECT source_message_id FROM tickets WHERE id = ?`,
+    ).get(`threadmark-ai-ticket:${preview.draftId}`) as { source_message_id: string | null };
+    assert.equal(ticket.source_message_id, null);
+    assert.equal(store.getTicketDetail(`threadmark-ai-ticket:${preview.draftId}`).messageCount, 1);
+    const triage = database.prepare(
+      `SELECT triage_kind, triage_state FROM messages WHERE id = ?`,
+    ).get(sourceMessage.id) as { triage_kind: string; triage_state: string };
+    assert.deepEqual(triage, { triage_kind: "context", triage_state: "context" });
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Threadmark AI atualiza metadados e categorias somente após confirmação posterior", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-ticket-update-"));
   const database = createDatabase(":memory:");
@@ -1281,7 +1389,7 @@ test("CloudWatch limita uma página sem combinar flags incompatíveis da AWS CLI
     database,
     new LocalSecretVault(path.join(temporary, "secrets")),
   );
-  const logGroup = "/aws/lambda/adstart-sls-prod-gexecuteProcessWhatsappWebhook";
+  const logGroup = "/aws/lambda/example-prod-processInboundWebhook";
   const tool = await service.create({
     type: "aws_cloudwatch",
     name: "WhatsApp inbound readonly",

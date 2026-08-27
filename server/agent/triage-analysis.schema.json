@@ -20,6 +20,7 @@
           "relatedSuggestionId",
           "title",
           "summary",
+          "priority",
           "affectedEcommerce",
           "categories",
           "reason",
@@ -49,6 +50,10 @@
           "relatedSuggestionId": { "type": ["string", "null"] },
           "title": { "type": "string", "minLength": 1, "maxLength": 200 },
           "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "normal", "high", "urgent"]
+          },
           "affectedEcommerce": { "type": ["string", "null"] },
           "categories": {
             "type": "object",

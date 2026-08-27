@@ -22,6 +22,8 @@ const envSchema = z.object({
   SUPPORT_WHATSAPP_ENABLED: booleanEnvironment(true),
   SUPPORT_START_WEB: booleanEnvironment(true),
   SUPPORT_AGENT_ENABLED: booleanEnvironment(true),
+  SUPPORT_AGENT_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
+  SUPPORT_AGENT_QUICK_MODEL: z.string().trim().min(1).default("gpt-5.6-terra"),
   SUPPORT_TRIAGE_AI_ENABLED: booleanEnvironment(true),
   SUPPORT_TRIAGE_AI_MODEL: z.string().trim().min(1).default("gpt-5.4-mini"),
   SUPPORT_TRIAGE_AI_QUIET_MS: z.coerce
@@ -59,6 +61,8 @@ export interface SupportConfig {
   whatsappEnabled: boolean;
   startWeb: boolean;
   agentEnabled: boolean;
+  agentConcurrency: number;
+  agentQuickModel: string;
   triageAiEnabled: boolean;
   triageAiModel: string;
   triageAiQuietMs: number;
@@ -114,6 +118,8 @@ export function loadConfig(
     whatsappEnabled: env.SUPPORT_WHATSAPP_ENABLED,
     startWeb: env.SUPPORT_START_WEB,
     agentEnabled: env.SUPPORT_AGENT_ENABLED,
+    agentConcurrency: env.SUPPORT_AGENT_CONCURRENCY,
+    agentQuickModel: env.SUPPORT_AGENT_QUICK_MODEL,
     triageAiEnabled: env.SUPPORT_TRIAGE_AI_ENABLED,
     triageAiModel: env.SUPPORT_TRIAGE_AI_MODEL,
     triageAiQuietMs: env.SUPPORT_TRIAGE_AI_QUIET_MS,

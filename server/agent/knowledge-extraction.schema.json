@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title", "problem", "symptom", "context", "cause", "technicalCause",
+    "solution", "procedure", "prerequisites", "occurrenceConditions",
+    "applicableConditions", "contraindications", "impact", "affectedAudience",
+    "productFeature", "causes", "claims", "evidence", "operationalEvidenceIds", "toolsUsed",
+    "relatedTicketIds", "unknowns", "confirmationsNeeded", "languageLevels",
+    "candidate", "confidence", "suggestedType", "audience",
+    "duplicateCandidateId", "duplicateDifferences"
+  ],
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "problem": { "type": ["string", "null"], "maxLength": 2000 },
+    "symptom": { "type": ["string", "null"], "maxLength": 2000 },
+    "context": { "type": ["string", "null"], "maxLength": 4000 },
+    "cause": { "type": ["string", "null"], "maxLength": 2000 },
+    "technicalCause": { "type": ["string", "null"], "maxLength": 4000 },
+    "solution": { "type": ["string", "null"], "maxLength": 4000 },
+    "procedure": { "$ref": "#/$defs/stringList" },
+    "prerequisites": { "$ref": "#/$defs/stringList" },
+    "occurrenceConditions": { "$ref": "#/$defs/stringList" },
+    "applicableConditions": { "$ref": "#/$defs/stringList" },
+    "contraindications": { "$ref": "#/$defs/stringList" },
+    "impact": { "type": ["string", "null"], "maxLength": 2000 },
+    "affectedAudience": { "type": ["string", "null"], "maxLength": 1000 },
+    "productFeature": { "type": ["string", "null"], "maxLength": 500 },
+    "causes": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "confirmation", "solution", "evidenceIds", "confidence"],
+        "properties": {
+          "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "confirmation": { "type": ["string", "null"], "maxLength": 2000 },
+          "solution": { "type": ["string", "null"], "maxLength": 2000 },
+          "evidenceIds": { "$ref": "#/$defs/idList" },
+          "confidence": { "$ref": "#/$defs/confidence" }
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "statement", "evidenceIds", "confidence"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "kind": { "enum": ["FACT", "EVIDENCE", "INFERENCE", "HYPOTHESIS"] },
+          "statement": { "type": "string", "minLength": 1, "maxLength": 3000 },
+          "evidenceIds": { "$ref": "#/$defs/idList" },
+          "confidence": { "$ref": "#/$defs/confidence" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 120,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source", "reference", "excerpt", "observedAt"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "source": { "enum": ["MESSAGE", "RESOLUTION", "TICKET", "TOOL_RESULT", "RELATED_TICKET"] },
+          "reference": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "excerpt": { "type": "string", "minLength": 1, "maxLength": 3000 },
+          "observedAt": { "type": ["string", "null"], "maxLength": 100 }
+        }
+      }
+    },
+    "operationalEvidenceIds": { "$ref": "#/$defs/idList" },
+    "toolsUsed": { "$ref": "#/$defs/stringList" },
+    "relatedTicketIds": { "$ref": "#/$defs/idList" },
+    "unknowns": { "$ref": "#/$defs/stringList" },
+    "confirmationsNeeded": { "$ref": "#/$defs/stringList" },
+    "languageLevels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["technical", "operational", "support", "customer"],
+      "properties": {
+        "technical": { "type": ["string", "null"], "maxLength": 4000 },
+        "operational": { "type": ["string", "null"], "maxLength": 4000 },
+        "support": { "type": ["string", "null"], "maxLength": 4000 },
+        "customer": { "type": ["string", "null"], "maxLength": 4000 }
+      }
+    },
+    "candidate": { "enum": ["YES", "NO", "UNCERTAIN"] },
+    "confidence": { "$ref": "#/$defs/confidence" },
+    "suggestedType": { "enum": ["FAQ", "HOW_TO", "TROUBLESHOOTING", "EXPLANATION", "INTERNAL_RUNBOOK", "CUSTOMER_FACING"] },
+    "audience": { "enum": ["SUPPORT", "TECHNICAL", "CUSTOMER"] },
+    "duplicateCandidateId": { "type": ["string", "null"], "maxLength": 200 },
+    "duplicateDifferences": { "$ref": "#/$defs/stringList" }
+  },
+  "$defs": {
+    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "stringList": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    },
+    "idList": {
+      "type": "array",
+      "maxItems": 120,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    }
+  }
+}

@@ -3493,4 +3493,123 @@ export const migrations: Migration[] = [
         ADD COLUMN external_source_id TEXT;
     `,
   },
+  {
+    version: 66,
+    name: "structured_knowledge_pipeline",
+    sql: `
+      CREATE TABLE knowledge_objects (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+        status TEXT NOT NULL DEFAULT 'DRAFT'
+          CHECK (status IN ('DRAFT', 'IN_REVIEW', 'APPROVED', 'PUBLISHED', 'DEPRECATED')),
+        candidate TEXT NOT NULL DEFAULT 'UNCERTAIN'
+          CHECK (candidate IN ('YES', 'NO', 'UNCERTAIN')),
+        confidence TEXT NOT NULL DEFAULT 'LOW'
+          CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW')),
+        suggested_type TEXT NOT NULL DEFAULT 'EXPLANATION'
+          CHECK (suggested_type IN ('FAQ', 'HOW_TO', 'TROUBLESHOOTING', 'EXPLANATION', 'INTERNAL_RUNBOOK', 'CUSTOMER_FACING')),
+        audience TEXT NOT NULL DEFAULT 'SUPPORT'
+          CHECK (audience IN ('SUPPORT', 'TECHNICAL', 'CUSTOMER')),
+        title TEXT NOT NULL DEFAULT '',
+        problem TEXT,
+        symptom TEXT,
+        context TEXT,
+        cause TEXT,
+        technical_cause TEXT,
+        solution TEXT,
+        procedure_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(procedure_json)),
+        prerequisites_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(prerequisites_json)),
+        occurrence_conditions_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(occurrence_conditions_json)),
+        applicable_conditions_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(applicable_conditions_json)),
+        contraindications_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(contraindications_json)),
+        impact TEXT,
+        affected_audience TEXT,
+        product_feature TEXT,
+        causes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(causes_json)),
+        claims_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(claims_json)),
+        evidence_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_json)),
+        operational_evidence_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(operational_evidence_ids_json)),
+        tools_used_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tools_used_json)),
+        related_ticket_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(related_ticket_ids_json)),
+        unknowns_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(unknowns_json)),
+        confirmations_needed_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(confirmations_needed_json)),
+        language_levels_json TEXT NOT NULL DEFAULT '{}'
+          CHECK (json_valid(language_levels_json)),
+        duplicate_json TEXT CHECK (duplicate_json IS NULL OR json_valid(duplicate_json)),
+        ai_provider_id TEXT,
+        ai_connection_id TEXT,
+        ai_model TEXT,
+        prompt_version TEXT,
+        extracted_at TEXT,
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX knowledge_objects_status_updated_idx
+        ON knowledge_objects(status, updated_at DESC);
+      CREATE INDEX knowledge_objects_classification_idx
+        ON knowledge_objects(candidate, confidence, suggested_type, audience);
+
+      CREATE TABLE knowledge_object_versions (
+        id TEXT PRIMARY KEY,
+        knowledge_id TEXT NOT NULL REFERENCES knowledge_objects(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL CHECK (version > 0),
+        snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (knowledge_id, version)
+      ) STRICT;
+
+      CREATE TABLE knowledge_review_feedback (
+        id TEXT PRIMARY KEY,
+        knowledge_id TEXT NOT NULL REFERENCES knowledge_objects(id) ON DELETE CASCADE,
+        decision TEXT NOT NULL
+          CHECK (decision IN ('APPROVE', 'REJECT', 'REQUEST_REGENERATION', 'MARK_INCORRECT')),
+        reasons_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(reasons_json)),
+        comment TEXT,
+        actor TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX knowledge_review_feedback_knowledge_idx
+        ON knowledge_review_feedback(knowledge_id, created_at DESC);
+
+      ALTER TABLE documentation_drafts
+        ADD COLUMN knowledge_id TEXT REFERENCES knowledge_objects(id) ON DELETE CASCADE;
+      ALTER TABLE documentation_drafts
+        ADD COLUMN document_type TEXT
+          CHECK (document_type IS NULL OR document_type IN ('FAQ', 'HOW_TO', 'TROUBLESHOOTING', 'EXPLANATION', 'INTERNAL_RUNBOOK', 'CUSTOMER_FACING'));
+      ALTER TABLE documentation_drafts
+        ADD COLUMN audience_code TEXT
+          CHECK (audience_code IS NULL OR audience_code IN ('SUPPORT', 'TECHNICAL', 'CUSTOMER'));
+      ALTER TABLE documentation_drafts
+        ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0);
+
+      UPDATE documentation_drafts
+      SET audience_code = CASE
+        WHEN lower(audience) LIKE '%técnic%' OR lower(audience) LIKE '%tecnic%' THEN 'TECHNICAL'
+        WHEN lower(audience) LIKE '%cliente%' THEN 'CUSTOMER'
+        ELSE 'SUPPORT'
+      END,
+      document_type = 'EXPLANATION';
+
+      ALTER TABLE documentation_generation_jobs
+        ADD COLUMN phase TEXT NOT NULL DEFAULT 'document'
+          CHECK (phase IN ('extraction', 'document'));
+    `,
+  },
+  {
+    version: 67,
+    name: "triage_ticket_priority",
+    sql: `
+      ALTER TABLE triage_blocks
+        ADD COLUMN suggested_priority TEXT NOT NULL DEFAULT 'normal'
+          CHECK (suggested_priority IN ('low', 'normal', 'high', 'urgent'));
+    `,
+  },
 ];

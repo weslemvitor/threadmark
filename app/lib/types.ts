@@ -8,6 +8,9 @@ import type {
   DirectorySnapshotDto,
   DocumentationDraftDto,
   DocumentationDraftListResponse,
+  KnowledgeObjectDto,
+  KnowledgeReviewFeedbackInput,
+  UpdateKnowledgeObjectInput,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
   InvestigationThreadSummaryDto,
@@ -39,6 +42,9 @@ export type {
   DirectorySnapshotDto,
   DocumentationDraftDto,
   DocumentationDraftListResponse,
+  KnowledgeObjectDto,
+  KnowledgeReviewFeedbackInput,
+  UpdateKnowledgeObjectInput,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
   InvestigationThreadSummaryDto,
@@ -76,3 +82,4 @@ export type CategoryFacetType = CategoryFacet;
 export type Attachment = AttachmentDto;
 export type AnswerSuggestion = SuggestionDto;
 export type DocumentationDraft = DocumentationDraftDto;
+export type KnowledgeObject = KnowledgeObjectDto;

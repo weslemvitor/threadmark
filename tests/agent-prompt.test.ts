@@ -228,6 +228,8 @@ test("prompt aprofundado encadeia ferramentas e mantém um mapa de trabalho dur�
   assert.match(prompt, /create_ticket_from_draft/i);
   assert.match(prompt, /ticket nunca pode nascer vazio/i);
   assert.match(prompt, /sourceMessages/i);
+  assert.match(prompt, /mensagens da equipe podem ser usadas como origem apenas quando o operador pedir explicitamente/i);
+  assert.match(prompt, /nao autoriza triagem ou abertura automatica/i);
   assert.match(prompt, /list_ticket_categories/i);
   assert.match(prompt, /prepare_ticket_update_draft/i);
   assert.match(prompt, /apply_ticket_update_draft/i);
@@ -328,7 +330,7 @@ test("prompt aprofundado não oferece leitura de skill como evidência auditáve
     availableTools: [
       {
         id: "skill-tool",
-        name: "Skill · Adstart Debugger",
+        name: "Skill · Product Debugger",
         type: "debugger_skill",
         description: null,
         scope: "readonly",
@@ -355,7 +357,7 @@ test("prompt aprofundado não oferece leitura de skill como evidência auditáve
       {
         requestId: "skill-request",
         toolId: "skill-tool",
-        toolName: "Skill · Adstart Debugger",
+        toolName: "Skill · Product Debugger",
         operation: "read_skill",
         argumentsJson: "{}",
         purpose: "Orientar a investigação.",
@@ -979,6 +981,14 @@ test("prompt de triagem separa assuntos por IDs e bloqueia categorias genéricas
   assert.deepEqual(indexes, indexes.toSorted((left, right) => left - right));
   assert.match(prompt, /Outro problema e que os emails nao foram enviados/i);
   assert.match(prompt, /Existe um unico ticket aberto.*nova mensagem trata de outro produto/i);
+  assert.match(prompt, /trabalho pendente para a equipe/i);
+  assert.match(prompt, /reuniao.*treinamento.*envio de link/i);
+  assert.match(prompt, /pedido de retorno.*demanda/i);
+  assert.match(prompt, /somente confirmacao.*nenhuma acao esperada/i);
+  assert.match(prompt, /priority pelo impacto operacional comprovado/i);
+  assert.match(prompt, /fora do ar.*instabilidade geral/i);
+  assert.match(prompt, /dados incorretos ou ausentes/i);
+  assert.match(prompt, /dúvidas de métricas.*ferramentas/i);
 
   assert.equal(
     triageAnalysisSchema.safeParse({

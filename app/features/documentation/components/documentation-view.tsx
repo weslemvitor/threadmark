@@ -7,6 +7,7 @@ import {
   Clipboard,
   Download,
   FileWarning,
+  ShieldCheck,
   LoaderCircle,
   RefreshCw,
   Search,
@@ -32,19 +33,35 @@ import { Textarea } from "@/app/components/ui/textarea";
 import {
   API_URL,
   deleteDocumentationDraft,
+  generateKnowledgeDocument,
   getDocumentationDocx,
   getDocumentationDrafts,
   regenerateDocumentation,
+  reviewKnowledgeObject,
+  updateKnowledgeObject,
   updateDocumentationDraft,
 } from "@/app/lib/api";
-import type { DocumentationDraft } from "@/app/lib/types";
-import type { DocumentationDraftStatus } from "@/shared/contracts";
+import type { DocumentationDraft, KnowledgeObject } from "@/app/lib/types";
+import type { DocumentationDraftStatus, KnowledgeAudience, KnowledgeCandidateDecision, KnowledgeConfidence, KnowledgeDocumentType, KnowledgeFeedbackReason } from "@/shared/contracts";
 import { DocumentationDeleteDialog } from "./documentation-delete-dialog";
 
 const statusLabels: Record<DocumentationDraftStatus, string> = {
   draft: "Em revisão",
   ready: "Pronta",
   archived: "Arquivada",
+};
+
+const confidenceLabels: Record<KnowledgeConfidence, string> = { HIGH: "Alta", MEDIUM: "Média", LOW: "Baixa" };
+const candidateLabels: Record<KnowledgeCandidateDecision, string> = { YES: "Sim", NO: "Não", UNCERTAIN: "Incerto" };
+const audienceLabels: Record<KnowledgeAudience, string> = { SUPPORT: "Suporte", TECHNICAL: "Técnico", CUSTOMER: "Cliente" };
+const typeLabels: Record<KnowledgeDocumentType, string> = {
+  FAQ: "FAQ", HOW_TO: "Passo a passo", TROUBLESHOOTING: "Solução de problemas",
+  EXPLANATION: "Explicação", INTERNAL_RUNBOOK: "Runbook interno", CUSTOMER_FACING: "Conteúdo para cliente",
+};
+const feedbackLabels: Record<KnowledgeFeedbackReason, string> = {
+  TOO_TECHNICAL: "Técnico demais", TOO_GENERIC: "Genérico demais", MISSING_STEP: "Falta um passo",
+  INCORRECT: "Incorreto", UNSUPPORTED: "Sem evidência", WRONG_AUDIENCE: "Público incorreto",
+  DUPLICATE: "Duplicado", MISSING_CONTEXT: "Falta contexto",
 };
 
 function markdownFor(draft: DocumentationDraft): string {
@@ -79,6 +96,10 @@ export function DocumentationView() {
 
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
   const [draft, setDraft] = useState<DocumentationDraft | null>(null);
+  const [knowledge, setKnowledge] = useState<KnowledgeObject | null>(null);
+  const [savingKnowledge, setSavingKnowledge] = useState(false);
+  const [feedbackReason, setFeedbackReason] = useState<KnowledgeFeedbackReason>("UNSUPPORTED");
+  const [feedbackComment, setFeedbackComment] = useState("");
   const selectedSnapshotRef = useRef<DocumentationDraft | null>(null);
 
   const load = useCallback(async (silent = false) => {
@@ -119,6 +140,12 @@ export function DocumentationView() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [selected]);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      setKnowledge(selected?.knowledgeObject ? structuredClone(selected.knowledgeObject) : null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected?.knowledgeObject]);
 
   const hasActiveGeneration = items.some((item) =>
     item.generationState === "queued" || item.generationState === "running",
@@ -151,6 +178,78 @@ export function DocumentationView() {
       setMessage(error instanceof Error ? error.message : "Não foi possível salvar.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveKnowledge() {
+    if (!knowledge) return;
+    setSavingKnowledge(true);
+    try {
+      const updated = await updateKnowledgeObject(knowledge.id, {
+        status: knowledge.status,
+        candidate: knowledge.candidate,
+        confidence: knowledge.confidence,
+        suggestedType: knowledge.suggestedType,
+        audience: knowledge.audience,
+        title: knowledge.title,
+        problem: knowledge.problem,
+        symptom: knowledge.symptom,
+        context: knowledge.context,
+        cause: knowledge.cause,
+        technicalCause: knowledge.technicalCause,
+        solution: knowledge.solution,
+        procedure: knowledge.procedure.filter(Boolean),
+        prerequisites: knowledge.prerequisites.filter(Boolean),
+        occurrenceConditions: knowledge.occurrenceConditions,
+        applicableConditions: knowledge.applicableConditions,
+        contraindications: knowledge.contraindications,
+        impact: knowledge.impact,
+        affectedAudience: knowledge.affectedAudience,
+        productFeature: knowledge.productFeature,
+        causes: knowledge.causes,
+        claims: knowledge.claims,
+        evidence: knowledge.evidence,
+        operationalEvidenceIds: knowledge.operationalEvidenceIds,
+        toolsUsed: knowledge.toolsUsed,
+        relatedTicketIds: knowledge.relatedTicketIds,
+        unknowns: knowledge.unknowns.filter(Boolean),
+        confirmationsNeeded: knowledge.confirmationsNeeded.filter(Boolean),
+        languageLevels: knowledge.languageLevels,
+      });
+      setKnowledge(updated);
+      setItems((current) => current.map((item) => item.id === draft?.id ? { ...item, knowledgeObject: updated } : item));
+      setMessage("Conhecimento versionado e salvo no SQLite.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível salvar o conhecimento.");
+    } finally {
+      setSavingKnowledge(false);
+    }
+  }
+
+  async function reviewKnowledge(decision: "APPROVE" | "REJECT") {
+    if (!knowledge) return;
+    try {
+      const updated = await reviewKnowledgeObject(knowledge.id, {
+        decision,
+        reasons: decision === "REJECT" ? [feedbackReason] : [],
+        comment: decision === "REJECT" ? feedbackComment.trim() || null : null,
+      });
+      setKnowledge(updated);
+      setItems((current) => current.map((item) => item.id === draft?.id ? { ...item, knowledgeObject: updated } : item));
+      setMessage(decision === "APPROVE" ? "Conhecimento aprovado." : "Conhecimento rejeitado e preservado para auditoria.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível revisar o conhecimento.");
+    }
+  }
+
+  async function generateDocument() {
+    if (!knowledge || !draft) return;
+    try {
+      const updated = await generateKnowledgeDocument(knowledge.id);
+      setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setMessage("Documento adicionado à fila de renderização segura.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível gerar o documento.");
     }
   }
 
@@ -233,10 +332,38 @@ export function DocumentationView() {
           <>
             <header className="flex flex-wrap items-start justify-between gap-3 border-b p-4">
               <div className="min-w-0"><p className="text-xs font-semibold uppercase tracking-wide text-primary">Rascunho do ticket #{draft.ticketNumber}</p><h2 className="mt-1 break-words text-lg font-semibold">{draft.title || draft.ticketTitle}</h2><p className="mt-1 text-xs text-muted-foreground">Revise antes de copiar ou exportar. Nada é publicado automaticamente.</p></div>
-              <div className="flex flex-wrap gap-2"><Button onClick={() => void navigator.clipboard.writeText(markdownFor(draft))} size="sm" variant="outline"><Clipboard size={14} /> Copiar</Button><Button disabled={exporting} onClick={() => void download()} size="sm" variant="outline">{exporting ? <LoaderCircle className="animate-spin" size={14} /> : <Download size={14} />} {exporting ? "Exportando…" : "Exportar DOCX"}</Button><Button onClick={() => void regenerate()} size="sm" variant="outline"><RefreshCw size={14} /> Gerar novamente</Button><Button onClick={() => setDeleteTarget(draft)} size="sm" variant="destructive"><Trash2 size={14} /> Excluir</Button></div>
+              <div className="flex flex-wrap gap-2"><Button onClick={() => void navigator.clipboard.writeText(markdownFor(draft))} size="sm" variant="outline"><Clipboard size={14} /> Copiar</Button><Button disabled={exporting || !draft.bodyMarkdown} onClick={() => void download()} size="sm" variant="outline">{exporting ? <LoaderCircle className="animate-spin" size={14} /> : <Download size={14} />} {exporting ? "Exportando…" : "Exportar DOCX"}</Button>{knowledge?.extractedAt ? <Button disabled={knowledge.candidate === "NO"} onClick={() => void generateDocument()} size="sm"><BookOpenText size={14} /> Gerar documentação</Button> : null}<Button onClick={() => void regenerate()} size="sm" variant="outline"><RefreshCw size={14} /> Extrair novamente</Button><Button onClick={() => setDeleteTarget(draft)} size="sm" variant="destructive"><Trash2 size={14} /> Excluir</Button></div>
             </header>
-            <Tabs className="min-h-0 flex-col gap-0" defaultValue="edit">
-              <div className="border-b px-4 pt-3"><TabsList><TabsTrigger value="edit">Editar</TabsTrigger><TabsTrigger value="preview">Prévia</TabsTrigger><TabsTrigger value="sources">Fontes e imagens</TabsTrigger></TabsList></div>
+            <Tabs className="min-h-0 flex-col gap-0" defaultValue="knowledge">
+              <div className="border-b px-4 pt-3"><TabsList><TabsTrigger value="knowledge">Conhecimento</TabsTrigger><TabsTrigger value="edit">Documento</TabsTrigger><TabsTrigger value="preview">Prévia</TabsTrigger><TabsTrigger value="sources">Evidências</TabsTrigger></TabsList></div>
+              <TabsContent className="m-0 grid gap-4 p-4" value="knowledge">
+                {!knowledge?.extractedAt ? <div className="rounded-xl border border-dashed p-8 text-center"><LoaderCircle className="mx-auto animate-spin text-primary" size={24} /><p className="mt-3 text-sm font-semibold">Extraindo conhecimento do ticket</p><p className="mt-1 text-xs text-muted-foreground">Fatos, hipóteses e evidências serão preservados separadamente.</p></div> : (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4">
+                      <div><p className="text-xs font-semibold uppercase tracking-wide text-primary">Conhecimento identificado</p><p className="mt-1 text-sm text-muted-foreground">Versão {knowledge.version} · {knowledge.evidence.length} evidência(s) · revisão humana obrigatória</p></div>
+                      <div className="flex flex-wrap gap-2"><Badge variant={knowledge.confidence === "HIGH" ? "default" : "secondary"}>Confiança {confidenceLabels[knowledge.confidence]}</Badge><Badge variant="outline">{typeLabels[knowledge.suggestedType]}</Badge><Badge variant="outline">{audienceLabels[knowledge.audience]}</Badge><Badge variant={knowledge.candidate === "YES" ? "default" : "secondary"}>Reutilizável: {candidateLabels[knowledge.candidate]}</Badge></div>
+                    </div>
+                    {knowledge.confidence === "LOW" || knowledge.confirmationsNeeded.length ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-semibold">⚠️ Conhecimento ainda não confirmado</p><p className="mt-1 text-xs leading-5">Hipóteses e informações desconhecidas não serão transformadas em instruções operacionais.</p></div> : null}
+                    {knowledge.duplicate ? <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900"><p className="font-semibold">Possível duplicidade: {knowledge.duplicate.title}</p><p className="mt-1 text-xs">Similaridade {Math.round(knowledge.duplicate.similarity * 100)}%. Considere atualizar o conhecimento existente.</p></div> : null}
+                    <label className="grid gap-1.5 text-xs font-medium">Título<Input maxLength={200} onChange={(event) => setKnowledge({ ...knowledge, title: event.target.value })} value={knowledge.title} /></label>
+                    <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-1">
+                      <label className="grid gap-1.5 text-xs font-medium">Confiança<Select onValueChange={(value) => setKnowledge({ ...knowledge, confidence: value as KnowledgeConfidence })} value={knowledge.confidence}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="HIGH">Alta</SelectItem><SelectItem value="MEDIUM">Média</SelectItem><SelectItem value="LOW">Baixa</SelectItem></SelectContent></Select></label>
+                      <label className="grid gap-1.5 text-xs font-medium">Tipo<Select onValueChange={(value) => setKnowledge({ ...knowledge, suggestedType: value as KnowledgeDocumentType })} value={knowledge.suggestedType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(typeLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
+                      <label className="grid gap-1.5 text-xs font-medium">Público<Select onValueChange={(value) => setKnowledge({ ...knowledge, audience: value as KnowledgeAudience })} value={knowledge.audience}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries(audienceLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                      <label className="grid gap-1.5 text-xs font-medium">Problema<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, problem: event.target.value || null })} value={knowledge.problem ?? ""} /></label>
+                      <label className="grid gap-1.5 text-xs font-medium">Sintoma<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, symptom: event.target.value || null })} value={knowledge.symptom ?? ""} /></label>
+                      <label className="grid gap-1.5 text-xs font-medium">Causa confirmada<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, cause: event.target.value || null })} value={knowledge.cause ?? ""} /></label>
+                      <label className="grid gap-1.5 text-xs font-medium">Solução confirmada<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, solution: event.target.value || null })} value={knowledge.solution ?? ""} /></label>
+                    </div>
+                    <label className="grid gap-1.5 text-xs font-medium">Procedimento comprovado, um passo por linha<Textarea className="min-h-28" onChange={(event) => setKnowledge({ ...knowledge, procedure: event.target.value.split("\n") })} value={knowledge.procedure.join("\n")} /></label>
+                    <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1"><label className="grid gap-1.5 text-xs font-medium">Informações desconhecidas<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, unknowns: event.target.value.split("\n") })} value={knowledge.unknowns.join("\n")} /></label><label className="grid gap-1.5 text-xs font-medium">Informações a confirmar<Textarea className="min-h-24" onChange={(event) => setKnowledge({ ...knowledge, confirmationsNeeded: event.target.value.split("\n") })} value={knowledge.confirmationsNeeded.join("\n")} /></label></div>
+                    <div className="grid gap-3 rounded-xl border bg-muted/20 p-4"><p className="text-xs font-semibold">Feedback da revisão</p><div className="grid grid-cols-[220px_minmax(0,1fr)] gap-3 max-md:grid-cols-1"><Select onValueChange={(value) => setFeedbackReason(value as KnowledgeFeedbackReason)} value={feedbackReason}><SelectTrigger aria-label="Motivo da rejeição"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(feedbackLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select><Input onChange={(event) => setFeedbackComment(event.target.value)} placeholder="Comentário opcional para melhorar a próxima geração" value={feedbackComment} /></div></div>
+                    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex gap-2"><Button onClick={() => void reviewKnowledge("APPROVE")} size="sm" variant="outline"><ShieldCheck size={14} /> Aprovar</Button><Button onClick={() => void reviewKnowledge("REJECT")} size="sm" variant="destructive">Rejeitar</Button></div><Button disabled={savingKnowledge} onClick={() => void saveKnowledge()}>{savingKnowledge ? <LoaderCircle className="animate-spin" size={14} /> : <Check size={14} />} Salvar conhecimento</Button></div>
+                  </>
+                )}
+              </TabsContent>
               <TabsContent className="m-0 grid gap-4 p-4" value="edit">
                 <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1"><label className="grid gap-1.5 text-xs font-medium">Título<Input maxLength={160} onChange={(event) => setDraft({ ...draft, title: event.target.value })} value={draft.title} /></label><label className="grid gap-1.5 text-xs font-medium">Público<Input maxLength={200} onChange={(event) => setDraft({ ...draft, audience: event.target.value })} value={draft.audience} /></label></div>
                 <label className="grid gap-1.5 text-xs font-medium">Resumo<Textarea className="min-h-20" maxLength={600} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} value={draft.summary} /></label>
@@ -248,6 +375,8 @@ export function DocumentationView() {
               <TabsContent className="m-0 grid gap-4 p-4" value="sources">
                 {draft.warnings.length ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><h3 className="flex items-center gap-2 text-sm font-semibold text-amber-900"><FileWarning size={16} /> Pontos para revisão</h3><ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-800">{draft.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
                 <p className="text-xs text-muted-foreground">{draft.sourceMessageIds.length} mensagem(ns) sustentam este rascunho.</p>
+                {knowledge?.claims.length ? <div className="grid gap-2"><h3 className="text-sm font-semibold">Afirmações classificadas</h3>{knowledge.claims.map((claim) => <div className="rounded-xl border p-3" key={claim.id}><div className="flex flex-wrap items-center gap-2"><Badge variant={claim.kind === "HYPOTHESIS" ? "secondary" : "outline"}>{claim.kind}</Badge><Badge variant="secondary">{claim.confidence}</Badge><span className="text-[11px] text-muted-foreground">{claim.evidenceIds.length} evidência(s)</span></div><p className="mt-2 text-sm leading-6">{claim.statement}</p></div>)}</div> : null}
+                {knowledge?.evidence.length ? <div className="grid gap-2"><h3 className="text-sm font-semibold">Origem do conhecimento</h3>{knowledge.evidence.map((evidence) => <div className="rounded-xl border bg-muted/20 p-3" key={evidence.id}><div className="flex items-center justify-between gap-2"><Badge variant="outline">{evidence.source}</Badge><code className="break-all text-[11px] text-muted-foreground">{evidence.reference}</code></div><p className="mt-2 break-words text-xs leading-5 text-muted-foreground">{evidence.excerpt}</p></div>)}</div> : null}
                 <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">{draft.images.map((image) => <figure className="overflow-hidden rounded-xl border" key={image.attachmentId}><Image alt={image.caption} className="h-auto max-h-72 w-full object-contain" height={540} src={`${API_URL}${image.url}`} unoptimized width={960} /><figcaption className="border-t p-3 text-xs text-muted-foreground">{image.caption}</figcaption></figure>)}</div>
                 {!draft.images.length ? <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground"><Archive className="mx-auto mb-2" size={20} /> Nenhuma imagem segura foi selecionada.</div> : null}
               </TabsContent>

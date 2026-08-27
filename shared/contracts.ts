@@ -393,6 +393,7 @@ export interface TriageBlockDto {
   messageIds: string[];
   title: string;
   summary: string;
+  suggestedPriority: TicketPriority;
   kind: TriageKind;
   state:
     | "pending"
@@ -641,6 +642,7 @@ export interface TicketDetailDto extends TicketSummaryDto {
   resolution: ResolutionDto | null;
   latestInvestigation: LatestInvestigationDto | null;
   investigationThread: InvestigationThreadSummaryDto | null;
+  knowledgeObject: KnowledgeObjectDto | null;
 }
 
 export const DOCUMENTATION_DRAFT_STATUSES = [
@@ -661,6 +663,178 @@ export const DOCUMENTATION_GENERATION_STATES = [
 
 export type DocumentationGenerationState =
   (typeof DOCUMENTATION_GENERATION_STATES)[number];
+
+export const KNOWLEDGE_CONFIDENCE_LEVELS = ["HIGH", "MEDIUM", "LOW"] as const;
+export type KnowledgeConfidence = (typeof KNOWLEDGE_CONFIDENCE_LEVELS)[number];
+
+export const KNOWLEDGE_CANDIDATE_DECISIONS = ["YES", "NO", "UNCERTAIN"] as const;
+export type KnowledgeCandidateDecision = (typeof KNOWLEDGE_CANDIDATE_DECISIONS)[number];
+
+export const KNOWLEDGE_DOCUMENT_TYPES = [
+  "FAQ",
+  "HOW_TO",
+  "TROUBLESHOOTING",
+  "EXPLANATION",
+  "INTERNAL_RUNBOOK",
+  "CUSTOMER_FACING",
+] as const;
+export type KnowledgeDocumentType = (typeof KNOWLEDGE_DOCUMENT_TYPES)[number];
+
+export const KNOWLEDGE_AUDIENCES = ["SUPPORT", "TECHNICAL", "CUSTOMER"] as const;
+export type KnowledgeAudience = (typeof KNOWLEDGE_AUDIENCES)[number];
+
+export const KNOWLEDGE_STATUSES = [
+  "DRAFT",
+  "IN_REVIEW",
+  "APPROVED",
+  "PUBLISHED",
+  "DEPRECATED",
+] as const;
+export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
+
+export const KNOWLEDGE_CLAIM_KINDS = ["FACT", "EVIDENCE", "INFERENCE", "HYPOTHESIS"] as const;
+export type KnowledgeClaimKind = (typeof KNOWLEDGE_CLAIM_KINDS)[number];
+
+export const KNOWLEDGE_EVIDENCE_SOURCES = [
+  "MESSAGE",
+  "RESOLUTION",
+  "TICKET",
+  "TOOL_RESULT",
+  "RELATED_TICKET",
+] as const;
+export type KnowledgeEvidenceSource = (typeof KNOWLEDGE_EVIDENCE_SOURCES)[number];
+
+export const KNOWLEDGE_FEEDBACK_REASONS = [
+  "TOO_TECHNICAL",
+  "TOO_GENERIC",
+  "MISSING_STEP",
+  "INCORRECT",
+  "UNSUPPORTED",
+  "WRONG_AUDIENCE",
+  "DUPLICATE",
+  "MISSING_CONTEXT",
+] as const;
+export type KnowledgeFeedbackReason = (typeof KNOWLEDGE_FEEDBACK_REASONS)[number];
+
+export interface KnowledgeEvidenceDto {
+  id: string;
+  source: KnowledgeEvidenceSource;
+  reference: string;
+  excerpt: string;
+  observedAt: string | null;
+}
+
+export interface KnowledgeClaimDto {
+  id: string;
+  kind: KnowledgeClaimKind;
+  statement: string;
+  evidenceIds: string[];
+  confidence: KnowledgeConfidence;
+}
+
+export interface KnowledgeCauseDto {
+  description: string;
+  confirmation: string | null;
+  solution: string | null;
+  evidenceIds: string[];
+  confidence: KnowledgeConfidence;
+}
+
+export interface KnowledgeLanguageLevelsDto {
+  technical: string | null;
+  operational: string | null;
+  support: string | null;
+  customer: string | null;
+}
+
+export interface KnowledgeDuplicateDto {
+  knowledgeId: string;
+  title: string;
+  similarity: number;
+  differences: string[];
+}
+
+export interface KnowledgeObjectDto {
+  id: string;
+  ticketId: string;
+  ticketNumber: number;
+  version: number;
+  status: KnowledgeStatus;
+  candidate: KnowledgeCandidateDecision;
+  confidence: KnowledgeConfidence;
+  suggestedType: KnowledgeDocumentType;
+  audience: KnowledgeAudience;
+  title: string;
+  problem: string | null;
+  symptom: string | null;
+  context: string | null;
+  cause: string | null;
+  technicalCause: string | null;
+  solution: string | null;
+  procedure: string[];
+  prerequisites: string[];
+  occurrenceConditions: string[];
+  applicableConditions: string[];
+  contraindications: string[];
+  impact: string | null;
+  affectedAudience: string | null;
+  productFeature: string | null;
+  causes: KnowledgeCauseDto[];
+  claims: KnowledgeClaimDto[];
+  evidence: KnowledgeEvidenceDto[];
+  operationalEvidenceIds: string[];
+  toolsUsed: string[];
+  relatedTicketIds: string[];
+  unknowns: string[];
+  confirmationsNeeded: string[];
+  languageLevels: KnowledgeLanguageLevelsDto;
+  duplicate: KnowledgeDuplicateDto | null;
+  aiProviderId: string | null;
+  aiModel: string | null;
+  extractedAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpdateKnowledgeObjectInput {
+  status: KnowledgeStatus;
+  candidate: KnowledgeCandidateDecision;
+  confidence: KnowledgeConfidence;
+  suggestedType: KnowledgeDocumentType;
+  audience: KnowledgeAudience;
+  title: string;
+  problem: string | null;
+  symptom: string | null;
+  context: string | null;
+  cause: string | null;
+  technicalCause: string | null;
+  solution: string | null;
+  procedure: string[];
+  prerequisites: string[];
+  occurrenceConditions: string[];
+  applicableConditions: string[];
+  contraindications: string[];
+  impact: string | null;
+  affectedAudience: string | null;
+  productFeature: string | null;
+  causes: KnowledgeCauseDto[];
+  claims: KnowledgeClaimDto[];
+  evidence: KnowledgeEvidenceDto[];
+  operationalEvidenceIds: string[];
+  toolsUsed: string[];
+  relatedTicketIds: string[];
+  unknowns: string[];
+  confirmationsNeeded: string[];
+  languageLevels: KnowledgeLanguageLevelsDto;
+}
+
+export interface KnowledgeReviewFeedbackInput {
+  decision: "APPROVE" | "REJECT" | "REQUEST_REGENERATION" | "MARK_INCORRECT";
+  reasons: KnowledgeFeedbackReason[];
+  comment?: string | null;
+}
 
 export interface DocumentationImagePlacementDto {
   attachmentId: string;
@@ -683,6 +857,10 @@ export interface DocumentationDraftDto {
   title: string;
   summary: string;
   audience: string;
+  audienceCode: KnowledgeAudience | null;
+  documentType: KnowledgeDocumentType | null;
+  version: number;
+  knowledgeObject: KnowledgeObjectDto | null;
   bodyMarkdown: string;
   prerequisites: string[];
   warnings: string[];

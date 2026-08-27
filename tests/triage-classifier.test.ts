@@ -45,6 +45,22 @@ test("saudacao acompanhada de problema abre ticket", () => {
 });
 
 for (const text of [
+  "Pode enviar o link do Meet aqui, por favor?",
+  "Sobre o treinamento, qual sua disponibilidade?",
+  "Conseguem colocar o Misso, nosso CTO?",
+  "Gente, podemos bater um papo essa semana? Queria ver sobre esses pontos.",
+  "Algum retorno sobre isso?",
+  "Precisamos adicionar a Empresa Nova e retirar a Empresa Antiga.",
+]) {
+  test(`solicitacao operacional tambem e demanda: ${text}`, () => {
+    const result = classifyTriageCandidate(candidate(text));
+
+    assert.equal(result.kind, "demand");
+    assert.equal(result.shouldOpenTicket, true);
+  });
+}
+
+for (const text of [
   "Perfeito, obrigado",
   "Perfeito! Muito obrigado!",
   "Parabéns pelo trabalho 👏",

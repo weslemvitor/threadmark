@@ -5,6 +5,8 @@ import {
   buildInvestigationThreadPrompt,
   buildDocumentationPrompt,
   DOCUMENTATION_PROMPT_INSTRUCTIONS,
+  buildKnowledgeExtractionPrompt,
+  KNOWLEDGE_EXTRACTION_PROMPT_INSTRUCTIONS,
   buildSupportPrompt,
   buildTriagePrompt,
 } from "./prompt.js";
@@ -21,6 +23,7 @@ import {
   SUPPORT_ANALYSIS_JSON_SCHEMA,
   TRIAGE_ANALYSIS_JSON_SCHEMA,
   DOCUMENTATION_DRAFT_JSON_SCHEMA,
+  KNOWLEDGE_EXTRACTION_JSON_SCHEMA,
 } from "./provider-schemas.js";
 import {
   boundProviderSupportInput,
@@ -32,6 +35,8 @@ import type {
   AnalysisMessage,
   DocumentationDraftInput,
   DocumentationDraftResult,
+  KnowledgeExtractionInput,
+  KnowledgeExtractionResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
   SupportAnalysis,
@@ -42,6 +47,7 @@ import type {
 import {
   parseInvestigationTurnResult,
   parseDocumentationDraft,
+  parseKnowledgeExtraction,
   parseSupportAnalysis,
   triageAnalysisSchema,
 } from "./validation.js";
@@ -172,6 +178,23 @@ export class StructuredSupportAgent implements SupportAgent {
       signal,
     });
     return parseDocumentationDraft(raw, boundedInput);
+  }
+
+  async extractKnowledge(
+    input: KnowledgeExtractionInput,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeExtractionResult> {
+    const boundedInput = boundProviderDocumentationInput(input) as KnowledgeExtractionInput;
+    const raw = await this.client.generateJson({
+      instructions: KNOWLEDGE_EXTRACTION_PROMPT_INSTRUCTIONS,
+      prompt: buildKnowledgeExtractionPrompt(boundedInput),
+      schemaName: "knowledge_extraction",
+      schema: KNOWLEDGE_EXTRACTION_JSON_SCHEMA,
+      model: this.model,
+      images: await this.collectTrustedImages(input.messages),
+      signal,
+    });
+    return parseKnowledgeExtraction(raw, boundedInput);
   }
 
   private async collectTrustedImages(

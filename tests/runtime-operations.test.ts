@@ -113,6 +113,7 @@ test("doctor testa somente os provedores selecionados pelos perfis ativos", asyn
     ...fixtureConfig(root),
     startWeb: false,
     agentEnabled: true,
+    agentConcurrency: 2,
   };
   await mkdir(config.dataDir, { recursive: true });
   const database = new Database(config.databasePath);
@@ -259,6 +260,8 @@ function fixtureConfig(projectRoot: string): SupportConfig {
     whatsappEnabled: false,
     startWeb: true,
     agentEnabled: false,
+    agentConcurrency: 2,
+    agentQuickModel: "gpt-5.6-terra",
     triageAiEnabled: false,
     triageAiModel: "gpt-5.4-mini",
     triageAiQuietMs: 30_000,

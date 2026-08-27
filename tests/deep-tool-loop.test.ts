@@ -5,7 +5,10 @@ import type { CodexSupportAgent } from "../server/agent/codex-runner.js";
 import type { AiProviderSettingsService } from "../server/agent/provider-settings.js";
 import { ConfiguredSupportAgent, type DeepInvestigationToolBroker } from "../server/agent/provider-router.js";
 import type { SupportAgent } from "../server/agent/provider.js";
-import type { InvestigationThreadInput } from "../server/agent/types.js";
+import type {
+  InvestigationThreadInput,
+  InvestigationToolRequest,
+} from "../server/agent/types.js";
 import { createDatabase } from "../server/db/index.js";
 
 function input(): InvestigationThreadInput {
@@ -77,6 +80,85 @@ function settingsForDeepAgent(agent: SupportAgent): AiProviderSettingsService {
     },
   } as unknown as AiProviderSettingsService;
 }
+
+test("conversa objetiva usa Terra e orçamento curto sem alterar a configuração profunda", async () => {
+  const database = createDatabase(":memory:");
+  let modelOverride: string | undefined;
+  let observedBudget: InvestigationThreadInput["executionBudget"];
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      observedBudget = current.executionBudget;
+      return {
+        assistantMessage: "Ação objetiva concluída.",
+        phase: "conclusion" as const,
+        threadSummary: "Ação objetiva concluída.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Nenhuma.",
+        confidence: 0.9,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const settings = {
+    async createAgentForTask(
+      _task: string,
+      _codex: CodexSupportAgent,
+      options: { codexModelOverride?: string },
+    ) {
+      modelOverride = options.codexModelOverride;
+      return {
+        agent: modelAgent,
+        profile: {
+          taskKind: "deep" as const,
+          connectionId: "codex",
+          model: modelOverride ?? "gpt-5.6-sol",
+          enabled: true,
+          updatedAt: "2026-08-27T12:00:00.000Z",
+        },
+        connection: {
+          id: "codex",
+          label: "Codex",
+          providerId: "codex" as const,
+          baseUrl: null,
+          enabled: true,
+          hasSecret: false,
+          secretLastFour: null,
+          capabilities: {
+            automaticAnalysis: true,
+            triage: true,
+            structuredOutput: true,
+            vision: true,
+            localTools: false,
+            codebaseAccess: false,
+            deepInvestigation: true,
+          },
+          createdAt: "2026-08-27T12:00:00.000Z",
+          updatedAt: "2026-08-27T12:00:00.000Z",
+        },
+      };
+    },
+  } as unknown as AiProviderSettingsService;
+  const quickInput = input();
+  quickInput.recentMessages[0]!.body = "Pode criar o ticket.";
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settings,
+    {} as CodexSupportAgent,
+    undefined,
+    { quickModel: "gpt-5.6-terra" },
+  );
+
+  try {
+    await configured.investigateThread(quickInput);
+    assert.equal(modelOverride, "gpt-5.6-terra");
+    assert.equal(observedBudget?.workload, "quick");
+    assert.equal(observedBudget?.maxToolRounds, 3);
+    assert.equal(observedBudget?.maxToolOperations, 8);
+  } finally {
+    database.close();
+  }
+});
 
 test("app conectado exige confirmação explícita da mensagem atual antes da execução", async () => {
   const database = createDatabase(":memory:");
@@ -156,6 +238,141 @@ test("app conectado exige confirmação explícita da mensagem atual antes da ex
     assert.equal(turns, 2);
     assert.equal(brokerExecutions, 0);
     assert.equal(result.toolExecutions?.[0]?.status, "error");
+  } finally {
+    database.close();
+  }
+});
+
+test("confirmação natural aplica deterministicamente a última prévia pendente", async () => {
+  const database = createDatabase(":memory:");
+  database.prepare(`
+    INSERT INTO investigation_threads (
+      id, scope, title, created_by, created_at, updated_at
+    ) VALUES ('thread-confirmation', 'workspace', 'Conversa', 'operator-local', ?, ?)
+  `).run("2026-08-26T17:00:00.000Z", "2026-08-26T17:00:00.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_messages (
+      id, thread_id, role, body, created_at
+    ) VALUES ('operator-preview', 'thread-confirmation', 'operator', 'Prepare a automação.', ?)
+  `).run("2026-08-26T17:00:01.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_jobs (
+      id, thread_id, operator_message_id, state, requested_at, finished_at
+    ) VALUES ('job-preview', 'thread-confirmation', 'operator-preview', 'completed', ?, ?)
+  `).run("2026-08-26T17:00:01.000Z", "2026-08-26T17:00:03.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_messages (
+      id, thread_id, role, body, phase, job_id, created_at
+    ) VALUES (
+      'assistant-preview', 'thread-confirmation', 'assistant',
+      'Prévia preparada. Confirma?', 'analysis', 'job-preview', ?
+    )
+  `).run("2026-08-26T17:00:03.000Z");
+  database.prepare(`
+    UPDATE investigation_thread_jobs
+    SET assistant_message_id = 'assistant-preview'
+    WHERE id = 'job-preview'
+  `).run();
+  database.prepare(`
+    INSERT INTO investigation_thread_messages (
+      id, thread_id, role, body, created_at
+    ) VALUES ('operator-confirmation', 'thread-confirmation', 'operator', 'Pode daler', ?)
+  `).run("2026-08-26T17:00:04.000Z");
+  database.prepare(`
+    INSERT INTO threadmark_ai_automation_drafts (
+      id, thread_id, operator_message_id, intent, name, definition_json,
+      state, created_by, created_at, updated_at
+    ) VALUES (
+      'automation-draft-1', 'thread-confirmation', 'operator-preview', 'create',
+      'Fluxo de teste', '{}', 'pending', 'operator-local', ?, ?
+    )
+  `).run("2026-08-26T17:00:02.000Z", "2026-08-26T17:00:02.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_tool_executions (
+      id, job_id, request_id, tool_id, tool_name, operation, arguments_json,
+      purpose, status, summary, content, executed_at, recorded_at
+    ) VALUES (
+      'execution-preview', 'job-preview', 'prepare-preview', 'threadmark-automations',
+      'Automações do Threadmark', 'prepare_automation_draft', '{}', 'Preparar',
+      'success', 'Prévia preparada', ?, ?, ?
+    )
+  `).run(
+    JSON.stringify({ draftId: "automation-draft-1" }),
+    "2026-08-26T17:00:02.000Z",
+    "2026-08-26T17:00:02.000Z",
+  );
+
+  let receivedRequest: InvestigationToolRequest | null = null;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors() {
+      return [{
+        id: "threadmark-automations",
+        name: "Automações do Threadmark",
+        type: "knowledge",
+        description: "Fluxos internos",
+        scope: "SQLite local",
+        operations: [{
+          name: "apply_automation_draft",
+          description: "Aplica uma prévia",
+          argumentsExample: "{}",
+        }],
+      }];
+    },
+    async executeMany(requests) {
+      receivedRequest = requests[0] ?? null;
+      return requests.map((request) => ({
+        ...request,
+        toolName: "Automações do Threadmark",
+        status: "success" as const,
+        summary: "Prévia aplicada.",
+        content: "{}",
+        reference: null,
+        executedAt: "2026-08-26T17:00:05.000Z",
+      }));
+    },
+  };
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      assert.equal(current.toolResults?.[0]?.status, "success");
+      assert.match(current.toolResults?.[0]?.summary ?? "", /aplicada/i);
+      return {
+        assistantMessage: "A prévia foi aplicada.",
+        phase: "conclusion" as const,
+        threadSummary: "Prévia confirmada e aplicada.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: null,
+        confidence: 1,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const current = input();
+    current.threadId = "thread-confirmation";
+    current.currentOperatorMessageId = "operator-confirmation";
+    current.recentMessages = [{
+      id: "operator-confirmation",
+      role: "operator",
+      body: "Pode daler",
+      phase: null,
+      createdAt: "2026-08-26T17:00:04.000Z",
+    }];
+    await configured.investigateThread(current);
+    const executedRequest = receivedRequest as InvestigationToolRequest | null;
+    assert.ok(executedRequest);
+    assert.equal(executedRequest.operation, "apply_automation_draft");
+    assert.deepEqual(JSON.parse(executedRequest.argumentsJson), {
+      confirmationMessageId: "operator-confirmation",
+      draftId: "automation-draft-1",
+    });
   } finally {
     database.close();
   }
@@ -1062,6 +1279,185 @@ test("roteador neutraliza alegação técnica inventada antes de persistir check
     assert.match(checkpointSeen, /aguardando evidência local auditável/);
     assert.doesNotMatch(checkpointSeen, /Banco indisponível/);
     assert.deepEqual(result.evidence, []);
+  } finally {
+    database.close();
+  }
+});
+
+test("roteador encerra a exploração ao atingir o orçamento e pede síntese ao modelo", async () => {
+  const database = createDatabase(":memory:");
+  let modelTurns = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      if (current.executionBudget?.forceConclusion) {
+        assert.equal(current.availableTools?.length, 0);
+        return {
+          assistantMessage: "Sintetizei as evidências disponíveis sem continuar varrendo o código.",
+          phase: "conclusion" as const,
+          threadSummary: "A exploração foi encerrada no orçamento seguro.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Revisar a síntese.",
+          confidence: 0.7,
+          toolRequests: [],
+        };
+      }
+      return {
+        assistantMessage: `Busca ${modelTurns}.`,
+        phase: "analysis" as const,
+        threadSummary: `Foram realizadas ${modelTurns - 1} buscas.`,
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Continuar buscando.",
+        confidence: 0.4,
+        toolRequests: [{
+          requestId: `budget-${modelTurns}`,
+          toolId: "codebase",
+          operation: "search_files",
+          argumentsJson: JSON.stringify({ query: `regra_${modelTurns}`, path: "server" }),
+          purpose: "Localizar mais uma regra.",
+        }],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "codebase",
+      name: "Código",
+      type: "codebase",
+      description: null,
+      scope: "raiz local",
+      operations: [{
+        name: "search_files",
+        description: "Busca no código",
+        argumentsExample: '{"query":"regra","path":"server"}',
+      }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Código",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: "Busca concluída.",
+        content: "resultado",
+        reference: `tool:codebase:search:${brokerCalls}`,
+        executedAt: "2026-08-26T15:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+    { maxToolOperations: 3, maxToolRounds: 10 },
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(brokerCalls, 3);
+    assert.equal(modelTurns, 4);
+    assert.equal(result.phase, "conclusion");
+    assert.match(result.assistantMessage, /sem continuar varrendo/i);
+    assert.equal(result.toolExecutions?.length, 3);
+  } finally {
+    database.close();
+  }
+});
+
+test("roteador bloqueia repetição semântica que altera apenas limites da busca", async () => {
+  const database = createDatabase(":memory:");
+  let modelTurns = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      if (modelTurns <= 2) {
+        return {
+          assistantMessage: "Vou procurar a mesma regra novamente.",
+          phase: "analysis" as const,
+          threadSummary: "Busca pela regra de faturamento.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Buscar no código.",
+          confidence: 0.4,
+          toolRequests: [{
+            requestId: `semantic-${modelTurns}`,
+            toolId: "codebase",
+            operation: "search_files",
+            argumentsJson: JSON.stringify({
+              query: "calculo faturamento aprovado",
+              path: "server",
+              maxResults: modelTurns === 1 ? 20 : 80,
+            }),
+            purpose: "Localizar a fórmula.",
+          }],
+        };
+      }
+      assert.match(current.toolResults?.at(-1)?.summary ?? "", /semanticamente repetida/i);
+      return {
+        assistantMessage: "Usei o resultado já disponível.",
+        phase: "conclusion" as const,
+        threadSummary: "A busca duplicada foi evitada.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Revisar o resultado existente.",
+        confidence: 0.7,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "codebase",
+      name: "Código",
+      type: "codebase",
+      description: null,
+      scope: "raiz local",
+      operations: [{ name: "search_files", description: "Busca", argumentsExample: "{}" }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Código",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: "Regra localizada.",
+        content: "resultado",
+        reference: "tool:codebase:search:faturamento",
+        executedAt: "2026-08-26T15:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(modelTurns, 3);
+    assert.equal(brokerCalls, 1);
+    assert.equal(result.phase, "conclusion");
   } finally {
     database.close();
   }

@@ -37,10 +37,6 @@ import { createInboundWhatsAppClient } from "./whatsapp/index.js";
 async function main(): Promise<void> {
   const config = loadConfig();
   const localSettings = await new LocalSettingsFile(config.localSettingsPath).read();
-  const monitoredGroupJids = mergeConfiguredIdentities(
-    config.monitoredGroupJids,
-    localSettings.monitoredGroupJids,
-  );
   const staffIdentities = localSettings.staffIdentitiesConfigured
     ? localSettings.staffIdentities
     : mergeConfiguredIdentities(
@@ -127,7 +123,9 @@ async function main(): Promise<void> {
     ? createInboundWhatsAppClient({
         authDirectory: config.authDir,
         sink,
-        allowlistedGroupJids: monitoredGroupJids,
+        // Grupos que continuam recebendo eventos entram automaticamente na
+        // triagem. A pausa explicita da conversa, persistida no SQLite, e a
+        // unica forma suportada de silenciar sugestoes sem perder contexto.
         staffIdentities: resolvedStaff.policyIdentities,
         media: { enabled: true, maxBytes: 20 * 1024 * 1024, timeoutMs: 30_000 },
       })
@@ -229,9 +227,11 @@ async function main(): Promise<void> {
       providerSettings,
       codexAgent,
       deepTools,
+      { quickModel: config.agentQuickModel },
     );
     const investigations = new InvestigationWorker(store, agent, {
       executionRegistry: investigationExecutions,
+      concurrency: config.agentConcurrency,
       onEvent(event) {
         if (event.type === "failed") {
           console.error(`Investigação ${event.jobId} falhou: ${event.error}`);

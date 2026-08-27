@@ -1509,12 +1509,12 @@ export function SupportApp({
     setGeneratingDocumentationTicketId(ticketId);
     try {
       await queueTicketDocumentation(ticketId);
-      showToast({ tone: "success", message: "Documentação adicionada à fila de geração." });
+      showToast({ tone: "success", message: "Extração de conhecimento adicionada à fila." });
       navigateToView("documentation");
     } catch (error) {
       showToast({
         tone: "warning",
-        message: error instanceof Error ? error.message : "Não foi possível gerar a documentação.",
+        message: error instanceof Error ? error.message : "Não foi possível extrair o conhecimento.",
       });
     } finally {
       setGeneratingDocumentationTicketId(null);

@@ -26,6 +26,14 @@ import {
   TICKET_STATUSES,
   TICKET_TITLE_MAX_LENGTH,
   DOCUMENTATION_DRAFT_STATUSES,
+  KNOWLEDGE_AUDIENCES,
+  KNOWLEDGE_CANDIDATE_DECISIONS,
+  KNOWLEDGE_CLAIM_KINDS,
+  KNOWLEDGE_CONFIDENCE_LEVELS,
+  KNOWLEDGE_DOCUMENT_TYPES,
+  KNOWLEDGE_EVIDENCE_SOURCES,
+  KNOWLEDGE_FEEDBACK_REASONS,
+  KNOWLEDGE_STATUSES,
   type ApiErrorResponse,
   type DashboardExportRowDto,
   type DashboardPeriodInput,
@@ -491,6 +499,75 @@ const documentationDraftInputSchema = z.object({
   prerequisites: z.array(z.string().trim().min(1).max(500)).max(20),
   status: z.enum(DOCUMENTATION_DRAFT_STATUSES),
 });
+
+const knowledgeEvidenceSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  source: z.enum(KNOWLEDGE_EVIDENCE_SOURCES),
+  reference: z.string().trim().min(1).max(300),
+  excerpt: z.string().trim().min(1).max(2_000),
+  observedAt: z.string().datetime().nullable(),
+}).strict();
+
+const knowledgeClaimSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  kind: z.enum(KNOWLEDGE_CLAIM_KINDS),
+  statement: z.string().trim().min(1).max(2_000),
+  evidenceIds: z.array(z.string().trim().min(1).max(100)).max(50),
+  confidence: z.enum(KNOWLEDGE_CONFIDENCE_LEVELS),
+}).strict();
+
+const knowledgeCauseSchema = z.object({
+  description: z.string().trim().min(1).max(2_000),
+  confirmation: z.string().trim().min(1).max(2_000).nullable(),
+  solution: z.string().trim().min(1).max(2_000).nullable(),
+  evidenceIds: z.array(z.string().trim().min(1).max(100)).max(50),
+  confidence: z.enum(KNOWLEDGE_CONFIDENCE_LEVELS),
+}).strict();
+
+const nullableKnowledgeText = z.string().trim().min(1).max(5_000).nullable();
+const knowledgeStringList = z.array(z.string().trim().min(1).max(2_000)).max(100);
+const knowledgeObjectInputSchema = z.object({
+  status: z.enum(KNOWLEDGE_STATUSES),
+  candidate: z.enum(KNOWLEDGE_CANDIDATE_DECISIONS),
+  confidence: z.enum(KNOWLEDGE_CONFIDENCE_LEVELS),
+  suggestedType: z.enum(KNOWLEDGE_DOCUMENT_TYPES),
+  audience: z.enum(KNOWLEDGE_AUDIENCES),
+  title: z.string().trim().min(1).max(200),
+  problem: nullableKnowledgeText,
+  symptom: nullableKnowledgeText,
+  context: nullableKnowledgeText,
+  cause: nullableKnowledgeText,
+  technicalCause: nullableKnowledgeText,
+  solution: nullableKnowledgeText,
+  procedure: knowledgeStringList,
+  prerequisites: knowledgeStringList,
+  occurrenceConditions: knowledgeStringList,
+  applicableConditions: knowledgeStringList,
+  contraindications: knowledgeStringList,
+  impact: nullableKnowledgeText,
+  affectedAudience: nullableKnowledgeText,
+  productFeature: nullableKnowledgeText,
+  causes: z.array(knowledgeCauseSchema).max(30),
+  claims: z.array(knowledgeClaimSchema).max(100),
+  evidence: z.array(knowledgeEvidenceSchema).max(150),
+  operationalEvidenceIds: z.array(z.string().trim().min(1).max(100)).max(100),
+  toolsUsed: knowledgeStringList,
+  relatedTicketIds: z.array(z.string().trim().min(1).max(200)).max(100),
+  unknowns: knowledgeStringList,
+  confirmationsNeeded: knowledgeStringList,
+  languageLevels: z.object({
+    technical: nullableKnowledgeText,
+    operational: nullableKnowledgeText,
+    support: nullableKnowledgeText,
+    customer: nullableKnowledgeText,
+  }).strict(),
+}).strict();
+
+const knowledgeReviewInputSchema = z.object({
+  decision: z.enum(["APPROVE", "REJECT", "REQUEST_REGENERATION", "MARK_INCORRECT"]),
+  reasons: z.array(z.enum(KNOWLEDGE_FEEDBACK_REASONS)).max(8),
+  comment: z.string().trim().min(1).max(2_000).nullable().optional(),
+}).strict();
 
 const loginInputSchema = z
   .object({
@@ -2345,6 +2422,39 @@ function createApiAppInternal(
         202,
       );
     },
+  );
+
+  app.post("/api/tickets/:id/knowledge", (context) => {
+    services.aiSettings?.assertTaskReady("documentation");
+    return context.json(
+      store.queueDocumentationDraft(context.req.param("id"), actorFor(context)),
+      202,
+    );
+  });
+
+  app.get("/api/tickets/:id/knowledge", (context) =>
+    context.json(store.getKnowledgeObjectByTicket(context.req.param("id"))),
+  );
+
+  app.patch("/api/knowledge/:id", async (context) => {
+    const input = knowledgeObjectInputSchema.parse(await context.req.json());
+    return context.json(
+      store.updateKnowledgeObject(context.req.param("id"), input, actorFor(context)),
+    );
+  });
+
+  app.post("/api/knowledge/:id/review", async (context) => {
+    const input = knowledgeReviewInputSchema.parse(await context.req.json());
+    return context.json(
+      store.reviewKnowledgeObject(context.req.param("id"), input, actorFor(context)),
+    );
+  });
+
+  app.post("/api/knowledge/:id/documentation", (context) =>
+    context.json(
+      store.queueKnowledgeDocument(context.req.param("id"), actorFor(context)),
+      202,
+    ),
   );
 
   app.get("/api/documentation", (context) => {

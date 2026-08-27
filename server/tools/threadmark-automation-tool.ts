@@ -17,6 +17,7 @@ import type {
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
+import { isAffirmativePreviewConfirmation } from "../agent/confirmation-intent.js";
 
 export const THREADMARK_AUTOMATIONS_TOOL_ID = "threadmark-automations";
 
@@ -683,8 +684,7 @@ function nodeLabel(node: AutomationNode): string {
 }
 
 function explicitApplyConfirmation(message: string): boolean {
-  const value = normalize(message);
-  return /\b(confirmo|pode|quero)\b/.test(value) && /\b(criar|crie|salvar|salve|aplicar|aplique|atualizar|atualize)\b/.test(value) && /\b(automacao|fluxo|proposta)\b/.test(value);
+  return isAffirmativePreviewConfirmation(message);
 }
 
 function explicitStatusConfirmation(message: string, status: "active" | "paused"): boolean {

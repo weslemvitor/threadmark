@@ -18,12 +18,15 @@ import {
   buildInvestigationThreadPrompt,
   buildDocumentationPrompt,
   DOCUMENTATION_PROMPT_INSTRUCTIONS,
+  buildKnowledgeExtractionPrompt,
+  KNOWLEDGE_EXTRACTION_PROMPT_INSTRUCTIONS,
   buildSupportPrompt,
   buildTriagePrompt,
 } from "./prompt.js";
 import {
   parseInvestigationTurnResult,
   parseDocumentationDraft,
+  parseKnowledgeExtraction,
   parseSupportAnalysis,
   triageAnalysisSchema,
 } from "./validation.js";
@@ -31,6 +34,8 @@ import type {
   AnalysisMessage,
   DocumentationDraftInput,
   DocumentationDraftResult,
+  KnowledgeExtractionInput,
+  KnowledgeExtractionResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
   SupportAnalysis,
@@ -47,6 +52,7 @@ const defaultTurnSchemaPath = path.join(
 );
 const defaultTriageSchemaPath = path.join(moduleDir, "triage-analysis.schema.json");
 const defaultDocumentationSchemaPath = path.join(moduleDir, "documentation-draft.schema.json");
+const defaultKnowledgeExtractionSchemaPath = path.join(moduleDir, "knowledge-extraction.schema.json");
 
 export interface CodexRunnerOptions {
   codexBin?: string;
@@ -56,6 +62,7 @@ export interface CodexRunnerOptions {
   turnSchemaPath?: string;
   triageSchemaPath?: string;
   documentationSchemaPath?: string;
+  knowledgeExtractionSchemaPath?: string;
   attachmentsRoot?: string;
   timeoutMs?: number;
   /**
@@ -619,6 +626,8 @@ export class CodexSupportAgent {
       triageSchemaPath: options.triageSchemaPath ?? defaultTriageSchemaPath,
       documentationSchemaPath:
         options.documentationSchemaPath ?? defaultDocumentationSchemaPath,
+      knowledgeExtractionSchemaPath:
+        options.knowledgeExtractionSchemaPath ?? defaultKnowledgeExtractionSchemaPath,
       attachmentsRoot:
         options.attachmentsRoot ?? path.join(cwd, ".data", "attachments"),
       timeoutMs: options.timeoutMs ?? 300_000,
@@ -665,6 +674,8 @@ export class CodexSupportAgent {
       schemaPath: this.options.turnSchemaPath,
       mode: "deep",
       model,
+      reasoningEffort:
+        input.executionBudget?.workload === "quick" ? "low" : undefined,
       signal,
     });
     return parseInvestigationTurnResult(raw, boundedInput);
@@ -708,6 +719,24 @@ export class CodexSupportAgent {
     return parseDocumentationDraft(raw, boundedInput);
   }
 
+  async extractKnowledge(
+    input: KnowledgeExtractionInput,
+    model = "default",
+    signal?: AbortSignal,
+  ): Promise<KnowledgeExtractionResult> {
+    const boundedInput = boundProviderDocumentationInput(input) as KnowledgeExtractionInput;
+    const raw = await this.executeStructuredRun({
+      input: boundedInput,
+      imageInput: input,
+      prompt: `${KNOWLEDGE_EXTRACTION_PROMPT_INSTRUCTIONS}\n\n${buildKnowledgeExtractionPrompt(boundedInput)}`,
+      schemaPath: this.options.knowledgeExtractionSchemaPath,
+      mode: "documentation",
+      model,
+      signal,
+    });
+    return parseKnowledgeExtraction(raw, boundedInput);
+  }
+
   private async executeStructuredRun(input: {
     input: unknown;
     imageInput: {
@@ -718,6 +747,7 @@ export class CodexSupportAgent {
     schemaPath: string;
     mode: RunnerMode;
     model?: string;
+    reasoningEffort?: "low" | "medium" | "high";
     signal?: AbortSignal;
   }): Promise<unknown> {
     const runDir = await mkdtemp(path.join(os.tmpdir(), "threadmark-codex-"));
@@ -766,6 +796,9 @@ export class CodexSupportAgent {
           ...isolatedCodexConfigArgs(
             childEnvironment.CODEX_HOME as string,
           ),
+          ...(input.reasoningEffort
+            ? ["-c", `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`]
+            : []),
           ...(selectedModel ? ["--model", selectedModel] : []),
           "--sandbox",
           "read-only",

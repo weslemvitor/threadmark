@@ -190,6 +190,7 @@ function twoGroupAnalysis(
         relatedSuggestionId: null,
         title: "Divergência no total de clientes",
         summary: "O total não confere com clientes novos e recorrentes.",
+        priority: "normal",
         affectedEcommerce: "Loja Exemplo Ômega",
         categories: {
           contactReason: ["Pergunta"],
@@ -208,6 +209,7 @@ function twoGroupAnalysis(
         relatedSuggestionId: null,
         title: "Campanha sem envios",
         summary: "Uma campanha do CRM não realizou os envios esperados.",
+        priority: "high",
         affectedEcommerce: "Loja Exemplo Ômega",
         categories: {
           contactReason: ["Problema"],
@@ -442,6 +444,8 @@ test("job reivindicado separa dois assuntos exatos e expõe IA e categorias cano
   const campaign = blocks.find((block) => block.messageIds.length === 1);
   assert.ok(metric);
   assert.ok(campaign);
+  assert.equal(metric.suggestedPriority, "normal");
+  assert.equal(campaign.suggestedPriority, "high");
   assert.deepEqual(metric.messageIds, [
     completed.metricQuestion,
     completed.metricDetail,

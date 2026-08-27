@@ -194,7 +194,7 @@ function buildDraft(
     title: block?.title || title,
     summary: block?.summary || excerpts.join("\n\n").slice(0, 1600),
     clientId: conversation.client.isUnidentified ? null : conversation.client.id,
-    priority: "normal",
+    priority: block?.suggestedPriority ?? "normal",
   };
 }
 

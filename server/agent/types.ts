@@ -1,3 +1,14 @@
+import type {
+  KnowledgeAudience,
+  KnowledgeCandidateDecision,
+  KnowledgeCauseDto,
+  KnowledgeClaimDto,
+  KnowledgeConfidence,
+  KnowledgeDocumentType,
+  KnowledgeEvidenceDto,
+  KnowledgeLanguageLevelsDto,
+} from "../../shared/contracts.js";
+
 export type ParticipantRole = "external" | "staff" | "self" | "unknown";
 
 export interface AnalysisMessage {
@@ -33,6 +44,61 @@ export interface DocumentationDraftInput {
     fileName: string | null;
     mimeType: string;
   }>;
+}
+
+export interface KnowledgeExtractionInput extends DocumentationDraftInput {
+  technicalEvidence: Array<{
+    id: string;
+    toolName: string;
+    operation: string;
+    summary: string;
+    content: string;
+    reference: string | null;
+    executedAt: string;
+  }>;
+  existingKnowledge: Array<{
+    id: string;
+    ticketId: string;
+    title: string;
+    problem: string | null;
+    solution: string | null;
+    productFeature: string | null;
+    suggestedType: KnowledgeDocumentType;
+    audience: KnowledgeAudience;
+  }>;
+}
+
+export interface KnowledgeExtractionResult {
+  title: string;
+  problem: string | null;
+  symptom: string | null;
+  context: string | null;
+  cause: string | null;
+  technicalCause: string | null;
+  solution: string | null;
+  procedure: string[];
+  prerequisites: string[];
+  occurrenceConditions: string[];
+  applicableConditions: string[];
+  contraindications: string[];
+  impact: string | null;
+  affectedAudience: string | null;
+  productFeature: string | null;
+  causes: KnowledgeCauseDto[];
+  claims: KnowledgeClaimDto[];
+  evidence: KnowledgeEvidenceDto[];
+  operationalEvidenceIds: string[];
+  toolsUsed: string[];
+  relatedTicketIds: string[];
+  unknowns: string[];
+  confirmationsNeeded: string[];
+  languageLevels: KnowledgeLanguageLevelsDto;
+  candidate: KnowledgeCandidateDecision;
+  confidence: KnowledgeConfidence;
+  suggestedType: KnowledgeDocumentType;
+  audience: KnowledgeAudience;
+  duplicateCandidateId: string | null;
+  duplicateDifferences: string[];
 }
 
 export interface DocumentationDraftResult {
@@ -160,6 +226,8 @@ export interface TriageAnalysisDecision {
   relatedSuggestionId: string | null;
   title: string;
   summary: string;
+  /** Suggested operational urgency for a new ticket. */
+  priority?: "low" | "normal" | "high" | "urgent";
   affectedEcommerce: string | null;
   categories: TriageCategoryProposal;
   reason: string;
@@ -303,6 +371,15 @@ export interface InvestigationThreadInput {
   availableTools?: InvestigationToolDescriptor[];
   /** Outputs are untrusted evidence even though execution was authorized by Threadmark. */
   toolResults?: InvestigationToolResult[];
+  /** Trusted coordinator budget. Prompt builders render it outside untrusted context. */
+  executionBudget?: {
+    workload?: "quick" | "deep";
+    maxToolRounds: number;
+    usedToolRounds: number;
+    maxToolOperations: number;
+    usedToolOperations: number;
+    forceConclusion: boolean;
+  };
   /**
    * Trusted coordinator hook. It is never serialized into a provider prompt and
    * must be awaited immediately after each tool result is produced.

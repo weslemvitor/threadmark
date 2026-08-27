@@ -251,6 +251,12 @@ export function ConversationAiCard({
             const proposedCategories = getProposedCategoryChips(
               block.proposedCategories,
             );
+            const priorityLabel = {
+              low: "Baixa",
+              normal: "Normal",
+              high: "Alta",
+              urgent: "Urgente",
+            }[block.suggestedPriority];
 
             return (
               <article
@@ -298,6 +304,21 @@ export function ConversationAiCard({
                   </div>
                 ) : null}
                 <div className="mt-2 flex flex-wrap gap-1">
+                  <span
+                    className={cn(
+                      "inline-flex min-h-5 items-center rounded-full px-1.5 text-2xs font-semibold",
+                      block.suggestedPriority === "urgent" &&
+                        "bg-red-100 text-red-800",
+                      block.suggestedPriority === "high" &&
+                        "bg-amber-100 text-amber-800",
+                      block.suggestedPriority === "normal" &&
+                        "bg-primary/10 text-primary",
+                      block.suggestedPriority === "low" &&
+                        "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    Prioridade {priorityLabel}
+                  </span>
                   {block.confidence !== null ? (
                     <span className="inline-flex min-h-5 items-center rounded-full bg-muted px-1.5 text-2xs font-medium text-muted-foreground">
                       {Math.round(block.confidence * 100)}% confiança

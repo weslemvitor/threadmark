@@ -2,6 +2,8 @@ import type {
   InvestigationThreadInput,
   DocumentationDraftInput,
   DocumentationDraftResult,
+  KnowledgeExtractionInput,
+  KnowledgeExtractionResult,
   InvestigationTurnResult,
   SupportAnalysis,
   SupportAnalysisInput,
@@ -112,6 +114,11 @@ export interface SupportAgent {
     input: DocumentationDraftInput,
     signal?: AbortSignal,
   ): Promise<DocumentationDraftResult>;
+
+  extractKnowledge?(
+    input: KnowledgeExtractionInput,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeExtractionResult>;
 }
 
 export interface JsonSchemaDocument {

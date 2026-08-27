@@ -5,9 +5,141 @@ import type {
   InvestigationTurnResult,
   DocumentationDraftInput,
   DocumentationDraftResult,
+  KnowledgeExtractionInput,
+  KnowledgeExtractionResult,
   SupportAnalysis,
   SupportAnalysisInput,
 } from "./types.js";
+
+const knowledgeConfidenceSchema = z.enum(["HIGH", "MEDIUM", "LOW"]);
+const knowledgeEvidenceSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  source: z.enum(["MESSAGE", "RESOLUTION", "TICKET", "TOOL_RESULT", "RELATED_TICKET"]),
+  reference: z.string().trim().min(1).max(500),
+  excerpt: z.string().trim().min(1).max(3_000),
+  observedAt: z.string().trim().max(100).nullable(),
+});
+
+export const knowledgeExtractionSchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  problem: z.string().trim().max(2_000).nullable(),
+  symptom: z.string().trim().max(2_000).nullable(),
+  context: z.string().trim().max(4_000).nullable(),
+  cause: z.string().trim().max(2_000).nullable(),
+  technicalCause: z.string().trim().max(4_000).nullable(),
+  solution: z.string().trim().max(4_000).nullable(),
+  procedure: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  prerequisites: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  occurrenceConditions: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  applicableConditions: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  contraindications: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  impact: z.string().trim().max(2_000).nullable(),
+  affectedAudience: z.string().trim().max(1_000).nullable(),
+  productFeature: z.string().trim().max(500).nullable(),
+  causes: z.array(z.object({
+    description: z.string().trim().min(1).max(2_000),
+    confirmation: z.string().trim().max(2_000).nullable(),
+    solution: z.string().trim().max(2_000).nullable(),
+    evidenceIds: z.array(z.string().trim().min(1).max(500)).max(120),
+    confidence: knowledgeConfidenceSchema,
+  })).max(20),
+  claims: z.array(z.object({
+    id: z.string().trim().min(1).max(100),
+    kind: z.enum(["FACT", "EVIDENCE", "INFERENCE", "HYPOTHESIS"]),
+    statement: z.string().trim().min(1).max(3_000),
+    evidenceIds: z.array(z.string().trim().min(1).max(500)).max(120),
+    confidence: knowledgeConfidenceSchema,
+  })).max(100),
+  evidence: z.array(knowledgeEvidenceSchema).max(120),
+  operationalEvidenceIds: z.array(z.string().trim().min(1).max(500)).max(120),
+  toolsUsed: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  relatedTicketIds: z.array(z.string().trim().min(1).max(500)).max(120),
+  unknowns: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  confirmationsNeeded: z.array(z.string().trim().min(1).max(2_000)).max(50),
+  languageLevels: z.object({
+    technical: z.string().trim().max(4_000).nullable(),
+    operational: z.string().trim().max(4_000).nullable(),
+    support: z.string().trim().max(4_000).nullable(),
+    customer: z.string().trim().max(4_000).nullable(),
+  }),
+  candidate: z.enum(["YES", "NO", "UNCERTAIN"]),
+  confidence: knowledgeConfidenceSchema,
+  suggestedType: z.enum(["FAQ", "HOW_TO", "TROUBLESHOOTING", "EXPLANATION", "INTERNAL_RUNBOOK", "CUSTOMER_FACING"]),
+  audience: z.enum(["SUPPORT", "TECHNICAL", "CUSTOMER"]),
+  duplicateCandidateId: z.string().trim().max(200).nullable(),
+  duplicateDifferences: z.array(z.string().trim().min(1).max(2_000)).max(50),
+});
+
+export function parseKnowledgeExtraction(
+  value: unknown,
+  input: KnowledgeExtractionInput,
+): KnowledgeExtractionResult {
+  const result = knowledgeExtractionSchema.parse(value);
+  const evidenceIds = new Set(result.evidence.map((item) => item.id));
+  if (evidenceIds.size !== result.evidence.length) {
+    throw new Error("A extração repetiu identificadores de evidência.");
+  }
+  const claimIds = new Set(result.claims.map((item) => item.id));
+  if (claimIds.size !== result.claims.length) {
+    throw new Error("A extração repetiu identificadores de afirmação.");
+  }
+  const messageIds = new Set(input.messages.map((message) => message.id));
+  const knownKnowledgeIds = new Set(input.existingKnowledge.map((item) => item.id));
+  const knownRelatedTicketIds = new Set(input.existingKnowledge.map((item) => item.ticketId));
+  const knownToolEvidenceIds = new Set(input.technicalEvidence.map((item) => item.id));
+  const knownToolNames = new Set(input.technicalEvidence.map((item) => item.toolName));
+  for (const evidence of result.evidence) {
+    if (evidence.source === "MESSAGE" && !messageIds.has(evidence.reference)) {
+      throw new Error("A extração citou uma mensagem fora do ticket.");
+    }
+    if (evidence.source === "RESOLUTION" && evidence.reference !== `resolution:${input.ticketId}`) {
+      throw new Error("A extração citou uma resolução não fornecida.");
+    }
+    if (evidence.source === "TICKET" && evidence.reference !== `ticket:${input.ticketId}`) {
+      throw new Error("A extração citou um ticket não fornecido.");
+    }
+    if (evidence.source === "TOOL_RESULT" && !knownToolEvidenceIds.has(evidence.reference)) {
+      throw new Error("A extração citou uma fonte técnica não fornecida.");
+    }
+    if (evidence.source === "RELATED_TICKET" && !knownRelatedTicketIds.has(evidence.reference)) {
+      throw new Error("A extração citou um ticket relacionado não fornecido.");
+    }
+  }
+  const referencedEvidenceIds = [
+    ...result.operationalEvidenceIds,
+    ...result.claims.flatMap((claim) => claim.evidenceIds),
+    ...result.causes.flatMap((cause) => cause.evidenceIds),
+  ];
+  if (referencedEvidenceIds.some((id) => !evidenceIds.has(id))) {
+    throw new Error("A extração referenciou uma evidência inexistente.");
+  }
+  if (result.claims.some((claim) => claim.kind !== "HYPOTHESIS" && claim.evidenceIds.length === 0)) {
+    throw new Error("Fatos, evidências e inferências precisam de referência auditável.");
+  }
+  const hasOperationalContent = Boolean(result.solution || result.procedure.length);
+  if (hasOperationalContent && result.operationalEvidenceIds.length === 0) {
+    throw new Error("Solução e procedimento exigem evidência operacional.");
+  }
+  if (hasOperationalContent && result.confidence === "LOW") {
+    throw new Error("Conhecimento de baixa confiança não pode conter procedimento operacional.");
+  }
+  if (
+    result.candidate === "YES" && result.confidence === "LOW" &&
+    ["HOW_TO", "TROUBLESHOOTING", "INTERNAL_RUNBOOK"].includes(result.suggestedType)
+  ) {
+    throw new Error("Conhecimento operacional de baixa confiança não pode ser candidato reutilizável.");
+  }
+  if (result.duplicateCandidateId && !knownKnowledgeIds.has(result.duplicateCandidateId)) {
+    throw new Error("A extração indicou uma duplicidade fora da base conhecida.");
+  }
+  if (result.relatedTicketIds.some((id) => !knownRelatedTicketIds.has(id))) {
+    throw new Error("A extração indicou um ticket relacionado fora do contexto.");
+  }
+  if (result.toolsUsed.some((name) => !knownToolNames.has(name))) {
+    throw new Error("A extração indicou uma ferramenta fora da investigação auditada.");
+  }
+  return result;
+}
 
 export const documentationDraftSchema = z.object({
   title: z.string().trim().min(1).max(160),
@@ -570,6 +702,7 @@ export const triageAnalysisSchema = z.object({
           relatedSuggestionId: z.string().trim().min(1).nullable(),
           title: z.string().trim().min(1).max(200),
           summary: z.string().trim().min(1).max(4_000),
+          priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
           affectedEcommerce: z.string().trim().min(1).max(500).nullable(),
           categories: z.object({
             contactReason: z.array(z.string().trim()).max(1),

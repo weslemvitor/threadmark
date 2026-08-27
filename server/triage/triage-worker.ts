@@ -58,6 +58,7 @@ export function buildLocalTriageAnalysis(
         relatedSuggestionId: null,
         title: decision.title,
         summary: decision.summary,
+        priority: decision.priority,
         affectedEcommerce: null,
         categories: {
           contactReason: [],
@@ -192,6 +193,7 @@ export class TriageWorker {
         suggestedTicketId: targetTicketId,
         title: decision.title,
         summary: decision.summary,
+        priority: decision.priority,
         affectedStoreId,
         confidence: decision.confidence,
         actor: "triage",

@@ -151,6 +151,38 @@ export async function queueTicketDocumentation(ticketId: string): Promise<Docume
   });
 }
 
+export async function queueTicketKnowledge(ticketId: string): Promise<DocumentationDraftDto> {
+  return request(`/api/tickets/${encodeURIComponent(ticketId)}/knowledge`, {
+    method: "POST",
+  });
+}
+
+export async function generateKnowledgeDocument(knowledgeId: string): Promise<DocumentationDraftDto> {
+  return request(`/api/knowledge/${encodeURIComponent(knowledgeId)}/documentation`, {
+    method: "POST",
+  });
+}
+
+export async function updateKnowledgeObject(
+  knowledgeId: string,
+  input: import("../../shared/contracts.js").UpdateKnowledgeObjectInput,
+): Promise<import("../../shared/contracts.js").KnowledgeObjectDto> {
+  return request(`/api/knowledge/${encodeURIComponent(knowledgeId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function reviewKnowledgeObject(
+  knowledgeId: string,
+  input: import("../../shared/contracts.js").KnowledgeReviewFeedbackInput,
+): Promise<import("../../shared/contracts.js").KnowledgeObjectDto> {
+  return request(`/api/knowledge/${encodeURIComponent(knowledgeId)}/review`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function regenerateDocumentation(draftId: string): Promise<DocumentationDraftDto> {
   return request(`/api/documentation/${encodeURIComponent(draftId)}/regenerate`, {
     method: "POST",

@@ -5,9 +5,9 @@ import type {
   TriageAnalysisInput,
 } from "./types.js";
 
-export function boundProviderDocumentationInput(
-  input: DocumentationDraftInput,
-): DocumentationDraftInput {
+export function boundProviderDocumentationInput<T extends DocumentationDraftInput>(
+  input: T,
+): T {
   const budget = { remaining: 220_000 };
   return {
     ...input,
@@ -21,7 +21,33 @@ export function boundProviderDocumentationInput(
       fileName: image.fileName ? truncate(image.fileName, 500) : null,
       mimeType: truncate(image.mimeType, 200),
     })),
-  };
+    ...("existingKnowledge" in input && Array.isArray(input.existingKnowledge)
+      ? {
+          existingKnowledge: input.existingKnowledge.slice(0, 50).map((item) => ({
+            ...item,
+            id: truncate(String(item.id), 500),
+            ticketId: truncate(String(item.ticketId), 500),
+            title: truncate(String(item.title), 500),
+            problem: item.problem ? truncate(String(item.problem), 2_000) : null,
+            solution: item.solution ? truncate(String(item.solution), 4_000) : null,
+            productFeature: item.productFeature ? truncate(String(item.productFeature), 500) : null,
+          })),
+        }
+      : {}),
+    ...("technicalEvidence" in input && Array.isArray(input.technicalEvidence)
+      ? {
+          technicalEvidence: input.technicalEvidence.slice(0, 30).map((item) => ({
+            ...item,
+            id: truncate(String(item.id), 500),
+            toolName: truncate(String(item.toolName), 300),
+            operation: truncate(String(item.operation), 300),
+            summary: truncate(String(item.summary), 2_000),
+            content: truncate(String(item.content), 4_000),
+            reference: item.reference ? truncate(String(item.reference), 1_000) : null,
+          })),
+        }
+      : {}),
+  } as T;
 }
 
 const SUPPORT_MESSAGE_LIMIT = 50;

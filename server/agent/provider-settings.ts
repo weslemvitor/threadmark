@@ -323,6 +323,7 @@ export class AiProviderSettingsService {
   async createAgentForTask(
     taskKind: AiTaskKind,
     codexAgent: CodexSupportAgent,
+    options: { codexModelOverride?: string } = {},
   ): Promise<{ agent: SupportAgent; profile: AiTaskProfileDto; connection: AiConnectionDto }> {
     const profile = this.getProfiles().find((item) => item.taskKind === taskKind);
     if (!profile?.enabled || !profile.connectionId) {
@@ -339,10 +340,13 @@ export class AiProviderSettingsService {
       );
     }
     assertProviderSupportsTask(taskKind, row.provider_id);
-    const config = await this.providerConfig(row, profile.model, codexAgent);
+    const selectedModel = row.provider_id === "codex" && options.codexModelOverride?.trim()
+      ? options.codexModelOverride.trim()
+      : profile.model;
+    const config = await this.providerConfig(row, selectedModel, codexAgent);
     return {
       agent: createSupportAgent(config),
-      profile,
+      profile: { ...profile, model: selectedModel },
       connection: connectionDto(row),
     };
   }

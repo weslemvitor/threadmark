@@ -35,6 +35,9 @@ import type {
   DocumentationDraftDto,
   DocumentationDraftListResponse,
   DocumentationDraftStatus,
+  KnowledgeObjectDto,
+  KnowledgeReviewFeedbackInput,
+  UpdateKnowledgeObjectInput,
   DeleteDocumentationDraftResponse,
   UpdateDocumentationDraftInput,
   DashboardResponse,
@@ -112,6 +115,8 @@ import type {
   AnalysisCategoryCatalog,
   DocumentationDraftInput,
   DocumentationDraftResult,
+  KnowledgeExtractionInput,
+  KnowledgeExtractionResult,
   InvestigationThreadInput,
   InvestigationToolResult,
   InvestigationTurnResult,
@@ -121,6 +126,8 @@ import type {
   TriageAnalysisInput,
 } from "../agent/types.js";
 import { DOCUMENTATION_PROMPT_VERSION } from "../agent/prompt.js";
+import { KNOWLEDGE_EXTRACTION_PROMPT_VERSION } from "../agent/prompt.js";
+import { renderKnowledgeDocument } from "../knowledge/renderer.js";
 import type {
   QuotedTicketReference,
   TopicTicketCandidate,
@@ -134,6 +141,7 @@ import {
   normalizeCatalogCategory,
   normalizeCategoriesForAnalysis,
 } from "./category-policy.js";
+import { highestTicketPriority } from "../triage/ticket-priority.js";
 import {
   isDirectConversationJid,
   normalizeConversationSubject,
@@ -421,6 +429,7 @@ export interface RecordTriageSuggestionInput {
   suggestedTicketId?: string | null;
   title: string;
   summary: string;
+  priority?: TicketPriority;
   confidence: number;
   reason: string;
   affectedStoreId?: string | null;
@@ -537,6 +546,7 @@ export type ClaimedAgentJob =
       draftId: string;
       ticketId: string;
       attemptCount: number;
+      phase: "extraction" | "document";
     };
 
 interface EntityRecord {
@@ -559,6 +569,7 @@ interface TriageBlockRow {
   affected_store_id: string | null;
   title: string;
   summary: string;
+  suggested_priority: TicketPriority;
   confidence: number | null;
   reason: string | null;
   proposed_categories_json: string | null;
@@ -1071,6 +1082,59 @@ function parseJson<T>(json: string | null, fallback: T): T {
   }
 }
 
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function nullableTrimmed(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized || null;
+}
+
+function knowledgeSimilarity(left: string, right: string): number {
+  const tokens = (value: string) => new Set(
+    value.toLocaleLowerCase("pt-BR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length > 2),
+  );
+  const a = tokens(left);
+  const b = tokens(right);
+  if (!a.size || !b.size) return 0;
+  const intersection = [...a].filter((token) => b.has(token)).length;
+  const union = new Set([...a, ...b]).size;
+  return Math.round((intersection / union) * 1000) / 1000;
+}
+
+function assertKnowledgeIntegrity(input: UpdateKnowledgeObjectInput): void {
+  const evidenceIds = new Set(input.evidence.map((item) => item.id));
+  if (evidenceIds.size !== input.evidence.length) {
+    throw new ValidationError("As evidências precisam possuir identificadores únicos");
+  }
+  const references = [
+    ...input.operationalEvidenceIds,
+    ...input.claims.flatMap((claim) => claim.evidenceIds),
+    ...input.causes.flatMap((cause) => cause.evidenceIds),
+  ];
+  if (references.some((id) => !evidenceIds.has(id))) {
+    throw new ValidationError("O conhecimento referencia uma evidência inexistente");
+  }
+  if (input.claims.some((claim) => claim.kind !== "HYPOTHESIS" && !claim.evidenceIds.length)) {
+    throw new ValidationError("Fatos, evidências e inferências exigem referência auditável");
+  }
+  const hasOperationalContent = Boolean(input.solution?.trim() || input.procedure.some((item) => item.trim()));
+  if (hasOperationalContent && !input.operationalEvidenceIds.length) {
+    throw new ValidationError("Solução e procedimento exigem evidência operacional");
+  }
+  if (hasOperationalContent && input.confidence === "LOW") {
+    throw new ValidationError("Conhecimento de baixa confiança não pode conter instrução operacional");
+  }
+  if (input.status === "APPROVED" && (input.confidence === "LOW" || input.candidate !== "YES")) {
+    throw new ValidationError("Somente conhecimento reutilizável e suficientemente confirmado pode ser aprovado");
+  }
+}
+
 function normalizeThreadmarkAiContext(
   value: ThreadmarkAiContextDto | null | undefined,
 ): ThreadmarkAiContextDto | null {
@@ -1428,6 +1492,7 @@ export class SupportStore {
   private readonly ticketEventSequenceAvailable: boolean;
   private readonly externalTicketMessagesAvailable: boolean;
   private readonly assignmentQueueAvailable: boolean;
+  private readonly knowledgeSchemaAvailable: boolean;
 
   constructor(readonly database: SupportDatabase) {
     this.requesterOverrideAvailable = Boolean(
@@ -1471,6 +1536,10 @@ export class SupportStore {
     this.assignmentQueueAvailable = databaseHasTable(
       this.database,
       "automation_assignment_queue",
+    );
+    this.knowledgeSchemaAvailable = databaseHasTable(
+      this.database,
+      "knowledge_objects",
     );
   }
 
@@ -3547,7 +3616,7 @@ export class SupportStore {
         title,
         summary,
         status: "triage",
-        priority: input.priority ?? "normal",
+        priority: input.priority ?? proposedCategories?.priority ?? "normal",
         confidence: null,
         needsReview: false,
         actor,
@@ -6156,6 +6225,7 @@ export class SupportStore {
             suggestedTicketId,
             title: decision.title,
             summary: decision.summary,
+            priority: decision.priority ?? "normal",
             affectedStoreId,
             confidence: decision.confidence,
             actor: options.fallbackUsed ? "triage-fallback" : "Agente de IA",
@@ -7064,9 +7134,9 @@ export class SupportStore {
             `INSERT INTO triage_blocks
               (id, group_id, sender_id, state, triage_kind, suggested_action,
                suggested_ticket_id, affected_store_id, title, summary, confidence,
-               reason, origin, created_by, first_message_at, last_message_at,
-               created_at, updated_at)
-             VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'suggestion', ?, ?, ?, ?, ?)`,
+               suggested_priority, reason, origin, created_by, first_message_at,
+               last_message_at, created_at, updated_at)
+             VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suggestion', ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -7079,6 +7149,7 @@ export class SupportStore {
             title,
             summary,
             confidence,
+            input.priority ?? "normal",
             reason,
             actor,
             message.occurred_at,
@@ -7109,6 +7180,10 @@ export class SupportStore {
         triageKindRank(input.kind) > triageKindRank(block.triage_kind)
           ? input.kind
           : block.triage_kind;
+      const suggestedPriority = highestTicketPriority(
+        block.suggested_priority,
+        input.priority,
+      );
       const combinedSummary = this.database
         .prepare(
           `SELECT group_concat(text, char(10)) AS summary
@@ -7133,6 +7208,7 @@ export class SupportStore {
              affected_store_id = COALESCE(affected_store_id, ?),
              title = CASE WHEN ? OR title = '' THEN ? ELSE title END,
              summary = ?,
+             suggested_priority = ?,
              confidence = CASE
                WHEN confidence IS NULL OR confidence < ? THEN ? ELSE confidence
              END,
@@ -7152,6 +7228,7 @@ export class SupportStore {
           replacesSuggestion ? 1 : 0,
           title,
           combinedSummary.summary ?? summary,
+          suggestedPriority,
           confidence,
           confidence,
           replacesSuggestion ? 1 : 0,
@@ -8214,11 +8291,11 @@ export class SupportStore {
              WHERE id = ?
                AND (state = 'queued'
                  OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))
-             RETURNING id, draft_id, attempt_count,
+             RETURNING id, draft_id, attempt_count, phase,
                (SELECT ticket_id FROM documentation_drafts WHERE id = draft_id) AS ticket_id`,
           )
           .get(claimedAt, claimedAt, leaseExpiresAt, candidate.id, claimedAt) as
-          | { id: string; draft_id: string; ticket_id: string; attempt_count: number }
+          | { id: string; draft_id: string; ticket_id: string; attempt_count: number; phase: "extraction" | "document" }
           | undefined;
         if (!row) return null;
         return {
@@ -8227,6 +8304,7 @@ export class SupportStore {
           draftId: row.draft_id,
           ticketId: row.ticket_id,
           attemptCount: row.attempt_count,
+          phase: row.phase,
         };
       }
 
@@ -8286,6 +8364,24 @@ export class SupportStore {
         attemptCount: row.attempt_count,
       };
     })();
+  }
+
+  renewAgentJobLease(job: ClaimedAgentJob, leaseMs = 10 * 60_000): boolean {
+    if (!Number.isFinite(leaseMs) || leaseMs < 1_000) {
+      throw new ValidationError("Lease do job deve ser de pelo menos 1000ms");
+    }
+    const table = job.kind === "thread_turn"
+      ? "investigation_thread_jobs"
+      : job.kind === "triage"
+        ? "triage_ai_jobs"
+        : job.kind === "documentation"
+          ? "documentation_generation_jobs"
+          : "investigation_jobs";
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    const result = this.database
+      .prepare(`UPDATE ${table} SET lease_expires_at = ? WHERE id = ? AND state = 'running'`)
+      .run(leaseExpiresAt, job.id);
+    return result.changes === 1;
   }
 
   recoverRunningAgentJobs(): number {
@@ -9215,6 +9311,19 @@ export class SupportStore {
 
     return this.database.transaction(() => {
       const now = nowUtc();
+      const existingKnowledge = this.database
+        .prepare("SELECT id FROM knowledge_objects WHERE ticket_id = ?")
+        .get(ticketId) as { id: string } | undefined;
+      const knowledgeId = existingKnowledge?.id ?? randomUUID();
+      if (!existingKnowledge) {
+        this.database
+          .prepare(
+            `INSERT INTO knowledge_objects (
+               id, ticket_id, created_by, updated_by, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(knowledgeId, ticketId, actor, actor, now, now);
+      }
       const existing = this.database
         .prepare("SELECT id FROM documentation_drafts WHERE ticket_id = ?")
         .get(ticketId) as { id: string } | undefined;
@@ -9223,10 +9332,14 @@ export class SupportStore {
         this.database
           .prepare(
             `INSERT INTO documentation_drafts (
-               id, ticket_id, status, created_by, updated_by, created_at, updated_at
-             ) VALUES (?, ?, 'draft', ?, ?, ?, ?)`,
+               id, ticket_id, knowledge_id, status, created_by, updated_by, created_at, updated_at
+             ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)`,
           )
-          .run(draftId, ticketId, actor, actor, now, now);
+          .run(draftId, ticketId, knowledgeId, actor, actor, now, now);
+      } else {
+        this.database
+          .prepare("UPDATE documentation_drafts SET knowledge_id = COALESCE(knowledge_id, ?) WHERE id = ?")
+          .run(knowledgeId, draftId);
       }
       const activeJob = this.database
         .prepare(
@@ -9238,12 +9351,201 @@ export class SupportStore {
         this.database
           .prepare(
             `INSERT INTO documentation_generation_jobs (
-               id, draft_id, state, requested_by, requested_at
-             ) VALUES (?, ?, 'queued', ?, ?)`,
+               id, draft_id, phase, state, requested_by, requested_at
+             ) VALUES (?, ?, 'extraction', 'queued', ?, ?)`,
           )
           .run(randomUUID(), draftId, actor, now);
       }
       return this.getDocumentationDraft(draftId);
+    })();
+  }
+
+  getKnowledgeObject(knowledgeId: string): KnowledgeObjectDto {
+    const row = this.database
+      .prepare(
+        `SELECT knowledge.*, ticket.number AS ticket_number
+         FROM knowledge_objects knowledge
+         JOIN tickets ticket ON ticket.id = knowledge.ticket_id
+         WHERE knowledge.id = ?`,
+      )
+      .get(knowledgeId) as Record<string, unknown> | undefined;
+    if (!row) throw new NotFoundError("Conhecimento", knowledgeId);
+    return this.mapKnowledgeObject(row);
+  }
+
+  getKnowledgeObjectByTicket(ticketId: string): KnowledgeObjectDto | null {
+    if (!this.knowledgeSchemaAvailable) return null;
+    const row = this.database
+      .prepare(
+        `SELECT knowledge.*, ticket.number AS ticket_number
+         FROM knowledge_objects knowledge
+         JOIN tickets ticket ON ticket.id = knowledge.ticket_id
+         WHERE knowledge.ticket_id = ?`,
+      )
+      .get(ticketId) as Record<string, unknown> | undefined;
+    return row ? this.mapKnowledgeObject(row) : null;
+  }
+
+  private mapKnowledgeObject(row: Record<string, unknown>): KnowledgeObjectDto {
+    return {
+      id: String(row.id),
+      ticketId: String(row.ticket_id),
+      ticketNumber: Number(row.ticket_number),
+      version: Number(row.version),
+      status: row.status as KnowledgeObjectDto["status"],
+      candidate: row.candidate as KnowledgeObjectDto["candidate"],
+      confidence: row.confidence as KnowledgeObjectDto["confidence"],
+      suggestedType: row.suggested_type as KnowledgeObjectDto["suggestedType"],
+      audience: row.audience as KnowledgeObjectDto["audience"],
+      title: String(row.title),
+      problem: nullableString(row.problem),
+      symptom: nullableString(row.symptom),
+      context: nullableString(row.context),
+      cause: nullableString(row.cause),
+      technicalCause: nullableString(row.technical_cause),
+      solution: nullableString(row.solution),
+      procedure: parseJson<string[]>(String(row.procedure_json), []),
+      prerequisites: parseJson<string[]>(String(row.prerequisites_json), []),
+      occurrenceConditions: parseJson<string[]>(String(row.occurrence_conditions_json), []),
+      applicableConditions: parseJson<string[]>(String(row.applicable_conditions_json), []),
+      contraindications: parseJson<string[]>(String(row.contraindications_json), []),
+      impact: nullableString(row.impact),
+      affectedAudience: nullableString(row.affected_audience),
+      productFeature: nullableString(row.product_feature),
+      causes: parseJson<KnowledgeObjectDto["causes"]>(String(row.causes_json), []),
+      claims: parseJson<KnowledgeObjectDto["claims"]>(String(row.claims_json), []),
+      evidence: parseJson<KnowledgeObjectDto["evidence"]>(String(row.evidence_json), []),
+      operationalEvidenceIds: parseJson<string[]>(String(row.operational_evidence_ids_json), []),
+      toolsUsed: parseJson<string[]>(String(row.tools_used_json), []),
+      relatedTicketIds: parseJson<string[]>(String(row.related_ticket_ids_json), []),
+      unknowns: parseJson<string[]>(String(row.unknowns_json), []),
+      confirmationsNeeded: parseJson<string[]>(String(row.confirmations_needed_json), []),
+      languageLevels: parseJson<KnowledgeObjectDto["languageLevels"]>(String(row.language_levels_json), {
+        technical: null, operational: null, support: null, customer: null,
+      }),
+      duplicate: row.duplicate_json
+        ? parseJson<KnowledgeObjectDto["duplicate"]>(String(row.duplicate_json), null)
+        : null,
+      aiProviderId: nullableString(row.ai_provider_id),
+      aiModel: nullableString(row.ai_model),
+      extractedAt: nullableString(row.extracted_at),
+      reviewedAt: nullableString(row.reviewed_at),
+      reviewedBy: nullableString(row.reviewed_by),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  updateKnowledgeObject(
+    knowledgeId: string,
+    input: UpdateKnowledgeObjectInput,
+    actor = "Operador local",
+  ): KnowledgeObjectDto {
+    assertKnowledgeIntegrity(input);
+    return this.database.transaction(() => {
+      const current = this.getKnowledgeObject(knowledgeId);
+      this.saveKnowledgeVersion(current, actor);
+      const version = current.version + 1;
+      const now = nowUtc();
+      this.database.prepare(
+        `UPDATE knowledge_objects SET
+           version = ?, status = ?, candidate = ?, confidence = ?, suggested_type = ?, audience = ?,
+           title = ?, problem = ?, symptom = ?, context = ?, cause = ?, technical_cause = ?, solution = ?,
+           procedure_json = ?, prerequisites_json = ?, occurrence_conditions_json = ?,
+           applicable_conditions_json = ?, contraindications_json = ?, impact = ?, affected_audience = ?,
+           product_feature = ?, causes_json = ?, claims_json = ?, evidence_json = ?,
+           operational_evidence_ids_json = ?, tools_used_json = ?, related_ticket_ids_json = ?,
+           unknowns_json = ?, confirmations_needed_json = ?, language_levels_json = ?,
+           reviewed_at = ?, reviewed_by = ?, updated_by = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(
+        version, input.status, input.candidate, input.confidence, input.suggestedType, input.audience,
+        input.title.trim(), nullableTrimmed(input.problem), nullableTrimmed(input.symptom),
+        nullableTrimmed(input.context), nullableTrimmed(input.cause), nullableTrimmed(input.technicalCause),
+        nullableTrimmed(input.solution), JSON.stringify(input.procedure), JSON.stringify(input.prerequisites),
+        JSON.stringify(input.occurrenceConditions), JSON.stringify(input.applicableConditions),
+        JSON.stringify(input.contraindications), nullableTrimmed(input.impact),
+        nullableTrimmed(input.affectedAudience), nullableTrimmed(input.productFeature),
+        JSON.stringify(input.causes), JSON.stringify(input.claims), JSON.stringify(input.evidence),
+        JSON.stringify(input.operationalEvidenceIds), JSON.stringify(input.toolsUsed),
+        JSON.stringify(input.relatedTicketIds), JSON.stringify(input.unknowns),
+        JSON.stringify(input.confirmationsNeeded), JSON.stringify(input.languageLevels),
+        now, actor, actor, now, knowledgeId,
+      );
+      return this.getKnowledgeObject(knowledgeId);
+    })();
+  }
+
+  reviewKnowledgeObject(
+    knowledgeId: string,
+    input: KnowledgeReviewFeedbackInput,
+    actor = "Operador local",
+  ): KnowledgeObjectDto {
+    return this.database.transaction(() => {
+      const current = this.getKnowledgeObject(knowledgeId);
+      if (
+        input.decision === "APPROVE" &&
+        (current.confidence === "LOW" || current.candidate !== "YES")
+      ) {
+        throw new ConflictError(
+          "Somente conhecimento reutilizável e suficientemente confirmado pode ser aprovado.",
+        );
+      }
+      const now = nowUtc();
+      this.database.prepare(
+        `INSERT INTO knowledge_review_feedback
+           (id, knowledge_id, decision, reasons_json, comment, actor, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(randomUUID(), knowledgeId, input.decision, JSON.stringify(input.reasons), nullableTrimmed(input.comment), actor, now);
+      const status = input.decision === "APPROVE"
+        ? "APPROVED"
+        : input.decision === "REQUEST_REGENERATION"
+          ? "DRAFT"
+          : "DEPRECATED";
+      this.database.prepare(
+        `UPDATE knowledge_objects
+         SET status = ?, reviewed_at = ?, reviewed_by = ?, updated_by = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(status, now, actor, actor, now, knowledgeId);
+      if (input.decision === "REQUEST_REGENERATION") {
+        this.queueDocumentationDraft(current.ticketId, actor);
+      }
+      return this.getKnowledgeObject(knowledgeId);
+    })();
+  }
+
+  private saveKnowledgeVersion(knowledge: KnowledgeObjectDto, actor: string): void {
+    this.database.prepare(
+      `INSERT OR IGNORE INTO knowledge_object_versions
+         (id, knowledge_id, version, snapshot_json, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), knowledge.id, knowledge.version, JSON.stringify(knowledge), actor, nowUtc());
+  }
+
+  queueKnowledgeDocument(knowledgeId: string, actor = "Operador local"): DocumentationDraftDto {
+    const knowledge = this.getKnowledgeObject(knowledgeId);
+    if (knowledge.candidate === "NO") {
+      throw new ConflictError("Este ticket foi classificado como conhecimento não reutilizável.");
+    }
+    if (!knowledge.extractedAt) {
+      throw new ConflictError("Extraia e valide o conhecimento antes de gerar a documentação.");
+    }
+    return this.database.transaction(() => {
+      const draft = this.database
+        .prepare("SELECT id FROM documentation_drafts WHERE knowledge_id = ?")
+        .get(knowledgeId) as { id: string } | undefined;
+      if (!draft) throw new ConflictError("O rascunho vinculado ao conhecimento não foi encontrado.");
+      const active = this.database.prepare(
+        "SELECT 1 FROM documentation_generation_jobs WHERE draft_id = ? AND state IN ('queued', 'running') LIMIT 1",
+      ).get(draft.id);
+      if (!active) {
+        this.database.prepare(
+          `INSERT INTO documentation_generation_jobs
+             (id, draft_id, phase, state, requested_by, requested_at)
+           VALUES (?, ?, 'document', 'queued', ?, ?)`,
+        ).run(randomUUID(), draft.id, actor, nowUtc());
+      }
+      return this.getDocumentationDraft(draft.id);
     })();
   }
 
@@ -9321,6 +9623,16 @@ export class SupportStore {
       title: String(row.title),
       summary: String(row.summary),
       audience: String(row.audience),
+      audienceCode: row.audience_code
+        ? row.audience_code as DocumentationDraftDto["audienceCode"]
+        : null,
+      documentType: row.document_type
+        ? row.document_type as DocumentationDraftDto["documentType"]
+        : null,
+      version: Number(row.version ?? 1),
+      knowledgeObject: row.knowledge_id
+        ? this.getKnowledgeObject(String(row.knowledge_id))
+        : null,
       bodyMarkdown: String(row.body_markdown),
       prerequisites: parseJson<string[]>(String(row.prerequisites_json), []),
       warnings: parseJson<string[]>(String(row.warnings_json), []),
@@ -9409,6 +9721,183 @@ export class SupportStore {
       messages: context.messages,
       availableImages,
     };
+  }
+
+  getKnowledgeExtractionJobInput(jobId: string): KnowledgeExtractionInput {
+    const base = this.getDocumentationJobInput(jobId);
+    const technicalEvidence = this.database.prepare(
+      `SELECT execution.id, execution.tool_name, execution.operation,
+              execution.summary, execution.content, execution.reference,
+              execution.executed_at
+       FROM investigation_thread_tool_executions execution
+       JOIN investigation_thread_jobs job ON job.id = execution.job_id
+       JOIN investigation_threads thread ON thread.id = job.thread_id
+       WHERE thread.ticket_id = ? AND execution.status = 'success'
+       ORDER BY execution.executed_at DESC, execution.id DESC
+       LIMIT 50`,
+    ).all(base.ticketId) as Array<{
+      id: string;
+      tool_name: string;
+      operation: string;
+      summary: string;
+      content: string;
+      reference: string | null;
+      executed_at: string;
+    }>;
+    const rows = this.database.prepare(
+      `SELECT id, ticket_id, title, problem, solution, product_feature, suggested_type, audience
+       FROM knowledge_objects
+       WHERE extracted_at IS NOT NULL
+         AND ticket_id != ?
+         AND status != 'DEPRECATED'
+       ORDER BY updated_at DESC
+       LIMIT 100`,
+    ).all(base.ticketId) as Array<{
+      id: string;
+      ticket_id: string;
+      title: string;
+      problem: string | null;
+      solution: string | null;
+      product_feature: string | null;
+      suggested_type: KnowledgeObjectDto["suggestedType"];
+      audience: KnowledgeObjectDto["audience"];
+    }>;
+    return {
+      ...base,
+      technicalEvidence: technicalEvidence.map((item) => ({
+        id: item.id,
+        toolName: item.tool_name,
+        operation: item.operation,
+        summary: item.summary,
+        content: item.content.slice(0, 4_000),
+        reference: item.reference,
+        executedAt: item.executed_at,
+      })),
+      existingKnowledge: rows.map((row) => ({
+        id: row.id,
+        ticketId: row.ticket_id,
+        title: row.title,
+        problem: row.problem,
+        solution: row.solution,
+        productFeature: row.product_feature,
+        suggestedType: row.suggested_type,
+        audience: row.audience,
+      })),
+    };
+  }
+
+  completeKnowledgeExtractionJob(
+    jobId: string,
+    result: KnowledgeExtractionResult,
+  ): DocumentationDraftDto {
+    return this.database.transaction(() => {
+      const job = this.database.prepare(
+        `SELECT job.draft_id, draft.knowledge_id
+         FROM documentation_generation_jobs job
+         JOIN documentation_drafts draft ON draft.id = job.draft_id
+         WHERE job.id = ? AND job.state = 'running' AND job.phase = 'extraction'`,
+      ).get(jobId) as { draft_id: string; knowledge_id: string | null } | undefined;
+      if (!job?.knowledge_id) {
+        throw new ConflictError("A extração de conhecimento não está em execução.");
+      }
+      const current = this.getKnowledgeObject(job.knowledge_id);
+      const now = nowUtc();
+      const version = current.extractedAt ? current.version + 1 : current.version;
+      if (current.extractedAt) this.saveKnowledgeVersion(current, "Agente de IA");
+
+      const candidates = this.database.prepare(
+        `SELECT id, title, problem, product_feature
+         FROM knowledge_objects
+         WHERE id != ? AND extracted_at IS NOT NULL AND status != 'DEPRECATED'`,
+      ).all(job.knowledge_id) as Array<{
+        id: string;
+        title: string;
+        problem: string | null;
+        product_feature: string | null;
+      }>;
+      const targetText = [result.title, result.problem, result.productFeature].filter(Boolean).join(" ");
+      const ranked = candidates
+        .map((candidate) => ({
+          ...candidate,
+          similarity: knowledgeSimilarity(
+            targetText,
+            [candidate.title, candidate.problem, candidate.product_feature].filter(Boolean).join(" "),
+          ),
+        }))
+        .toSorted((left, right) => right.similarity - left.similarity);
+      const backendDuplicate = ranked[0]?.similarity >= 0.68 ? ranked[0] : null;
+      const aiDuplicate = result.duplicateCandidateId
+        ? candidates.find((candidate) => candidate.id === result.duplicateCandidateId) ?? null
+        : null;
+      const duplicateSource = backendDuplicate ?? aiDuplicate;
+      const duplicate = duplicateSource ? {
+        knowledgeId: duplicateSource.id,
+        title: duplicateSource.title,
+        similarity: backendDuplicate?.similarity ?? 0.5,
+        differences: result.duplicateDifferences,
+      } : null;
+
+      this.database.prepare(
+        `UPDATE knowledge_objects SET
+           version = ?, status = 'IN_REVIEW', candidate = ?, confidence = ?,
+           suggested_type = ?, audience = ?, title = ?, problem = ?, symptom = ?, context = ?,
+           cause = ?, technical_cause = ?, solution = ?, procedure_json = ?, prerequisites_json = ?,
+           occurrence_conditions_json = ?, applicable_conditions_json = ?, contraindications_json = ?,
+           impact = ?, affected_audience = ?, product_feature = ?, causes_json = ?, claims_json = ?,
+           evidence_json = ?, operational_evidence_ids_json = ?, tools_used_json = ?,
+           related_ticket_ids_json = ?, unknowns_json = ?, confirmations_needed_json = ?,
+           language_levels_json = ?, duplicate_json = ?,
+           ai_provider_id = (SELECT ai_provider_id FROM documentation_generation_jobs WHERE id = ?),
+           ai_connection_id = (SELECT ai_connection_id FROM documentation_generation_jobs WHERE id = ?),
+           ai_model = (SELECT ai_model FROM documentation_generation_jobs WHERE id = ?),
+           prompt_version = ?, extracted_at = ?, reviewed_at = NULL, reviewed_by = NULL,
+           updated_by = 'Agente de IA', updated_at = ?
+         WHERE id = ?`,
+      ).run(
+        version, result.candidate, result.confidence, result.suggestedType, result.audience,
+        result.title, result.problem, result.symptom, result.context, result.cause,
+        result.technicalCause, result.solution, JSON.stringify(result.procedure),
+        JSON.stringify(result.prerequisites), JSON.stringify(result.occurrenceConditions),
+        JSON.stringify(result.applicableConditions), JSON.stringify(result.contraindications),
+        result.impact, result.affectedAudience, result.productFeature, JSON.stringify(result.causes),
+        JSON.stringify(result.claims), JSON.stringify(result.evidence),
+        JSON.stringify(result.operationalEvidenceIds), JSON.stringify(result.toolsUsed),
+        JSON.stringify(result.relatedTicketIds), JSON.stringify(result.unknowns),
+        JSON.stringify(result.confirmationsNeeded), JSON.stringify(result.languageLevels),
+        duplicate ? JSON.stringify(duplicate) : null, jobId, jobId, jobId,
+        KNOWLEDGE_EXTRACTION_PROMPT_VERSION, now, now, job.knowledge_id,
+      );
+      this.database.prepare(
+        `UPDATE documentation_generation_jobs
+         SET state = 'completed', finished_at = ?, claimed_at = NULL,
+             lease_expires_at = NULL, error = NULL WHERE id = ?`,
+      ).run(now, jobId);
+      return this.getDocumentationDraft(job.draft_id);
+    })();
+  }
+
+  completeDocumentationFromKnowledgeJob(jobId: string): DocumentationDraftDto {
+    const job = this.database.prepare(
+      `SELECT draft.knowledge_id
+       FROM documentation_generation_jobs job
+       JOIN documentation_drafts draft ON draft.id = job.draft_id
+       WHERE job.id = ? AND job.state = 'running' AND job.phase = 'document'`,
+    ).get(jobId) as { knowledge_id: string | null } | undefined;
+    if (!job?.knowledge_id) {
+      throw new ConflictError("O documento não possui conhecimento estruturado vinculado.");
+    }
+    const knowledge = this.getKnowledgeObject(job.knowledge_id);
+    if (knowledge.candidate === "NO") {
+      throw new ConflictError("Conhecimento não reutilizável não pode gerar documentação.");
+    }
+    const result = renderKnowledgeDocument(knowledge);
+    const draft = this.completeDocumentationJob(jobId, result);
+    this.database.prepare(
+      `UPDATE documentation_drafts
+       SET document_type = ?, audience_code = ?, version = ?, knowledge_id = ?
+       WHERE id = ?`,
+    ).run(knowledge.suggestedType, knowledge.audience, knowledge.version, knowledge.id, draft.id);
+    return this.getDocumentationDraft(draft.id);
   }
 
   completeDocumentationJob(jobId: string, result: DocumentationDraftResult): DocumentationDraftDto {
@@ -11090,6 +11579,7 @@ export class SupportStore {
       resolution: this.getResolution(ticketId),
       latestInvestigation: this.getLatestInvestigation(ticketId),
       investigationThread: this.getInvestigationThreadSummaryForTicket(ticketId),
+      knowledgeObject: this.getKnowledgeObjectByTicket(ticketId),
     };
   }
 
@@ -13890,6 +14380,7 @@ export class SupportStore {
       messageIds,
       title: row.title,
       summary: row.summary,
+      suggestedPriority: row.suggested_priority,
       kind: row.triage_kind,
       state: row.state,
       confidence: row.confidence,
@@ -13922,11 +14413,12 @@ export class SupportStore {
   ): {
     categories: TriageBlockDto["proposedCategories"];
     confidence: number | null;
+    priority: TicketPriority;
   } | null {
     const selected = new Set(messageIds);
     const rows = this.database
       .prepare(
-        `SELECT id, proposed_categories_json, confidence
+        `SELECT id, proposed_categories_json, confidence, suggested_priority
          FROM triage_blocks
          WHERE group_id = ? AND state = 'pending'
            AND proposed_categories_json IS NOT NULL
@@ -13936,6 +14428,7 @@ export class SupportStore {
       id: string;
       proposed_categories_json: string;
       confidence: number | null;
+      suggested_priority: TicketPriority;
     }>;
     const members = this.database.prepare(
       `SELECT message_id FROM triage_block_messages
@@ -13955,6 +14448,7 @@ export class SupportStore {
             emptyTriageCategories(),
           ),
           confidence: row.confidence,
+          priority: row.suggested_priority,
         };
       }
     }

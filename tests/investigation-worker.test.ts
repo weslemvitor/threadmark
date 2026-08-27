@@ -368,3 +368,113 @@ test("shutdown reenfileira turno da sala e preserva a mensagem", async () => {
   assert.equal(recovered.turns[0]?.state, "queued");
   assert.equal(recovered.turns[0]?.error, "Recuperado após reinício do worker");
 });
+
+test("worker processa chats diferentes em paralelo sem duplicar o mesmo turno", async () => {
+  const current = workerFixture();
+  const secondMessage = current.store.upsertMessage({
+    externalId: "worker-second-ticket-message",
+    groupId: current.groupId,
+    senderId: current.participantId,
+    occurredAt: "2026-07-16T16:10:00.000Z",
+    text: "Tenho outra solicitação independente.",
+    messageType: "text",
+  });
+  const secondTicket = current.store.createTicket({
+    groupId: current.groupId,
+    sourceMessageId: secondMessage.id,
+    title: "Outra solicitação",
+    summary: "Segundo chat independente.",
+  });
+  const firstThread = current.store.getOrCreateInvestigationThread(current.ticketId);
+  const secondThread = current.store.getOrCreateInvestigationThread(secondTicket.id);
+  current.store.addInvestigationThreadMessage(firstThread.id, { body: "Investigue o primeiro." });
+  current.store.addInvestigationThreadMessage(secondThread.id, { body: "Investigue o segundo." });
+
+  const controller = new AbortController();
+  const started = new Set<string>();
+  let releaseBoth!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  let notifyStarted!: () => void;
+  const bothStarted = new Promise<void>((resolve) => {
+    notifyStarted = resolve;
+  });
+  const agent = {
+    async analyse() {
+      return automaticResult;
+    },
+    async investigateThread(input: InvestigationThreadInput) {
+      started.add(input.threadId);
+      if (started.size === 2) notifyStarted();
+      await gate;
+      return threadResult;
+    },
+  };
+  const worker = new InvestigationWorker(current.store, agent, {
+    recoverOrphanedJobs: false,
+    concurrency: 2,
+    pollIntervalMs: 5,
+    leaseMs: 1_000,
+    leaseHeartbeatMs: 100,
+  });
+
+  const running = worker.run(controller.signal);
+  await bothStarted;
+  assert.deepEqual(started, new Set([firstThread.id, secondThread.id]));
+
+  const activeJobs = current.database.prepare(
+    "SELECT COUNT(*) AS count FROM investigation_thread_jobs WHERE state = 'running'",
+  ).get() as { count: number };
+  assert.equal(activeJobs.count, 2);
+
+  releaseBoth();
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  await running;
+
+  assert.equal(current.store.getInvestigationThread(firstThread.id).turns[0]?.state, "completed");
+  assert.equal(current.store.getInvestigationThread(secondThread.id).turns[0]?.state, "completed");
+});
+
+test("heartbeat mantém o lease de um chat longo e impede execução duplicada", async () => {
+  const current = workerFixture();
+  const thread = current.store.getOrCreateInvestigationThread(current.ticketId);
+  current.store.addInvestigationThreadMessage(thread.id, { body: "Faça uma análise longa." });
+  const controller = new AbortController();
+  let calls = 0;
+  let started!: () => void;
+  const jobStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const agent = {
+    async analyse() {
+      return automaticResult;
+    },
+    async investigateThread(_input: InvestigationThreadInput, signal?: AbortSignal) {
+      calls += 1;
+      started();
+      return await new Promise<InvestigationTurnResult>((_resolve, reject) => {
+        const abort = () => reject(signal?.reason ?? new Error("encerrado"));
+        signal?.addEventListener("abort", abort, { once: true });
+      });
+    },
+  };
+  const worker = new InvestigationWorker(current.store, agent, {
+    recoverOrphanedJobs: false,
+    concurrency: 2,
+    pollIntervalMs: 10,
+    leaseMs: 1_000,
+    leaseHeartbeatMs: 100,
+  });
+
+  const running = worker.run(controller.signal);
+  await jobStarted;
+  await new Promise<void>((resolve) => setTimeout(resolve, 1_150));
+  assert.equal(calls, 1);
+  assert.equal(current.store.claimNextAgentJob(1_000), null);
+
+  current.store.cancelInvestigationThread(thread.id, "Operador");
+  controller.abort();
+  await running;
+});

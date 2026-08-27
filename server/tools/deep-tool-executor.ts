@@ -28,6 +28,7 @@ import type {
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
+import { isAffirmativePreviewConfirmation } from "../agent/confirmation-intent.js";
 import { LocalToolService } from "./local-tool-service.js";
 import {
   THREADMARK_AUTOMATIONS_TOOL_ID,
@@ -443,7 +444,7 @@ export class DeepToolExecutor {
         }, {
           name: "prepare_ticket_draft",
           description:
-            "Persiste uma prévia de ticket vinculada a um grupo existente, às mensagens que originaram a demanda e a categorias reais já consultadas. Para conversas locais use messageIds retornados pela busca; para Intercom use sourceMessages copiados da leitura autorizada. Não cria o ticket e não exige confirmação.",
+            "Persiste uma prévia de ticket vinculada a um grupo existente, às mensagens que originaram a demanda e a categorias reais já consultadas. Para conversas locais use messageIds retornados pela busca; uma mensagem interna da equipe pode ser usada quando o operador pedir explicitamente um ticket operacional, mas nunca como gatilho automático. Para Intercom use sourceMessages copiados da leitura autorizada. Não cria o ticket e não exige confirmação.",
           argumentsExample:
             '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","categoryIds":["<categoryId real>"],"messageIds":[],"sourceMessages":[{"id":"<id real da mensagem>","author":"Cliente","authorRole":"customer","body":"Texto original","occurredAt":"2026-08-24T12:00:00.000Z"}],"externalSource":{"type":"intercom_conversation","id":"123"}}',
         }, {
@@ -1103,6 +1104,11 @@ export class DeepToolExecutor {
       group: { id: group.id, name: group.subject, clientName: group.clientName },
       categories,
       sourceMessageCount: localMessages.messageIds.length + sourceMessages.length,
+      sourceKind: localMessages.firstExternalMessageId
+        ? "external"
+        : localMessages.messageIds.length > 0
+          ? "internal_manual"
+          : "external_import",
       messageIds: localMessages.messageIds,
       sourceMessages,
       externalSource: args.externalSource ?? null,
@@ -2473,29 +2479,11 @@ function findActiveTicketGroup(
 }
 
 function isExplicitTicketConfirmation(message: string): boolean {
-  const normalized = message
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("pt-BR")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (/\b(?:nao|nunca)\s+(?:crie|criar|gera|gerar)\b/.test(normalized)) return false;
-  return /\b(?:confirmo|pode\s+(?:criar|gerar)|crie|cria|gere|gera|sim,?\s+(?:crie|pode\s+criar))\b/.test(normalized);
+  return isAffirmativePreviewConfirmation(message);
 }
 
 function isExplicitTicketUpdateConfirmation(message: string): boolean {
-  const normalized = normalizeConfirmationMessage(message);
-  if (/\b(?:nao|nunca)\s+(?:atualize|altere|aplique|mude)\b/.test(normalized)) return false;
-  return /\b(?:confirmo|pode\s+(?:atualizar|alterar|aplicar)|atualize|altere|aplique|sim,?\s+(?:atualize|pode\s+atualizar))\b/.test(normalized);
-}
-
-function normalizeConfirmationMessage(message: string): string {
-  return message
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("pt-BR")
-    .replace(/\s+/g, " ")
-    .trim();
+  return isAffirmativePreviewConfirmation(message);
 }
 
 function parseJsonStringArray(value: string): string[] {
@@ -2550,12 +2538,9 @@ function resolveThreadmarkTicketSourceMessages(
     );
   }
   const firstExternal = rows.find((row) => !row.is_staff);
-  if (!firstExternal) {
-    throw new Error("Inclua ao menos uma mensagem externa do cliente no ticket.");
-  }
   return {
     messageIds: rows.map((row) => row.id),
-    firstExternalMessageId: firstExternal.id,
+    firstExternalMessageId: firstExternal?.id ?? null,
   };
 }
 

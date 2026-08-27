@@ -46,6 +46,19 @@ const groupJid = "120363000000000000@g.us";
 const customerJid = "5511999999999@s.whatsapp.net";
 
 describe("WhatsApp inbound-only boundary", () => {
+  it("nao restringe grupos ativos por uma allowlist legada no daemon", async () => {
+    const daemonSource = await readFile(
+      resolve(process.cwd(), "server/daemon.ts"),
+      "utf8",
+    );
+
+    assert.doesNotMatch(
+      daemonSource,
+      /createInboundWhatsAppClient\([\s\S]*?allowlistedGroupJids\s*:/,
+    );
+    assert.match(daemonSource, /pausa explicita da conversa/i);
+  });
+
   it("resolve uma versão compatível para gerar QR e mantém fallback offline", async () => {
     const currentVersion = [2, 3000, 1_043_900_000] as const;
 
