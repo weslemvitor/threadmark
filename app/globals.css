@@ -44,6 +44,72 @@
   --sidebar-foreground: #f1f5f9;
 }
 
+.dark {
+  --canvas: #0b0f17;
+  --surface: #111722;
+  --surface-muted: #171e2b;
+  --ink: #e9edf5;
+  --ink-muted: #9ba6b8;
+  --line: #273142;
+  --line-strong: #354157;
+  --brand: #8b7cf6;
+  --brand-dark: #c2baff;
+  --brand-soft: #252145;
+  --red: #fb7185;
+  --chart-1: #9b8cff;
+  --chart-2: #60a5fa;
+  --chart-3: #fbbf24;
+  --chart-4: #34d399;
+  --chart-5: #fb7185;
+  --sidebar: #080b12;
+  --sidebar-foreground: #f1f5f9;
+
+  /*
+   * Paletas contextuais usadas pelos estados antigos da interface.
+   * Sobrescrever os tokens, em vez de classes isoladas, também cobre
+   * variações translúcidas como bg-emerald-50/60 e bg-amber-50/70.
+   */
+  --color-emerald-50: #0b211c;
+  --color-emerald-100: #103129;
+  --color-emerald-200: #1f5444;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  --color-amber-50: #251a08;
+  --color-amber-100: #352509;
+  --color-amber-200: #6b4b12;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-amber-950: #fffbeb;
+
+  --color-rose-50: #2a1118;
+  --color-rose-100: #3b1620;
+  --color-rose-200: #733044;
+  --color-rose-600: #fb7185;
+  --color-rose-700: #fda4af;
+
+  --color-red-100: #3a1518;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+
+  --color-blue-50: #0d1e34;
+  --color-blue-200: #274f7d;
+  --color-blue-600: #60a5fa;
+  --color-blue-700: #93c5fd;
+  --color-blue-800: #bfdbfe;
+
+  --color-sky-50: #0c2130;
+  --color-sky-200: #28536d;
+  --color-sky-700: #7dd3fc;
+  --color-sky-800: #bae6fd;
+  --color-sky-900: #e0f2fe;
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -104,6 +170,9 @@
       sans-serif;
     font-size: 14px;
     -webkit-font-smoothing: antialiased;
+    transition:
+      background-color 160ms ease,
+      color 160ms ease;
   }
 
   button,
@@ -123,3 +192,6 @@
     cursor: not-allowed;
   }
 }
+
+/* Alguns ícones usam o tom 600 também como preenchimento; clareamos apenas o texto. */
+.dark :where(.text-emerald-600) { color: #5ee0ae; }

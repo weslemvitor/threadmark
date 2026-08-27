@@ -16,6 +16,7 @@ import Image from "next/image";
 import type { ComponentType } from "react";
 import type { RuntimeState } from "@/app/lib/types";
 import { Button } from "@/app/components/ui/button";
+import { ThemeMenu } from "@/app/components/theme/theme-menu";
 import { cn } from "@/app/lib/utils";
 import {
   buildThreadmarkPath,
@@ -286,20 +287,23 @@ export function Sidebar(props: SidebarProps) {
 
         <div className="shrink-0 border-t border-white/5 px-3 py-3">
           <RuntimeBadge runtime={props.runtime} />
-          <Button
-            aria-label="Abrir configurações da conta"
-            className="mt-1 h-auto w-full justify-start gap-2.5 rounded-xl border border-white/10 bg-card/5 px-2.5 py-2 text-left text-slate-200 hover:bg-card/10 hover:text-white"
-            onClick={() => props.onNavigate("settings")}
-            type="button"
-            variant="ghost"
-          >
-            <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/20 text-xs font-bold text-violet-200">{initials(props.operatorName)}</div>
-            <div className="min-w-0 flex-1">
-              <strong className="block truncate text-xs font-semibold">{props.operatorName}</strong>
-              <span className="mt-0.5 block truncate text-2xs text-slate-400">{props.operatorRole}</span>
-            </div>
-            <CircleGauge size={17} />
-          </Button>
+          <div className="mt-1 flex items-stretch gap-2">
+            <Button
+              aria-label="Abrir configurações da conta"
+              className="h-auto min-w-0 flex-1 justify-start gap-2.5 rounded-xl border border-white/10 bg-card/5 px-2.5 py-2 text-left text-slate-200 hover:bg-card/10 hover:text-white"
+              onClick={() => props.onNavigate("settings")}
+              type="button"
+              variant="ghost"
+            >
+              <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/20 text-xs font-bold text-violet-200">{initials(props.operatorName)}</div>
+              <div className="min-w-0 flex-1">
+                <strong className="block truncate text-xs font-semibold">{props.operatorName}</strong>
+                <span className="mt-0.5 block truncate text-2xs text-slate-400">{props.operatorRole}</span>
+              </div>
+              <CircleGauge size={17} />
+            </Button>
+            <ThemeMenu className="h-auto w-10 shrink-0 rounded-xl border border-white/10 bg-card/5 text-slate-300 hover:bg-card/10 hover:text-white" />
+          </div>
         </div>
       </aside>
       {props.open ? (

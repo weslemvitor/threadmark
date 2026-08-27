@@ -38,6 +38,7 @@ import {
   CardHeader,
 } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
+import { ThemeMenu } from "@/app/components/theme/theme-menu";
 
 type AccessContextValue = SessionState & {
   logout(): Promise<void>;
@@ -152,6 +153,7 @@ function AccessFrame({ children }: { children: ReactNode }) {
         />
         <strong className="text-sm font-semibold text-foreground">Threadmark</strong>
       </div>
+      <ThemeMenu className="absolute right-5 top-5 z-20 border border-border bg-card text-muted-foreground shadow-sm hover:bg-accent hover:text-accent-foreground" />
       <div className="relative z-10 grid w-full place-items-center">{children}</div>
       <p className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
         <LockKeyhole size={13} /> Serviço restrito à sua máquina

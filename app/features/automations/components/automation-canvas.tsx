@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState } from "@/app/components/shared/ui-states";
 import { cn } from "@/app/lib/utils";
+import { useTheme } from "@/app/components/theme/theme-provider";
 import {
   automationNodeCatalogId,
   automationNodeDefinition,
@@ -98,6 +99,7 @@ export function AutomationCanvas({
   onCloseDryRun,
   onRunDryRun,
 }: AutomationCanvasProps) {
+  const { resolvedTheme } = useTheme();
   const instanceRef = useRef<ReactFlowInstance<AutomationFlowNode, AutomationFlowEdge> | null>(null);
   const draggingRef = useRef(false);
   const issueNodeIds = useMemo(
@@ -283,7 +285,7 @@ export function AutomationCanvas({
         </div>
       ) : null}
       <ReactFlow<AutomationFlowNode, AutomationFlowEdge>
-        colorMode="light"
+        colorMode={resolvedTheme}
         defaultEdgeOptions={{ type: "smoothstep" }}
         deleteKeyCode={["Backspace", "Delete"]}
         edges={flowEdges}
