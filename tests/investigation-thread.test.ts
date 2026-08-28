@@ -527,3 +527,41 @@ test("jobs conversacionais em execução são recuperados após reinício", () =
   const recovered = current.store.claimNextAgentJob();
   assert.equal(recovered?.id, claimed?.id);
 });
+
+test("tarefa ativa retoma a diretiva original mesmo depois de uma conclusão incompleta", () => {
+  const current = fixture();
+  const thread = current.store.getOrCreateInvestigationThread(current.ticketId);
+  current.store.addInvestigationThreadMessage(thread.id, {
+    body: "Crie o ticket com as mensagens reais da conversa do Intercom.",
+  });
+  const first = current.store.claimNextAgentJob();
+  assert.equal(first?.kind, "thread_turn");
+  if (!first || first.kind !== "thread_turn") assert.fail("turno não reivindicado");
+  const original = current.store.getInvestigationThreadContext(first.id);
+  const originalRoot = original.currentOperatorMessageId;
+  current.store.completeInvestigationThreadJob(first.id, turnResult({
+    phase: "conclusion",
+    assistantMessage: "A execução foi interrompida antes de concluir.",
+    threadSummary: "Objetivo pendente: criar o ticket com as mensagens reais.",
+    nextAction: "Retomar a criação.",
+  }));
+
+  current.store.addInvestigationThreadMessage(thread.id, { body: "Tenta novamente" });
+  const retry = current.store.claimNextAgentJob();
+  assert.equal(retry?.kind, "thread_turn");
+  if (!retry || retry.kind !== "thread_turn") assert.fail("retry não reivindicado");
+  const resumed = current.store.getInvestigationThreadContext(retry.id);
+  assert.equal(
+    resumed.activeTask?.rootOperatorMessageId,
+    originalRoot,
+  );
+  assert.equal(resumed.activeTask?.continuation, true);
+  assert.match(resumed.activeTask?.objective ?? "", /Crie o ticket/);
+  assert.deepEqual(
+    resumed.activeTask?.operatorDirectives.map((message) => message.body),
+    [
+      "Crie o ticket com as mensagens reais da conversa do Intercom.",
+      "Tenta novamente",
+    ],
+  );
+});

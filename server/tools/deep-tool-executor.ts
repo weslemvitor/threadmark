@@ -28,7 +28,10 @@ import type {
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
-import { isAffirmativePreviewConfirmation } from "../agent/confirmation-intent.js";
+import {
+  isAffirmativePreviewConfirmation,
+  isRetryInstruction,
+} from "../agent/confirmation-intent.js";
 import { LocalToolService } from "./local-tool-service.js";
 import {
   THREADMARK_AUTOMATIONS_TOOL_ID,
@@ -43,11 +46,13 @@ import {
 export type { PostgresQueryRequest, PostgresRunner };
 
 const DEFAULT_TIMEOUT_MS = 20_000;
-const MAX_TOOL_OUTPUT_BYTES = 80_000;
+const MAX_TOOL_OUTPUT_BYTES = 40_000;
+const MAX_REMOTE_RESPONSE_BYTES = 1_000_000;
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOOL_RESULTS_PER_TURN = 5;
 const THREADMARK_CONTEXT_TOOL_ID = "threadmark-context";
 const CONNECTED_APP_TOOL_PREFIX = "connected-app:";
+const LOCAL_TOOL_PREFIX = "local-tool:";
 const SKIPPED_DIRECTORIES = new Set([
   ".aws",
   ".data",
@@ -162,13 +167,39 @@ const readVercelLogsSchema = z.object({
 
 const searchSupportContextSchema = z.object({
   query: z.string().trim().min(2).max(300),
-  scope: z.enum(["all", "tickets", "conversations", "resolutions"]).default("all"),
+  scope: z.enum(["all", "tickets", "conversations", "messages", "resolutions"])
+    .default("all")
+    .transform((scope) => scope === "messages" ? "conversations" as const : scope),
   limit: z.number().int().min(1).max(20).default(10),
 }).strict();
 
+const searchTicketGroupsSchema = z.object({
+  query: z.string().trim().min(2).max(300),
+  limit: z.number().int().min(1).max(20).default(10),
+}).strict();
+
+const ticketCategoryFacetSchema = z.enum([
+  "reason",
+  "product",
+  "platform",
+  "symptom",
+  "root_cause",
+  "resolution",
+  "contactReason",
+  "productArea",
+  "rootCause",
+  "contact_reason",
+  "product_area",
+]).transform((facet) => {
+  if (facet === "contactReason" || facet === "contact_reason") return "reason" as const;
+  if (facet === "productArea" || facet === "product_area") return "product" as const;
+  if (facet === "rootCause") return "root_cause" as const;
+  return facet;
+});
+
 const listTicketCategoriesSchema = z.object({
   query: z.string().trim().min(1).max(200).optional(),
-  facets: z.array(z.enum(["reason", "product", "platform", "symptom", "root_cause", "resolution"]))
+  facets: z.array(ticketCategoryFacetSchema)
     .max(6)
     .optional(),
   limit: z.number().int().min(1).max(200).default(100),
@@ -198,7 +229,11 @@ const prepareThreadmarkTicketDraftSchema = z.object({
   sourceMessages: z.array(externalTicketSourceMessageSchema).max(100).default([]),
   externalSource: externalTicketSourceSchema.optional(),
 }).strict().superRefine((value, context) => {
-  if (value.messageIds.length === 0 && value.sourceMessages.length === 0) {
+  if (
+    value.messageIds.length === 0 &&
+    value.sourceMessages.length === 0 &&
+    !value.externalSource
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "Inclua ao menos uma mensagem de origem no ticket.",
@@ -238,7 +273,8 @@ const prepareThreadmarkTicketUpdateDraftSchema = z.object({
     value.addCategoryIds.length > 0 ||
     value.removeCategoryIds.length > 0 ||
     value.messageIds.length > 0 ||
-    value.sourceMessages.length > 0;
+    value.sourceMessages.length > 0 ||
+    value.externalSource !== undefined;
   if (!hasChange) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -261,6 +297,7 @@ const applyThreadmarkTicketUpdateDraftSchema = z.object({
 
 const searchIntercomConversationsSchema = z.object({
   query: z.string().trim().min(2).max(200),
+  contentQuery: z.string().trim().min(2).max(300).optional(),
   limit: z.number().int().min(1).max(20).default(10),
 }).strict();
 
@@ -360,6 +397,8 @@ export interface CommandRequest {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxOutputBytes: number;
+  /** Stop a line-oriented command after collecting enough stdout lines. */
+  maxOutputLines?: number;
   signal?: AbortSignal;
 }
 
@@ -408,8 +447,9 @@ export class DeepToolExecutor {
   }
 
   descriptors(): InvestigationToolDescriptor[] {
-    const configured = this.tools.listEnabledForDeep().map((tool) => ({
-      id: tool.id,
+    const enabledLocalTools = this.tools.listEnabledForDeep();
+    const configured = enabledLocalTools.map((tool) => ({
+      id: localToolModelId(tool, enabledLocalTools),
       name: tool.name,
       type: tool.type,
       description: tool.description,
@@ -417,6 +457,8 @@ export class DeepToolExecutor {
       operations: tool.allowedOperations.map((operation) => ({
         name: operation,
         ...OPERATION_HELP[operation],
+        effect: "read" as const,
+        authorization: "none" as const,
       })),
     }));
     const connected = this.connectedAppDescriptors();
@@ -435,36 +477,57 @@ export class DeepToolExecutor {
             "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução. Tickets encontrados incluem suas categorias atuais.",
           argumentsExample:
             '{"query":"ROAS Global","scope":"all","limit":10}',
+          effect: "read",
+          authorization: "none",
+        }, {
+          name: "search_ticket_groups",
+          description:
+            "Localiza grupos de destino existentes por nome do grupo, cliente ou participante. A busca ignora acentos, pontuação e diferenças como ecommerce/e-commerce.",
+          argumentsExample: '{"query":"GPS do Ecommerce","limit":10}',
+          effect: "read",
+          authorization: "none",
         }, {
           name: "list_ticket_categories",
           description:
             "Lista o catálogo real de categorias do SQLite. Consulte antes de criar ou atualizar tickets e use somente IDs cujo significado tenha relação direta com o problema comprovado.",
           argumentsExample:
             '{"query":"Dashboard","facets":["product","symptom"],"limit":50}',
+          effect: "read",
+          authorization: "none",
         }, {
           name: "prepare_ticket_draft",
           description:
-            "Persiste uma prévia de ticket vinculada a um grupo existente, às mensagens que originaram a demanda e a categorias reais já consultadas. Para conversas locais use messageIds retornados pela busca; uma mensagem interna da equipe pode ser usada quando o operador pedir explicitamente um ticket operacional, mas nunca como gatilho automático. Para Intercom use sourceMessages copiados da leitura autorizada. Não cria o ticket e não exige confirmação.",
+            "Persiste uma prévia de ticket vinculada a um grupo existente, às mensagens que originaram a demanda e a categorias reais já consultadas. Para conversas locais use messageIds retornados pela busca; uma mensagem interna da equipe pode ser usada quando o operador pedir explicitamente um ticket operacional, mas nunca como gatilho automático. Para Intercom informe externalSource com o ID da conversa: a ferramenta importa diretamente todas as mensagens textuais reais, sem exigir que o modelo as copie. Não cria o ticket e não exige confirmação.",
           argumentsExample:
-            '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","categoryIds":["<categoryId real>"],"messageIds":[],"sourceMessages":[{"id":"<id real da mensagem>","author":"Cliente","authorRole":"customer","body":"Texto original","occurredAt":"2026-08-24T12:00:00.000Z"}],"externalSource":{"type":"intercom_conversation","id":"123"}}',
+            '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","categoryIds":["<categoryId real>"],"messageIds":[],"sourceMessages":[],"externalSource":{"type":"intercom_conversation","id":"123"}}',
+          effect: "prepare",
+          authorization: "none",
+          automaticFollowUpOperation: "create_ticket_from_draft",
         }, {
           name: "create_ticket_from_draft",
           description:
             "Cria no SQLite um ticket a partir de um rascunho já apresentado. Exige confirmação explícita na mensagem atual.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+          effect: "write",
+          authorization: "task",
         }, {
           name: "prepare_ticket_update_draft",
           description:
-            "Prepara uma prévia auditável para atualizar título, descrição, prioridade, categorias e anexar mensagens locais ou do Intercom a um ticket existente. Use messageIds retornados pela busca para mensagens locais ou sourceMessages copiados da conversa externa autorizada. Não altera nada antes da confirmação.",
+            "Prepara uma prévia auditável para atualizar título, descrição, prioridade, categorias e anexar mensagens locais ou do Intercom a um ticket existente. Use messageIds para mensagens locais ou externalSource com o ID da conversa do Intercom para importar diretamente todas as mensagens textuais reais. Não altera nada antes da confirmação.",
           argumentsExample:
             '{"operatorMessageId":"<currentOperatorMessageId>","ticketId":"<ticketId encontrado>","title":"Título corrigido","addCategoryIds":["<categoryId real>"],"removeCategoryIds":[],"messageIds":["<messageId real>"],"sourceMessages":[],"externalSource":null}',
+          effect: "prepare",
+          authorization: "none",
+          automaticFollowUpOperation: "apply_ticket_update_draft",
         }, {
           name: "apply_ticket_update_draft",
           description:
             "Aplica uma atualização de ticket já apresentada. Exige confirmação explícita posterior e rejeita uma prévia desatualizada.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+          effect: "write",
+          authorization: "task",
         }],
       },
       this.automationTool!.descriptor(),
@@ -504,9 +567,11 @@ export class DeepToolExecutor {
       signal?.throwIfAborted();
       return this.automationTool.execute(request, executedAt);
     }
-    const registered = this.tools
-      .listEnabledForDeep()
-      .find((tool) => tool.id === request.toolId);
+    const enabledLocalTools = this.tools.listEnabledForDeep();
+    const registered = enabledLocalTools.find((tool) =>
+      tool.id === request.toolId ||
+      localToolModelId(tool, enabledLocalTools) === request.toolId
+    );
     if (!registered) {
       return failedResult(request, "Ferramenta indisponível ou não autorizada.", executedAt);
     }
@@ -539,7 +604,7 @@ export class DeepToolExecutor {
       );
       return {
         requestId: request.requestId,
-        toolId: registered.id,
+        toolId: request.toolId,
         toolName: registered.name,
         operation: request.operation,
         argumentsJson: request.argumentsJson,
@@ -572,13 +637,15 @@ export class DeepToolExecutor {
           .filter((tool) => tool.aiEnabled)
           .map((tool) => ({
             name: tool.name,
-            description: `${tool.description}${tool.confirmationRequired ? " Exige pedido explícito na mensagem atual do operador." : ""}`,
+            description: `${tool.description} ${mcpSchemaGuidance(tool.inputSchema)}${tool.confirmationRequired ? " Exige pedido explícito na mensagem atual do operador." : ""}`,
             argumentsExample: JSON.stringify({
               ...(tool.confirmationRequired
                 ? { confirmationMessageId: "<currentOperatorMessageId>" }
                 : {}),
               input: mcpSchemaExample(tool.inputSchema),
             }),
+            effect: tool.confirmationRequired ? "write" as const : "read" as const,
+            authorization: tool.confirmationRequired ? "task" as const : "none" as const,
           }));
         return {
           id: `${CONNECTED_APP_TOOL_PREFIX}${app.id}`,
@@ -596,6 +663,8 @@ export class DeepToolExecutor {
               "Cria um artigo em estado de rascunho no Help Center do Intercom. Exige autor e coleção obtidos pelas leituras autorizadas e pedido explícito na mensagem atual.",
             argumentsExample:
               '{"confirmationMessageId":"<currentOperatorMessageId>","title":"Título","description":"Resumo","body":"<p>Conteúdo revisado</p>","authorId":"123","collectionId":"456"}',
+            effect: "write" as const,
+            authorization: "task" as const,
           }]
         : app.type === "slack_webhook"
           ? [{
@@ -604,6 +673,8 @@ export class DeepToolExecutor {
               "Envia uma mensagem ao Slack configurado. Use somente quando a mensagem atual do operador pedir explicitamente o envio.",
             argumentsExample:
               '{"confirmationMessageId":"<currentOperatorMessageId>","text":"Mensagem a enviar"}',
+            effect: "write" as const,
+            authorization: "task" as const,
           }]
         : [{
             name: "execute_request",
@@ -611,27 +682,37 @@ export class DeepToolExecutor {
               "Executa a requisição externa configurada com o payload informado. Use somente quando a mensagem atual do operador pedir explicitamente a ação.",
             argumentsExample:
               '{"confirmationMessageId":"<currentOperatorMessageId>","payload":{"title":"Título","body":"<p>Conteúdo</p>","state":"draft"}}',
+            effect: "write" as const,
+            authorization: "task" as const,
           }];
       const readonlyOperations = intercom ? [{
         name: "search_conversations",
         description:
-          "Busca conversas recentes do Intercom por nome, e-mail, assunto ou termo e devolve somente dados limitados.",
-        argumentsExample: '{"query":"Nome do cliente","limit":10}',
+          "Busca conversas recentes do Intercom por nome, e-mail, assunto ou termo. Quando houver várias conversas da mesma pessoa, use contentQuery para inspecionar e ranquear o conteúdo integral dos candidatos sem depender apenas da mensagem inicial exibida na prévia.",
+        argumentsExample: '{"query":"Nome do cliente","contentQuery":"produto sintoma contexto distintivo","limit":10}',
+        effect: "read" as const,
+        authorization: "none" as const,
       }, {
         name: "get_conversation",
         description:
           "Lê uma conversa específica do Intercom em texto simples, incluindo até 100 partes recentes.",
         argumentsExample: '{"conversationId":"123456789"}',
+        effect: "read" as const,
+        authorization: "none" as const,
       }, {
         name: "get_current_admin",
         description:
           "Obtém o administrador associado ao token, incluindo o authorId válido para criar um artigo.",
         argumentsExample: '{}',
+        effect: "read" as const,
+        authorization: "none" as const,
       }, {
         name: "list_collections",
         description:
           "Lista as coleções disponíveis no Help Center, incluindo seus IDs para vincular um artigo.",
         argumentsExample: '{"limit":50}',
+        effect: "read" as const,
+        authorization: "none" as const,
       }] : [];
       return {
         id: `${CONNECTED_APP_TOOL_PREFIX}${app.id}`,
@@ -681,6 +762,11 @@ export class DeepToolExecutor {
     }
     try {
       const rawArguments = JSON.parse(request.argumentsJson) as unknown;
+      this.requireExternalActionAuthorization(
+        rawArguments,
+        { appName: app.name, operation: request.operation },
+        request.toolId,
+      );
       const resolved = await this.connectedApps.resolveForExecution(app.id);
       const context = {
         executionId: request.requestId,
@@ -762,7 +848,26 @@ export class DeepToolExecutor {
           throw new Error("A ação MCP exige a mensagem atual do operador como confirmação.");
         }
         const operator = findThreadmarkAiOperator(this.database, confirmationMessageId);
-        if (!isExplicitExternalActionRequest(operator.messageBody)) {
+        const actionTarget = {
+          appName,
+          operation: tool.name,
+          title: tool.title,
+        };
+        const targetPredicate = (message: string) =>
+          isExplicitExternalActionRequest(message, actionTarget);
+        const taskAuthorized =
+          targetPredicate(operator.messageBody) ||
+          (
+            isRetryInstruction(operator.messageBody) &&
+            hasPriorOperatorInstruction(
+              this.database,
+              operator.threadId,
+              confirmationMessageId,
+              targetPredicate,
+              { toolId: request.toolId, operation: request.operation },
+            )
+          );
+        if (!taskAuthorized) {
           throw new Error("A mensagem atual não pede explicitamente esta ação externa.");
         }
       }
@@ -810,8 +915,10 @@ export class DeepToolExecutor {
       const connection = await this.resolveIntercomConnection(appId);
       let url: URL;
       let init: RequestInit;
+      let searchArguments: z.infer<typeof searchIntercomConversationsSchema> | null = null;
       if (request.operation === "search_conversations") {
         const args = searchIntercomConversationsSchema.parse(rawArguments);
+        searchArguments = args;
         url = new URL("/conversations/search", connection.origin);
         init = {
           method: "POST",
@@ -834,6 +941,15 @@ export class DeepToolExecutor {
         init = { method: "GET", headers: connection.headers };
       } else if (request.operation === "create_article") {
         const args = createIntercomArticleSchema.parse(rawArguments);
+        this.requireExternalActionAuthorization(
+          args,
+          {
+            appName,
+            operation: request.operation,
+            title: "Criar artigo de documentação",
+          },
+          request.toolId,
+        );
         url = new URL("/articles", connection.origin);
         init = {
           method: "POST",
@@ -860,7 +976,27 @@ export class DeepToolExecutor {
       );
       const parsed = JSON.parse(responseText) as unknown;
       const content = request.operation === "search_conversations"
-        ? sanitizeIntercomSearchResult(parsed)
+        ? searchArguments?.contentQuery
+          ? await enrichIntercomSearchResult(
+              sanitizeIntercomSearchResult(parsed),
+              searchArguments.contentQuery,
+              async (conversationId) => {
+                const conversationUrl = new URL(
+                  `/conversations/${encodeURIComponent(conversationId)}`,
+                  connection.origin,
+                );
+                conversationUrl.searchParams.set("display_as", "plaintext");
+                const conversationText = await boundedFetchText(
+                  this.fetchImpl,
+                  conversationUrl,
+                  { method: "GET", headers: connection.headers },
+                  this.timeoutMs,
+                  signal,
+                );
+                return sanitizeIntercomConversation(JSON.parse(conversationText) as unknown);
+              },
+            )
+          : sanitizeIntercomSearchResult(parsed)
         : request.operation === "get_conversation"
           ? sanitizeIntercomConversation(parsed)
           : request.operation === "get_current_admin"
@@ -938,11 +1074,92 @@ export class DeepToolExecutor {
     return { origin: endpoint.origin, headers };
   }
 
-  private executeThreadmarkContext(
+  private requireExternalActionAuthorization(
+    rawArguments: unknown,
+    target: ExternalActionTarget,
+    toolId: string,
+  ): void {
+    if (!this.database) {
+      throw new Error("O contexto do operador não está disponível.");
+    }
+    if (!isRecord(rawArguments)) {
+      throw new Error("Os argumentos da ação externa devem ser um objeto.");
+    }
+    const confirmationMessageId = stringValue(rawArguments.confirmationMessageId);
+    if (!confirmationMessageId) {
+      throw new Error("A ação externa exige a mensagem atual do operador.");
+    }
+    const operator = findThreadmarkAiOperator(this.database, confirmationMessageId);
+    const targetPredicate = (message: string) =>
+      isExplicitExternalActionRequest(message, target);
+    const taskAuthorized =
+      targetPredicate(operator.messageBody) ||
+      (
+        isRetryInstruction(operator.messageBody) &&
+        hasPriorOperatorInstruction(
+          this.database,
+          operator.threadId,
+          confirmationMessageId,
+          targetPredicate,
+          { toolId, operation: target.operation },
+        )
+      );
+    if (!taskAuthorized) {
+      throw new Error("A tarefa ativa não autoriza esta ação externa.");
+    }
+  }
+
+  private async resolveExternalTicketSourceMessages(
+    externalSource: z.infer<typeof externalTicketSourceSchema> | undefined,
+    providedMessages: ReadonlyArray<z.infer<typeof externalTicketSourceMessageSchema>>,
+    executedAt: string,
+    signal?: AbortSignal,
+  ): Promise<ExternalTicketSourceMessage[]> {
+    if (!externalSource) {
+      return normalizeExternalTicketSourceMessages(providedMessages, executedAt);
+    }
+    const intercomApp = this.connectedApps?.listEnabledForAi().find(
+      (app) => this.connectedApps?.nativeProvider(app.id) === "intercom",
+    );
+    if (!intercomApp) {
+      if (providedMessages.length > 0) {
+        return normalizeExternalTicketSourceMessages(providedMessages, executedAt);
+      }
+      throw new Error(
+        "O app do Intercom precisa estar ativo para importar as mensagens da conversa.",
+      );
+    }
+    const loaded = await this.executeIntercomOperation(
+      intercomApp.id,
+      intercomApp.name,
+      {
+        requestId: `ticket-source:${externalSource.id}`,
+        toolId: `${CONNECTED_APP_TOOL_PREFIX}${intercomApp.id}`,
+        operation: "get_conversation",
+        argumentsJson: JSON.stringify({ conversationId: externalSource.id }),
+        purpose: "Importar as mensagens reais da conversa para o ticket solicitado.",
+      },
+      executedAt,
+      signal,
+    );
+    if (loaded.status !== "success") {
+      throw new Error(loaded.summary);
+    }
+    const imported = externalTicketSourceMessagesFromIntercom(
+      JSON.parse(loaded.content) as unknown,
+      executedAt,
+    );
+    if (imported.length === 0) {
+      throw new Error("A conversa do Intercom não possui mensagens textuais para anexar.");
+    }
+    return imported;
+  }
+
+  private async executeThreadmarkContext(
     request: InvestigationToolRequest,
     executedAt: string,
     signal?: AbortSignal,
-  ): InvestigationToolResult {
+  ): Promise<InvestigationToolResult> {
     if (!this.database) {
       return failedResult(
         request,
@@ -966,13 +1183,13 @@ export class DeepToolExecutor {
     try {
       signal?.throwIfAborted();
       if (request.operation === "prepare_ticket_draft") {
-        return this.prepareThreadmarkTicketDraft(request, rawArguments, executedAt);
+        return await this.prepareThreadmarkTicketDraft(request, rawArguments, executedAt, signal);
       }
       if (request.operation === "create_ticket_from_draft") {
         return this.createThreadmarkTicketFromDraft(request, rawArguments, executedAt);
       }
       if (request.operation === "prepare_ticket_update_draft") {
-        return this.prepareThreadmarkTicketUpdateDraft(request, rawArguments, executedAt);
+        return await this.prepareThreadmarkTicketUpdateDraft(request, rawArguments, executedAt, signal);
       }
       if (request.operation === "apply_ticket_update_draft") {
         return this.applyThreadmarkTicketUpdateDraft(request, rawArguments, executedAt);
@@ -981,10 +1198,16 @@ export class DeepToolExecutor {
         if (!this.supportStore) throw new Error("O catálogo de categorias não está disponível.");
         const args = listTicketCategoriesSchema.parse(rawArguments);
         const facets = new Set(args.facets ?? []);
-        const categories = this.supportStore
-          .listCategories({ query: args.query, includeEmpty: true })
-          .filter((category) => facets.size === 0 || facets.has(category.facet))
-          .slice(0, args.limit);
+        const candidates = this.supportStore
+          .listCategories({ includeEmpty: true })
+          .filter((category) => facets.size === 0 || facets.has(category.facet));
+        const categories = args.query
+          ? rankTextMatches(
+              candidates,
+              args.query,
+              (category) => `${category.label} ${category.slug}`,
+            ).slice(0, args.limit)
+          : candidates.slice(0, args.limit);
         return {
           requestId: request.requestId,
           toolId: THREADMARK_CONTEXT_TOOL_ID,
@@ -996,6 +1219,23 @@ export class DeepToolExecutor {
           summary: `${categories.length} categoria(s) existente(s) encontrada(s).`,
           content: JSON.stringify({ categories }, null, 2),
           reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:categories:request:${encodeURIComponent(request.requestId)}`,
+          executedAt,
+        };
+      }
+      if (request.operation === "search_ticket_groups") {
+        const args = searchTicketGroupsSchema.parse(rawArguments);
+        const groups = searchThreadmarkTicketGroups(this.database, args.query, args.limit);
+        return {
+          requestId: request.requestId,
+          toolId: THREADMARK_CONTEXT_TOOL_ID,
+          toolName: "Contexto do Threadmark",
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "success",
+          summary: `${groups.length} grupo(s) de destino existente(s) encontrado(s).`,
+          content: JSON.stringify({ query: args.query, groups }, null, 2),
+          reference: `tool:${THREADMARK_CONTEXT_TOOL_ID}:groups:request:${encodeURIComponent(request.requestId)}`,
           executedAt,
         };
       }
@@ -1034,28 +1274,32 @@ export class DeepToolExecutor {
     }
   }
 
-  private prepareThreadmarkTicketDraft(
+  private async prepareThreadmarkTicketDraft(
     request: InvestigationToolRequest,
     rawArguments: unknown,
     executedAt: string,
-  ): InvestigationToolResult {
+    signal?: AbortSignal,
+  ): Promise<InvestigationToolResult> {
     if (!this.database) {
       return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
     }
     const args = prepareThreadmarkTicketDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
     const group = findActiveTicketGroup(this.database, args.groupId);
-    const categories = resolveTicketCategories(this.database, args.categoryIds);
-    validateAiCategorySelection(categories);
+    const categories = normalizeAiCategorySelection(
+      resolveTicketCategories(this.database, args.categoryIds),
+    );
     const categoryIds = categories.map((category) => category.id).sort();
     const localMessages = resolveThreadmarkTicketSourceMessages(
       this.database,
       args.groupId,
       args.messageIds,
     );
-    const sourceMessages = normalizeExternalTicketSourceMessages(
+    const sourceMessages = await this.resolveExternalTicketSourceMessages(
+      args.externalSource,
       args.sourceMessages,
       executedAt,
+      signal,
     );
     const fingerprint = JSON.stringify({
       operatorMessageId: args.operatorMessageId,
@@ -1112,8 +1356,10 @@ export class DeepToolExecutor {
       messageIds: localMessages.messageIds,
       sourceMessages,
       externalSource: args.externalSource ?? null,
-      confirmationRequired:
-        "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a criação.",
+      executionAuthorized: isExplicitTicketCreationRequest(operator.messageBody),
+      confirmationRequired: isExplicitTicketCreationRequest(operator.messageBody)
+        ? "A solicitação atual já autoriza a criação deste ticket; prossiga usando o mesmo operatorMessageId."
+        : "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a criação.",
     };
     return {
       requestId: request.requestId,
@@ -1140,12 +1386,20 @@ export class DeepToolExecutor {
     }
     const args = createThreadmarkTicketFromDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.confirmationMessageId);
-    if (!isExplicitTicketConfirmation(operator.messageBody)) {
+    const retriesAuthorizedCreation =
+      isRetryInstruction(operator.messageBody) &&
+      hasPriorOperatorInstruction(
+        this.database,
+        operator.threadId,
+        args.confirmationMessageId,
+        isExplicitTicketCreationRequest,
+      );
+    if (!isExplicitTicketConfirmation(operator.messageBody) && !retriesAuthorizedCreation) {
       throw new Error("A mensagem atual não confirma explicitamente a criação do ticket.");
     }
     const draft = this.database
       .prepare(
-        `SELECT id, thread_id, group_id, title, summary, priority, state,
+        `SELECT id, thread_id, operator_message_id, group_id, title, summary, priority, state,
                 created_ticket_id, created_by, created_at,
                 external_source_type, external_source_id, category_ids_json,
                 message_ids_json, source_messages_json
@@ -1155,7 +1409,13 @@ export class DeepToolExecutor {
     if (!draft || draft.thread_id !== operator.threadId) {
       throw new Error("O rascunho não pertence a esta conversa do Threadmark AI.");
     }
-    if (Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)) {
+    const currentInstructionAuthorized =
+      draft.operator_message_id === args.confirmationMessageId &&
+      (isExplicitTicketCreationRequest(operator.messageBody) || retriesAuthorizedCreation);
+    if (
+      !currentInstructionAuthorized &&
+      Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)
+    ) {
       throw new Error("A confirmação precisa ser posterior à prévia do ticket.");
     }
     if (draft.state === "created" && draft.created_ticket_id) {
@@ -1212,18 +1472,22 @@ export class DeepToolExecutor {
     return successfulCreatedTicketResult(request, ticket, draft, executedAt, false);
   }
 
-  private prepareThreadmarkTicketUpdateDraft(
+  private async prepareThreadmarkTicketUpdateDraft(
     request: InvestigationToolRequest,
     rawArguments: unknown,
     executedAt: string,
-  ): InvestigationToolResult {
+    signal?: AbortSignal,
+  ): Promise<InvestigationToolResult> {
     if (!this.database || !this.supportStore) {
       return failedResult(request, "O SQLite do Threadmark não está disponível.", executedAt, "Contexto do Threadmark");
     }
     const args = prepareThreadmarkTicketUpdateDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.operatorMessageId);
     const ticket = this.supportStore.getTicketDetail(args.ticketId);
-    const hasRequestedMessages = args.messageIds.length > 0 || args.sourceMessages.length > 0;
+    const hasRequestedMessages =
+      args.messageIds.length > 0 ||
+      args.sourceMessages.length > 0 ||
+      args.externalSource !== undefined;
     if (hasRequestedMessages && ticket.status === "archived") {
       throw new Error("Não é possível anexar mensagens a um ticket arquivado.");
     }
@@ -1233,9 +1497,11 @@ export class DeepToolExecutor {
       ticket.group.id,
       args.messageIds,
     );
-    const normalizedSourceMessages = normalizeExternalTicketSourceMessages(
+    const normalizedSourceMessages = await this.resolveExternalTicketSourceMessages(
+      args.externalSource,
       args.sourceMessages,
       executedAt,
+      signal,
     );
     const sourceMessages = args.externalSource
       ? resolveNewExternalTicketSourceMessages(
@@ -1337,8 +1603,10 @@ export class DeepToolExecutor {
         },
         externalSource: sourceMessages.length > 0 ? args.externalSource ?? null : null,
       },
-      confirmationRequired:
-        "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a atualização.",
+      executionAuthorized: isExplicitTicketUpdateRequest(operator.messageBody),
+      confirmationRequired: isExplicitTicketUpdateRequest(operator.messageBody)
+        ? "A solicitação atual já autoriza esta atualização; prossiga usando o mesmo operatorMessageId."
+        : "Apresente esta prévia ao operador e aguarde uma nova mensagem confirmando explicitamente a atualização.",
     };
     return {
       requestId: request.requestId,
@@ -1365,11 +1633,19 @@ export class DeepToolExecutor {
     }
     const args = applyThreadmarkTicketUpdateDraftSchema.parse(rawArguments);
     const operator = findThreadmarkAiOperator(this.database, args.confirmationMessageId);
-    if (!isExplicitTicketUpdateConfirmation(operator.messageBody)) {
+    const retriesAuthorizedUpdate =
+      isRetryInstruction(operator.messageBody) &&
+      hasPriorOperatorInstruction(
+        this.database,
+        operator.threadId,
+        args.confirmationMessageId,
+        isExplicitTicketUpdateRequest,
+      );
+    if (!isExplicitTicketUpdateConfirmation(operator.messageBody) && !retriesAuthorizedUpdate) {
       throw new Error("A mensagem atual não confirma explicitamente a atualização do ticket.");
     }
     const draft = this.database.prepare(
-      `SELECT id, thread_id, ticket_id, title, summary, priority,
+      `SELECT id, thread_id, operator_message_id, ticket_id, title, summary, priority,
               add_category_ids_json, remove_category_ids_json, base_updated_at,
               base_category_ids_json, state, created_by, created_at,
               message_ids_json, source_messages_json,
@@ -1379,7 +1655,13 @@ export class DeepToolExecutor {
     if (!draft || draft.thread_id !== operator.threadId) {
       throw new Error("O rascunho não pertence a esta conversa do Threadmark AI.");
     }
-    if (Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)) {
+    const currentInstructionAuthorized =
+      draft.operator_message_id === args.confirmationMessageId &&
+      (isExplicitTicketUpdateRequest(operator.messageBody) || retriesAuthorizedUpdate);
+    if (
+      !currentInstructionAuthorized &&
+      Date.parse(operator.messageCreatedAt) < Date.parse(draft.created_at)
+    ) {
       throw new Error("A confirmação precisa ser posterior à prévia da atualização.");
     }
     const current = this.supportStore.getTicketDetail(draft.ticket_id);
@@ -1961,6 +2243,7 @@ async function searchFiles(
     env: minimalCommandEnvironment(),
     timeoutMs,
     maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+    maxOutputLines: args.maxResults,
     signal,
   });
   const lines = content.split("\n").filter(Boolean).slice(0, args.maxResults);
@@ -2320,6 +2603,8 @@ async function runCommand(request: CommandRequest): Promise<string> {
     const stderr: Buffer[] = [];
     let total = 0;
     let exceeded = false;
+    let lineLimitReached = false;
+    let stdoutLineCount = 0;
     let timedOut = false;
     let aborted = false;
     let settled = false;
@@ -2339,17 +2624,31 @@ async function runCommand(request: CommandRequest): Promise<string> {
     request.signal?.addEventListener("abort", abortListener, { once: true });
     if (request.signal?.aborted) abortListener();
 
-    const collect = (target: Buffer[], chunk: Buffer) => {
-      total += chunk.byteLength;
+    const collect = (target: Buffer[], chunk: Buffer, stdout: boolean) => {
+      if (stdout && lineLimitReached) return;
+      let collectedChunk = chunk;
+      if (stdout && request.maxOutputLines && request.maxOutputLines > 0) {
+        for (let index = 0; index < chunk.length; index += 1) {
+          if (chunk[index] !== 10) continue;
+          stdoutLineCount += 1;
+          if (stdoutLineCount >= request.maxOutputLines) {
+            collectedChunk = chunk.subarray(0, index + 1);
+            lineLimitReached = true;
+            break;
+          }
+        }
+      }
+      total += collectedChunk.byteLength;
       if (total > request.maxOutputBytes) {
         exceeded = true;
         child.kill("SIGKILL");
         return;
       }
-      target.push(chunk);
+      target.push(collectedChunk);
+      if (lineLimitReached) child.kill("SIGKILL");
     };
-    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
-    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk, true));
+    child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk, false));
     child.once("error", (error) => {
       if (settled) return;
       settled = true;
@@ -2363,6 +2662,9 @@ async function runCommand(request: CommandRequest): Promise<string> {
       if (aborted) return reject(request.signal?.reason ?? new Error("A operação foi cancelada."));
       if (timedOut) return reject(new Error("A ferramenta excedeu o limite de tempo."));
       if (exceeded) return reject(new Error("A ferramenta excedeu o limite de saída."));
+      if (lineLimitReached) {
+        return resolve(Buffer.concat(stdout).toString("utf8").trim());
+      }
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
       if (code !== 0 && code !== 1) {
         return reject(new Error(errorText || `A ferramenta encerrou com código ${code}.`));
@@ -2379,6 +2681,7 @@ async function runCommand(request: CommandRequest): Promise<string> {
 interface ThreadmarkAiTicketDraftRow {
   id: string;
   thread_id: string;
+  operator_message_id: string;
   group_id: string;
   title: string;
   summary: string;
@@ -2405,6 +2708,7 @@ interface ExternalTicketSourceMessage {
 interface ThreadmarkAiTicketUpdateDraftRow {
   id: string;
   thread_id: string;
+  operator_message_id: string;
   ticket_id: string;
   title: string | null;
   summary: string | null;
@@ -2479,11 +2783,97 @@ function findActiveTicketGroup(
 }
 
 function isExplicitTicketConfirmation(message: string): boolean {
-  return isAffirmativePreviewConfirmation(message);
+  return isAffirmativePreviewConfirmation(message) || isExplicitTicketCreationRequest(message);
 }
 
 function isExplicitTicketUpdateConfirmation(message: string): boolean {
-  return isAffirmativePreviewConfirmation(message);
+  return isAffirmativePreviewConfirmation(message) || isExplicitTicketUpdateRequest(message);
+}
+
+function hasPriorOperatorInstruction(
+  database: SupportDatabase,
+  threadId: string,
+  currentOperatorMessageId: string,
+  predicate: (message: string) => boolean,
+  successfulAction?: { toolId: string; operation: string },
+): boolean {
+  const current = database.prepare(
+    `SELECT rowid AS message_order
+     FROM investigation_thread_messages
+     WHERE id = ? AND thread_id = ? AND role = 'operator'`,
+  ).get(currentOperatorMessageId, threadId) as { message_order: number } | undefined;
+  if (!current) return false;
+  const previous = database.prepare(
+    `SELECT rowid AS message_order, body
+     FROM investigation_thread_messages
+     WHERE thread_id = ? AND role = 'operator' AND rowid < ?
+     ORDER BY rowid DESC
+     LIMIT 12`,
+  ).all(threadId, current.message_order) as Array<{ message_order: number; body: string }>;
+  for (const message of previous) {
+    const normalized = normalizedActionText(message.body);
+    if (/\b(?:cancela|cancelar|pare|parar)\b/.test(normalized)) return false;
+    if (!predicate(message.body)) continue;
+    if (successfulAction) {
+      const alreadyCompleted = database.prepare(
+        `SELECT 1
+         FROM investigation_thread_tool_executions execution
+         JOIN investigation_thread_jobs job ON job.id = execution.job_id
+         JOIN investigation_thread_messages operator_message
+           ON operator_message.id = job.operator_message_id
+         WHERE job.thread_id = ?
+           AND operator_message.rowid >= ?
+           AND operator_message.rowid < ?
+           AND execution.tool_id = ?
+           AND execution.operation = ?
+           AND execution.status = 'success'
+         LIMIT 1`,
+      ).get(
+        threadId,
+        message.message_order,
+        current.message_order,
+        successfulAction.toolId,
+        successfulAction.operation,
+      );
+      if (alreadyCompleted) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+function normalizedActionText(message: string): string {
+  return message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isExplicitTicketCreationRequest(message: string): boolean {
+  const normalized = normalizedActionText(message);
+  if (blocksExplicitAction(normalized)) return false;
+  const action = "(?:crie|cria|abra|abre|gere|gera|registre|registra|cadastre|cadastra)";
+  const requestedAction = "(?:(?:pode|preciso|quero|gostaria|vamos|por favor)(?: que (?:voce )?)? )?(?:criar|abrir|gerar|registrar|cadastrar)";
+  const object = "(?:ticket|chamado|card)";
+  return new RegExp(`\\b(?:${action}|${requestedAction})\\b.{0,80}\\b${object}\\b`).test(normalized) ||
+    new RegExp(`\\b${object}\\b.{0,80}\\b(?:${action}|${requestedAction})\\b`).test(normalized);
+}
+
+function isExplicitTicketUpdateRequest(message: string): boolean {
+  const normalized = normalizedActionText(message);
+  if (blocksExplicitAction(normalized)) return false;
+  const action = "(?:anexe|vincule|atribua|atualize|altere|mude|adicione|inclua|remova|arquive|cancele)";
+  const requestedAction = "(?:(?:pode|preciso|quero|gostaria|vamos|por favor)(?: que (?:voce )?)? )?(?:anexar|vincular|atribuir|atualizar|alterar|mudar|adicionar|incluir|remover|arquivar|cancelar)";
+  return new RegExp(`\\b(?:${action}|${requestedAction})\\b.{0,100}\\b(?:mensagens?|categorias?|ticket|chamado|titulo|descricao|prioridade|responsavel|status)\\b`).test(normalized);
+}
+
+function blocksExplicitAction(normalized: string): boolean {
+  return /\b(?:nao|nunca)\b.{0,30}\b(?:crie|criar|abra|abrir|gere|gerar|registre|registrar|cadastre|cadastrar|envie|enviar|execute|executar|publique|publicar|altere|alterar|atualize|atualizar|adicione|adicionar|remova|remover|exclua|excluir)\b/.test(normalized) ||
+    /^(?:como|onde|quando|qual|por que|porque)\b/.test(normalized) ||
+    /\b(?:devo|deveria|seria possivel|e possivel|pode me explicar|me explique|quero saber|gostaria de saber|o que aconteceria)\b/.test(normalized);
 }
 
 function parseJsonStringArray(value: string): string[] {
@@ -2622,6 +3012,37 @@ function normalizeExternalTicketSourceMessages(
   });
 }
 
+function externalTicketSourceMessagesFromIntercom(
+  value: unknown,
+  fallbackOccurredAt: string,
+): ExternalTicketSourceMessage[] {
+  const conversation = asRecord(value);
+  const candidates: unknown[] = [conversation.source];
+  if (Array.isArray(conversation.parts)) candidates.push(...conversation.parts);
+  return normalizeExternalTicketSourceMessages(
+    candidates.flatMap((candidate) => {
+      const message = asRecord(candidate);
+      const body = limitedIntercomText(message.body, 20_000)?.trim();
+      const id = limitedString(message.id, 200)?.trim();
+      if (!id || !body) return [];
+      const author = asRecord(message.author);
+      const authorType = limitedString(author.type, 50)?.toLocaleLowerCase("pt-BR") ?? "";
+      const authorRole = ["contact", "lead", "user"].includes(authorType)
+        ? "customer" as const
+        : "support" as const;
+      return [{
+        id,
+        author: limitedString(author.name, 200)?.trim() ||
+          (authorRole === "customer" ? "Cliente" : "Equipe de suporte"),
+        authorRole,
+        body,
+        occurredAt: limitedString(message.createdAt, 100) ?? fallbackOccurredAt,
+      }];
+    }),
+    fallbackOccurredAt,
+  ).slice(0, 100);
+}
+
 function resolveNewExternalTicketSourceMessages(
   database: SupportDatabase,
   ticketId: string,
@@ -2696,6 +3117,19 @@ function validateAiCategorySelection(
       throw new Error(`A classificação automática permite no máximo ${maximum} categoria(s) da faceta ${facet}.`);
     }
   }
+}
+
+function normalizeAiCategorySelection(
+  categories: ThreadmarkTicketCategory[],
+): ThreadmarkTicketCategory[] {
+  const counts = new Map<ThreadmarkTicketCategory["facet"], number>();
+  return categories.filter((category) => {
+    const count = counts.get(category.facet) ?? 0;
+    const maximum = category.facet === "platform" ? 3 : 1;
+    if (count >= maximum) return false;
+    counts.set(category.facet, count + 1);
+    return true;
+  });
 }
 
 function successfulCreatedTicketResult(
@@ -2795,8 +3229,9 @@ function successfulUpdatedTicketResult(
 
 function buildIntercomSearch(query: string, limit: number): Record<string, unknown> {
   const filters: Array<Record<string, unknown>> = [
-    { field: "source.author.name", operator: "=", value: query },
-    { field: "source.subject", operator: "=", value: query },
+    { field: "source.author.name", operator: "~", value: query },
+    { field: "source.subject", operator: "~", value: query },
+    { field: "source.body", operator: "~", value: query },
   ];
   if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(query)) {
     filters.push({ field: "source.author.email", operator: "=", value: query });
@@ -2881,6 +3316,80 @@ function sanitizeIntercomConversation(value: unknown): Record<string, unknown> {
       };
     }),
   };
+}
+
+async function enrichIntercomSearchResult(
+  searchResult: Record<string, unknown>,
+  contentQuery: string,
+  loadConversation: (conversationId: string) => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const candidates = Array.isArray(searchResult.conversations)
+    ? searchResult.conversations.slice(0, 10).map(asRecord)
+    : [];
+  const hydrated = await Promise.all(candidates.map(async (candidate) => {
+    const id = limitedString(candidate.id, 200);
+    if (!id) return null;
+    try {
+      return { candidate, conversation: await loadConversation(id) };
+    } catch {
+      return null;
+    }
+  }));
+  const query = normalizedLookupText(contentQuery);
+  const tokens = [...new Set(
+    query.split(" ").filter((token) => token.length > 2),
+  )];
+  const matches = hydrated.flatMap((entry, candidateIndex) => {
+    if (!entry) return [];
+    const messages = intercomConversationTextParts(entry.conversation);
+    const normalizedMessages = messages.map((message) => ({
+      ...message,
+      normalized: normalizedLookupText(message.body),
+    }));
+    const joined = normalizedMessages.map((message) => message.normalized).join(" ");
+    const matchedTerms = tokens.filter((token) => joined.includes(token));
+    const exactPhrase = query.length > 0 && joined.includes(query);
+    if (!exactPhrase && matchedTerms.length === 0) return [];
+    const excerpts = normalizedMessages
+      .filter((message) => exactPhrase || matchedTerms.some((token) => message.normalized.includes(token)))
+      .slice(0, 6)
+      .map((message) => ({
+        author: message.author,
+        occurredAt: message.occurredAt,
+        body: truncatePlainText(message.body, 800),
+      }));
+    return [{
+      id: entry.candidate.id,
+      title: entry.candidate.title,
+      contact: entry.candidate.contact,
+      updatedAt: entry.candidate.updatedAt,
+      score: (exactPhrase ? 1_000 : 0) + matchedTerms.length * 100 - candidateIndex,
+      matchedTerms,
+      excerpts,
+    }];
+  }).sort((left, right) => right.score - left.score);
+  return {
+    ...searchResult,
+    contentQuery,
+    contentMatches: matches,
+  };
+}
+
+function intercomConversationTextParts(
+  conversation: Record<string, unknown>,
+): Array<{ author: string | null; occurredAt: string | null; body: string }> {
+  const source = asRecord(conversation.source);
+  const parts = Array.isArray(conversation.parts) ? conversation.parts.map(asRecord) : [];
+  return [source, ...parts].flatMap((part) => {
+    const body = limitedString(part.body, 20_000);
+    if (!body) return [];
+    const author = asRecord(part.author);
+    return [{
+      author: limitedString(author.name, 300),
+      occurredAt: limitedString(part.createdAt, 100),
+      body,
+    }];
+  });
 }
 
 function sanitizeIntercomCurrentAdmin(value: unknown): Record<string, unknown> {
@@ -2972,6 +3481,86 @@ function finiteNumber(value: unknown): number | null {
 function intercomTimestamp(value: unknown): string | null {
   const seconds = finiteNumber(value);
   return seconds === null ? null : new Date(seconds * 1_000).toISOString();
+}
+
+function normalizedLookupText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rankTextMatches<T>(
+  values: readonly T[],
+  query: string,
+  searchableText: (value: T) => string,
+): T[] {
+  const normalizedQuery = normalizedLookupText(query);
+  const compactQuery = normalizedQuery.replaceAll(" ", "");
+  const tokens = normalizedQuery.split(" ").filter((token) => token.length > 2);
+  return values
+    .map((value, index) => {
+      const normalizedValue = normalizedLookupText(searchableText(value));
+      const compactValue = normalizedValue.replaceAll(" ", "");
+      let score = normalizedValue === normalizedQuery ? 200 : 0;
+      if (compactQuery && compactValue.includes(compactQuery)) score += 120;
+      if (compactValue && compactQuery.includes(compactValue)) score += 60;
+      for (const token of tokens) {
+        if (normalizedValue.includes(token)) score += 20;
+      }
+      return { value, index, score };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((candidate) => candidate.value);
+}
+
+function searchThreadmarkTicketGroups(
+  database: SupportDatabase,
+  query: string,
+  limit: number,
+): Array<Record<string, unknown>> {
+  const rows = database.prepare(
+    `SELECT support_group.id, support_group.subject, client.name AS client_name,
+            support_group.updated_at,
+            (SELECT COUNT(*) FROM messages message
+             WHERE message.group_id = support_group.id) AS message_count,
+            (SELECT COUNT(*) FROM tickets ticket
+             WHERE ticket.group_id = support_group.id) AS ticket_count,
+            COALESCE((
+              SELECT GROUP_CONCAT(participant.display_name, ' ')
+              FROM group_participants membership
+              JOIN participants participant ON participant.id = membership.participant_id
+              WHERE membership.group_id = support_group.id AND membership.active = 1
+            ), '') AS participant_names
+     FROM whatsapp_groups support_group
+     JOIN clients client ON client.id = support_group.client_id
+     WHERE client.ignored_at IS NULL
+     ORDER BY support_group.updated_at DESC, support_group.id DESC`,
+  ).all() as Array<{
+    id: string;
+    subject: string;
+    client_name: string;
+    updated_at: string;
+    message_count: number;
+    ticket_count: number;
+    participant_names: string;
+  }>;
+  return rankTextMatches(
+    rows,
+    query,
+    (row) => `${row.subject} ${row.client_name} ${row.participant_names}`,
+  ).slice(0, limit).map((row) => ({
+    id: row.id,
+    groupName: row.subject,
+    clientName: row.client_name,
+    messageCount: row.message_count,
+    ticketCount: row.ticket_count,
+    updatedAt: row.updated_at,
+  }));
 }
 
 function searchThreadmarkContext(
@@ -3205,9 +3794,9 @@ async function boundedFetchText(
       const current = await reader.read();
       if (current.done) break;
       bytes += current.value.byteLength;
-      if (bytes > MAX_TOOL_OUTPUT_BYTES) {
+      if (bytes > MAX_REMOTE_RESPONSE_BYTES) {
         await reader.cancel();
-        throw new Error("O serviço externo excedeu o limite de saída.");
+        throw new Error("O serviço externo excedeu o limite seguro de resposta.");
       }
       chunks.push(current.value);
     }
@@ -3316,10 +3905,34 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function localToolModelId(tool: LocalToolDto, allTools: LocalToolDto[]): string {
+  const slug = modelIdSlug(tool.name) || "configured";
+  const base = `${LOCAL_TOOL_PREFIX}${tool.type}:${slug}`;
+  const collisions = allTools.filter((candidate) =>
+    candidate.type === tool.type && (modelIdSlug(candidate.name) || "configured") === slug
+  );
+  return collisions.length > 1 ? `${base}:${tool.id.slice(0, 8)}` : base;
+}
+
+function modelIdSlug(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLocaleLowerCase("pt-BR")
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 48);
+}
+
 function mcpSchemaExample(schema: Record<string, unknown>): Record<string, unknown> {
   const properties = isRecord(schema.properties) ? schema.properties : {};
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((name): name is string => typeof name === "string")
+      : [],
+  );
   return Object.fromEntries(
-    Object.entries(properties).slice(0, 20).map(([name, candidate]) => {
+    Object.entries(properties).filter(([name]) => required.has(name)).slice(0, 20).map(([name, candidate]) => {
       const property = isRecord(candidate) ? candidate : {};
       if (Array.isArray(property.enum) && property.enum.length) return [name, property.enum[0]];
       if (property.type === "boolean") return [name, false];
@@ -3331,15 +3944,140 @@ function mcpSchemaExample(schema: Record<string, unknown>): Record<string, unkno
   );
 }
 
-function isExplicitExternalActionRequest(message: string): boolean {
-  const normalized = message
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("pt-BR")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (/\b(?:nao|nunca)\s+(?:crie|envie|execute|publique|altere|atualize)\b/.test(normalized)) {
-    return false;
+function mcpSchemaGuidance(schema: Record<string, unknown>): string {
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((name): name is string => typeof name === "string")
+      : [],
+  );
+  const describe = ([name, candidate]: [string, unknown]) => {
+    const property = isRecord(candidate) ? candidate : {};
+    const type = typeof property.type === "string" ? property.type : "valor";
+    const values = Array.isArray(property.enum)
+      ? `=${property.enum.filter((value) => typeof value === "string" || typeof value === "number").slice(0, 8).join("|")}`
+      : "";
+    return `${name}:${type}${values}`;
+  };
+  const entries = Object.entries(properties).slice(0, 30);
+  const mandatory = entries.filter(([name]) => required.has(name)).map(describe);
+  const optional = entries.filter(([name]) => !required.has(name)).map(describe);
+  return [
+    mandatory.length ? `Campos obrigatórios: ${mandatory.join(", ")}.` : "Sem campos obrigatórios.",
+    optional.length ? ` Campos opcionais: ${optional.join(", ")}.` : "",
+    " Envie somente campos necessários e conhecidos; omita valores nulos, placeholders e filtros não confirmados.",
+  ].join("");
+}
+
+interface ExternalActionTarget {
+  appName: string;
+  operation: string;
+  title?: string;
+}
+
+function isExplicitExternalActionRequest(
+  message: string,
+  target: ExternalActionTarget,
+): boolean {
+  const normalized = normalizedActionText(message);
+  if (blocksExplicitAction(normalized)) return false;
+  const operation = normalizedActionText(target.operation).replace(/\s+/g, "_");
+  const requestedPrefix = "(?:pode|preciso|quero|gostaria|vamos|por favor)(?: que (?:voce )?)? ";
+  const actionPatterns: Array<[RegExp, RegExp]> = [
+    [/^create_?/u, /\b(?:crie|cria)\b/u],
+    [/^add_?/u, /\b(?:adicione|adiciona|inclua|inclui)\b/u],
+    [/^register_?/u, /\b(?:registre|registra|cadastre|cadastra)\b/u],
+    [/^open_?/u, /\b(?:abra|abre)\b/u],
+    [/^send_?/u, /\b(?:envie|envia|mande|manda)\b/u],
+    [/^update_?/u, /\b(?:atualize|atualiza)\b/u],
+    [/^edit_?/u, /\b(?:edite|edita)\b/u],
+    [/^set_?/u, /\b(?:defina|define)\b/u],
+    [/^delete_?/u, /\b(?:exclua|exclui|delete|deleta)\b/u],
+    [/^remove_?/u, /\b(?:remova|remove)\b/u],
+    [/^archive_?/u, /\b(?:arquive|arquiva)\b/u],
+    [/^publish_?/u, /\b(?:publique|publica)\b/u],
+    [/^assign_?/u, /\b(?:atribua|atribui)\b/u],
+    [/^move_?/u, /\b(?:mova|move)\b/u],
+    [/^link_?/u, /\b(?:vincule|vincula)\b/u],
+    [/^attach_?/u, /\b(?:anexe|anexa)\b/u],
+    [/^activate_?/u, /\b(?:ative|ativa)\b/u],
+    [/^enable_?/u, /\b(?:habilite|habilita)\b/u],
+    [/^pause_?/u, /\b(?:pause|pausa)\b/u],
+    [/^disable_?/u, /\b(?:desative|desativa)\b/u],
+    [/^sync_?/u, /\b(?:sincronize|sincroniza)\b/u],
+  ];
+  const infinitivePatterns: Array<[RegExp, string]> = [
+    [/^create_?/u, "criar"],
+    [/^add_?/u, "(?:adicionar|incluir)"],
+    [/^register_?/u, "(?:registrar|cadastrar)"],
+    [/^open_?/u, "abrir"],
+    [/^send_?/u, "(?:enviar|mandar)"],
+    [/^update_?/u, "atualizar"],
+    [/^edit_?/u, "editar"],
+    [/^set_?/u, "definir"],
+    [/^delete_?/u, "(?:excluir|deletar)"],
+    [/^remove_?/u, "remover"],
+    [/^archive_?/u, "arquivar"],
+    [/^publish_?/u, "publicar"],
+    [/^assign_?/u, "atribuir"],
+    [/^move_?/u, "mover"],
+    [/^link_?/u, "vincular"],
+    [/^attach_?/u, "anexar"],
+    [/^activate_?/u, "ativar"],
+    [/^enable_?/u, "habilitar"],
+    [/^pause_?/u, "pausar"],
+    [/^disable_?/u, "desativar"],
+    [/^sync_?/u, "sincronizar"],
+  ];
+  const imperative = actionPatterns.find(([pattern]) => pattern.test(operation))?.[1] ??
+    /\b(?:execute|executa)\b/u;
+  const infinitive = infinitivePatterns.find(([pattern]) => pattern.test(operation))?.[1] ??
+    "executar";
+  const actionRequested = imperative.test(normalized) ||
+    new RegExp(`\\b${requestedPrefix}${infinitive}\\b`, "u").test(normalized);
+  if (!actionRequested) return false;
+
+  const genericTerms = new Set([
+    "app", "api", "mcp", "acao", "acoes", "ferramenta", "ferramentas",
+    "create", "add", "register", "open", "send", "update", "edit", "set",
+    "delete", "remove", "archive", "publish", "assign", "move", "link",
+    "attach", "activate", "enable", "pause", "disable", "sync", "execute",
+    "request", "criar", "abrir", "registrar", "cadastrar", "adicionar", "incluir",
+    "enviar", "mandar", "alterar", "atualizar", "editar", "definir", "remover",
+    "excluir", "deletar", "arquivar", "publicar", "atribuir", "mover", "vincular",
+    "anexar", "ativar", "habilitar", "pausar", "desativar", "sincronizar",
+    "via", "do", "da", "de", "no", "na", "para", "e",
+  ]);
+  const appText = normalizedActionText(target.appName);
+  const objectText = normalizedActionText(
+    `${target.title ?? ""} ${target.operation.replaceAll("_", " ")}`,
+  );
+  const objectTerms = objectText.split(" ").filter(
+    (term) => term.length >= 4 && !genericTerms.has(term),
+  );
+  if (operation === "create_article") {
+    objectTerms.push("artigo", "documentacao", "rascunho");
+  } else if (operation === "send_message") {
+    objectTerms.push("mensagem");
+  } else if (objectTerms.includes("issue")) {
+    objectTerms.push("card", "bug");
   }
-  return /\b(?:pode\s+|por\s+favor\s+)?(?:crie|criar|envie|enviar|execute|executar|publique|publicar|altere|alterar|atualize|atualizar)\b/.test(normalized);
+  const objectStems = [...new Set(objectTerms)].map(actionTargetStem).filter(Boolean);
+  const appTerms = appText.split(" ").filter(
+    (term) => term.length >= 3 && !genericTerms.has(term),
+  );
+  const distinctiveAppStems = [...new Set(appTerms.map(actionTargetStem))]
+    .filter((term) => term && !objectStems.includes(term));
+  const appMatched = distinctiveAppStems.length > 0
+    ? distinctiveAppStems.some((term) => normalized.includes(term))
+    : appText.length >= 3 && normalized.includes(appText);
+  const objectMatched = objectStems.length === 0 || objectStems.some((term) =>
+    normalized.includes(term)
+  );
+  return appMatched && objectMatched;
+}
+
+function actionTargetStem(term: string): string {
+  const stem = term.length > 5 ? term.replace(/(?:oes|es|s)$/u, "") : term;
+  return stem.length >= 3 ? stem : "";
 }

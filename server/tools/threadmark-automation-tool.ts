@@ -17,7 +17,10 @@ import type {
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
-import { isAffirmativePreviewConfirmation } from "../agent/confirmation-intent.js";
+import {
+  isAffirmativePreviewConfirmation,
+  isRetryInstruction,
+} from "../agent/confirmation-intent.js";
 
 export const THREADMARK_AUTOMATIONS_TOOL_ID = "threadmark-automations";
 
@@ -139,7 +142,7 @@ export class ThreadmarkAutomationTool {
       name: TOOL_NAME,
       type: "knowledge",
       description:
-        "Consulta, valida e prepara fluxos internos. Escritas exigem proprietário/admin e confirmação explícita em duas etapas.",
+        "Consulta, valida e prepara fluxos internos. Escritas exigem proprietário/admin e uma tarefa explicitamente autorizada.",
       scope:
         "Automações persistidas no SQLite local. Nunca envia WhatsApp; testes são dry-run e não executam ações.",
       operations: [
@@ -147,21 +150,29 @@ export class ThreadmarkAutomationTool {
           name: "get_automation_capabilities",
           description: "Lista gatilhos, condições, ações, usuários e apps realmente disponíveis.",
           argumentsExample: "{}",
+          effect: "read",
+          authorization: "none",
         },
         {
           name: "list_automations",
           description: "Lista automações existentes, com status e identificadores reais.",
           argumentsExample: '{"status":"active","query":"SLA","limit":30}',
+          effect: "read",
+          authorization: "none",
         },
         {
           name: "get_automation",
           description: "Carrega a definição atual de uma automação pelo ID.",
           argumentsExample: '{"automationId":"<id encontrado>"}',
+          effect: "read",
+          authorization: "none",
         },
         {
           name: "test_automation",
           description: "Valida a automação em dry-run sem disparar ações nem persistir execução.",
           argumentsExample: '{"automationId":"<id encontrado>"}',
+          effect: "read",
+          authorization: "none",
         },
         {
           name: "prepare_automation_draft",
@@ -169,19 +180,26 @@ export class ThreadmarkAutomationTool {
             "Valida e persiste uma proposta completa de criação ou edição, sem alterar a automação real.",
           argumentsExample:
             '{"operatorMessageId":"<currentOperatorMessageId>","automationId":null,"name":"Nome","description":"Objetivo","definition":{"nodes":[],"edges":[]}}',
+          effect: "prepare",
+          authorization: "none",
+          automaticFollowUpOperation: "apply_automation_draft",
         },
         {
           name: "apply_automation_draft",
           description:
-            "Aplica uma proposta já apresentada. Exige uma mensagem posterior confirmando explicitamente.",
+            "Aplica uma proposta validada quando a tarefa ativa pediu criar ou editar; propostas meramente sugeridas exigem confirmação posterior.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id apresentado>"}',
+          effect: "write",
+          authorization: "task",
         },
         {
           name: "set_automation_status",
           description: "Ativa ou pausa uma automação existente com confirmação explícita atual.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","automationId":"<id>","status":"active"}',
+          effect: "write",
+          authorization: "task",
         },
         {
           name: "delete_automation",
@@ -189,6 +207,8 @@ export class ThreadmarkAutomationTool {
             "Exclui uma automação sem histórico ou arquiva quando há execuções auditáveis. Exige confirmação explícita atual.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","automationId":"<id>"}',
+          effect: "write",
+          authorization: "task",
         },
       ],
     };
@@ -339,6 +359,18 @@ export class ThreadmarkAutomationTool {
     const target = args.automationId ? this.workflows.getWorkflow(args.automationId) : null;
     if (target?.status === "archived") throw new Error("Uma automação arquivada não pode ser editada.");
     const intent = target ? "update" : "create";
+    const executionAuthorized =
+      explicitAutomationDraftRequest(operator.body, intent) ||
+      (
+        isRetryInstruction(operator.body) &&
+        hasPriorAutomationInstruction(
+          this.database,
+          operator.threadId,
+          operator.messageId,
+          intent,
+          { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+        )
+      );
     const fingerprint = JSON.stringify({
       threadId: operator.threadId,
       operatorMessageId: args.operatorMessageId,
@@ -376,8 +408,10 @@ export class ThreadmarkAutomationTool {
         intent,
         target: target ? workflowSummary(target) : null,
         preview: { name: args.name, description: args.description ?? null, definition },
-        confirmationRequired:
-          "Apresente esta proposta e aguarde uma nova mensagem do operador confirmando explicitamente antes de aplicar.",
+        executionAuthorized,
+        confirmationRequired: executionAuthorized
+          ? "A tarefa ativa já autoriza aplicar esta proposta usando a mensagem atual."
+          : "Apresente esta proposta e aguarde uma nova mensagem do operador confirmando explicitamente antes de aplicar.",
       },
       `Proposta de ${intent === "create" ? "criação" : "edição"} validada; a automação real não foi alterada.`,
       executedAt,
@@ -390,14 +424,29 @@ export class ThreadmarkAutomationTool {
     executedAt: string,
   ): InvestigationToolResult {
     const operator = this.requireMutationOperator(args.confirmationMessageId);
-    if (!explicitApplyConfirmation(operator.body)) {
-      throw new Error("A mensagem atual não confirma explicitamente a aplicação da proposta de automação.");
-    }
     const draft = this.database.prepare(`
       SELECT * FROM threadmark_ai_automation_drafts WHERE id = ?
     `).get(args.draftId) as AutomationDraftRow | undefined;
     if (!draft || draft.thread_id !== operator.threadId) {
       throw new Error("A proposta não pertence a esta conversa do Threadmark AI.");
+    }
+    const currentTaskAuthorized =
+      operator.messageId === draft.operator_message_id &&
+      (
+        explicitAutomationDraftRequest(operator.body, draft.intent) ||
+        (
+          isRetryInstruction(operator.body) &&
+          hasPriorAutomationInstruction(
+            this.database,
+            operator.threadId,
+            operator.messageId,
+            draft.intent,
+            { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+          )
+        )
+      );
+    if (!currentTaskAuthorized && !explicitApplyConfirmation(operator.body)) {
+      throw new Error("A tarefa atual não autoriza a aplicação da proposta de automação.");
     }
     const sourceMessage = this.database.prepare(`
       SELECT rowid AS message_order
@@ -406,8 +455,7 @@ export class ThreadmarkAutomationTool {
     `).get(draft.operator_message_id) as { message_order: number } | undefined;
     if (
       !sourceMessage ||
-      operator.messageId === draft.operator_message_id ||
-      operator.messageOrder <= sourceMessage.message_order
+      (!currentTaskAuthorized && operator.messageOrder <= sourceMessage.message_order)
     ) {
       throw new Error("A confirmação precisa ser enviada depois da apresentação da proposta.");
     }
@@ -457,7 +505,19 @@ export class ThreadmarkAutomationTool {
     executedAt: string,
   ): InvestigationToolResult {
     const operator = this.requireMutationOperator(args.confirmationMessageId);
-    if (!explicitStatusConfirmation(operator.body, args.status)) {
+    const taskAuthorized =
+      explicitStatusConfirmation(operator.body, args.status) ||
+      (
+        isRetryInstruction(operator.body) &&
+        hasPriorAutomationOperatorInstruction(
+          this.database,
+          operator.threadId,
+          operator.messageId,
+          (body) => explicitStatusConfirmation(body, args.status),
+          { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "set_automation_status" },
+        )
+      );
+    if (!taskAuthorized) {
       throw new Error(`A mensagem atual não confirma explicitamente ${args.status === "active" ? "a ativação" : "a pausa"} da automação.`);
     }
     const current = this.workflows.getWorkflow(args.automationId);
@@ -472,7 +532,19 @@ export class ThreadmarkAutomationTool {
     executedAt: string,
   ): InvestigationToolResult {
     const operator = this.requireMutationOperator(args.confirmationMessageId);
-    if (!explicitDeleteConfirmation(operator.body)) {
+    const taskAuthorized =
+      explicitDeleteConfirmation(operator.body) ||
+      (
+        isRetryInstruction(operator.body) &&
+        hasPriorAutomationOperatorInstruction(
+          this.database,
+          operator.threadId,
+          operator.messageId,
+          explicitDeleteConfirmation,
+          { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "delete_automation" },
+        )
+      );
+    if (!taskAuthorized) {
       throw new Error("A mensagem atual não confirma explicitamente a exclusão da automação.");
     }
     const workflow = this.workflows.getWorkflow(args.automationId);
@@ -685,6 +757,82 @@ function nodeLabel(node: AutomationNode): string {
 
 function explicitApplyConfirmation(message: string): boolean {
   return isAffirmativePreviewConfirmation(message);
+}
+
+function explicitAutomationDraftRequest(
+  message: string,
+  intent: "create" | "update",
+): boolean {
+  const value = normalize(message);
+  const action = intent === "create"
+    ? /\b(criar|crie|cria|montar|monte|gerar|gere)\b/
+    : /\b(editar|edite|atualizar|atualize|alterar|altere|ajustar|ajuste)\b/;
+  return action.test(value) && /\b(automacao|fluxo)\b/.test(value);
+}
+
+function hasPriorAutomationInstruction(
+  database: SupportDatabase,
+  threadId: string,
+  currentMessageId: string,
+  intent: "create" | "update",
+  successfulAction?: { toolId: string; operation: string },
+): boolean {
+  return hasPriorAutomationOperatorInstruction(
+    database,
+    threadId,
+    currentMessageId,
+    (body) => explicitAutomationDraftRequest(body, intent),
+    successfulAction,
+  );
+}
+
+function hasPriorAutomationOperatorInstruction(
+  database: SupportDatabase,
+  threadId: string,
+  currentMessageId: string,
+  predicate: (message: string) => boolean,
+  successfulAction?: { toolId: string; operation: string },
+): boolean {
+  const current = database.prepare(
+    `SELECT rowid AS message_order FROM investigation_thread_messages
+     WHERE id = ? AND thread_id = ? AND role = 'operator'`,
+  ).get(currentMessageId, threadId) as { message_order: number } | undefined;
+  if (!current) return false;
+  const rows = database.prepare(
+    `SELECT rowid AS message_order, body FROM investigation_thread_messages
+     WHERE thread_id = ? AND role = 'operator' AND rowid < ?
+     ORDER BY rowid DESC LIMIT 12`,
+  ).all(threadId, current.message_order) as Array<{ message_order: number; body: string }>;
+  for (const row of rows) {
+    const value = normalize(row.body);
+    if (/\b(cancela|cancelar|pare|parar)\b/.test(value)) return false;
+    if (!predicate(row.body)) continue;
+    if (successfulAction) {
+      const alreadyCompleted = database.prepare(
+        `SELECT 1
+         FROM investigation_thread_tool_executions execution
+         JOIN investigation_thread_jobs job ON job.id = execution.job_id
+         JOIN investigation_thread_messages operator_message
+           ON operator_message.id = job.operator_message_id
+         WHERE job.thread_id = ?
+           AND operator_message.rowid >= ?
+           AND operator_message.rowid < ?
+           AND execution.tool_id = ?
+           AND execution.operation = ?
+           AND execution.status = 'success'
+         LIMIT 1`,
+      ).get(
+        threadId,
+        row.message_order,
+        current.message_order,
+        successfulAction.toolId,
+        successfulAction.operation,
+      );
+      if (alreadyCompleted) return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function explicitStatusConfirmation(message: string, status: "active" | "paused"): boolean {

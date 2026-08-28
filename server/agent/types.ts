@@ -317,7 +317,22 @@ export interface InvestigationToolDescriptor {
     name: string;
     description: string;
     argumentsExample: string;
+    /** Declarative policy enforced by the coordinator and again by the tool. */
+    effect?: "read" | "prepare" | "write";
+    authorization?: "none" | "task";
+    /** Optional write operation executed after a preview reports executionAuthorized=true. */
+    automaticFollowUpOperation?: string;
   }>;
+}
+
+export interface InvestigationActiveTask {
+  /** First operator message in the unfinished task, persisted in SQLite. */
+  rootOperatorMessageId: string;
+  objective: string;
+  /** Authentic operator directives only; assistant/tool content is never authority. */
+  operatorDirectives: Array<{ id: string; body: string; createdAt: string }>;
+  /** True for short commands that explicitly resume the unfinished task. */
+  continuation: boolean;
 }
 
 /** A request emitted by the model. Threadmark validates and executes it outside Codex. */
@@ -350,6 +365,7 @@ export interface InvestigationThreadInput {
   mode?: "ticket" | "workspace";
   currentOperatorMessageId: string;
   durableSummary: string;
+  activeTask?: InvestigationActiveTask | null;
   recentMessages: InvestigationThreadPromptMessage[];
   /** Recent operator images, current message first, bounded by the store. */
   images?: InvestigationThreadImage[];
@@ -379,6 +395,10 @@ export interface InvestigationThreadInput {
     maxToolOperations: number;
     usedToolOperations: number;
     forceConclusion: boolean;
+    cycle?: number;
+    maxCycles?: number;
+    /** The model tried to stop even though an authorized readonly path remains. */
+    readonlyContinuationRequired?: boolean;
   };
   /**
    * Trusted coordinator hook. It is never serialized into a provider prompt and

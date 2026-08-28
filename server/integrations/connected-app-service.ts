@@ -679,9 +679,25 @@ function normalizeMcpArguments(
   const properties = schema.properties;
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) return value;
   const result = { ...value };
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((name): name is string => typeof name === "string")
+      : [],
+  );
   for (const [name, property] of Object.entries(properties)) {
     if (!property || typeof property !== "object" || Array.isArray(property)) continue;
     const current = result[name];
+    if (
+      !required.has(name) &&
+      (
+        current === null ||
+        current === undefined ||
+        (typeof current === "string" && current.trim() === `<${name}>`)
+      )
+    ) {
+      delete result[name];
+      continue;
+    }
     const type = (property as { type?: unknown }).type;
     if ((type === "object" || type === "array") && typeof current === "string") {
       try {

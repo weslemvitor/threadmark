@@ -3,11 +3,18 @@ import test from "node:test";
 
 import type { CodexSupportAgent } from "../server/agent/codex-runner.js";
 import type { AiProviderSettingsService } from "../server/agent/provider-settings.js";
-import { ConfiguredSupportAgent, type DeepInvestigationToolBroker } from "../server/agent/provider-router.js";
+import {
+  availableToolsWithinBudget,
+  boundedToolResultsForPrompt,
+  ConfiguredSupportAgent,
+  type DeepInvestigationToolBroker,
+} from "../server/agent/provider-router.js";
 import type { SupportAgent } from "../server/agent/provider.js";
+import { investigationExecutionPolicy } from "../server/agent/investigation-routing.js";
 import type {
   InvestigationThreadInput,
   InvestigationToolRequest,
+  InvestigationToolResult,
 } from "../server/agent/types.js";
 import { createDatabase } from "../server/db/index.js";
 
@@ -153,8 +160,8 @@ test("conversa objetiva usa Terra e orçamento curto sem alterar a configuraçã
     await configured.investigateThread(quickInput);
     assert.equal(modelOverride, "gpt-5.6-terra");
     assert.equal(observedBudget?.workload, "quick");
-    assert.equal(observedBudget?.maxToolRounds, 3);
-    assert.equal(observedBudget?.maxToolOperations, 8);
+    assert.equal(observedBudget?.maxToolRounds, 8);
+    assert.equal(observedBudget?.maxToolOperations, 24);
   } finally {
     database.close();
   }
@@ -238,6 +245,207 @@ test("app conectado exige confirmação explícita da mensagem atual antes da ex
     assert.equal(turns, 2);
     assert.equal(brokerExecutions, 0);
     assert.equal(result.toolExecutions?.[0]?.status, "error");
+  } finally {
+    database.close();
+  }
+});
+
+test("ordem explícita conclui criação após a prévia sem depender de outra rodada do modelo", async () => {
+  const database = createDatabase(":memory:");
+  const executedOperations: string[] = [];
+  let modelTurns = 0;
+  const modelAgent = {
+    async investigateThread() {
+      modelTurns += 1;
+      if (modelTurns === 1) {
+        return {
+          assistantMessage: "Vou preparar o ticket.",
+          phase: "analysis" as const,
+          threadSummary: "Criação solicitada.",
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Preparar e criar.",
+          confidence: 0.9,
+          toolRequests: [{
+            requestId: "prepare-explicit-ticket",
+            toolId: "threadmark-context",
+            operation: "prepare_ticket_draft",
+            argumentsJson: "{}",
+            purpose: "Preparar o ticket solicitado.",
+          }],
+        };
+      }
+      assert.fail("o recibo confiável deve concluir sem outra rodada do modelo");
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "threadmark-context",
+      name: "Contexto do Threadmark",
+      type: "knowledge",
+      description: "Tickets locais",
+      scope: "SQLite",
+      operations: [{
+        name: "prepare_ticket_draft",
+        description: "Prepara",
+        argumentsExample: "{}",
+        effect: "prepare",
+        authorization: "none",
+        automaticFollowUpOperation: "create_ticket_from_draft",
+      }, {
+        name: "create_ticket_from_draft",
+        description: "Cria",
+        argumentsExample: "{}",
+        effect: "write",
+        authorization: "task",
+      }],
+    }],
+    async executeMany(requests) {
+      return requests.map((request) => {
+        executedOperations.push(request.operation);
+        return {
+          requestId: request.requestId,
+          toolId: request.toolId,
+          toolName: "Contexto do Threadmark",
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "success" as const,
+          summary: request.operation === "prepare_ticket_draft"
+            ? "Prévia preparada."
+            : "Ticket criado.",
+          content: request.operation === "prepare_ticket_draft"
+            ? JSON.stringify({ draftId: "draft-1", executionAuthorized: true })
+            : JSON.stringify({ created: true, ticket: { number: 241 } }),
+          reference: `tool:threadmark-context:${request.operation}`,
+          executedAt: "2026-08-28T17:00:00.000Z",
+        };
+      });
+    },
+  };
+  const current = input();
+  current.recentMessages[0]!.body = "Crie o ticket agora.";
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(modelTurns, 1);
+    assert.match(result.assistantMessage, /Ticket #241 criado/);
+    assert.deepEqual(executedOperations, [
+      "prepare_ticket_draft",
+      "create_ticket_from_draft",
+    ]);
+  } finally {
+    database.close();
+  }
+});
+
+test("ordem explícita aplica automaticamente a prévia de automação autorizada", async () => {
+  const database = createDatabase(":memory:");
+  const executedOperations: string[] = [];
+  let modelTurns = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      if (modelTurns === 1) {
+        return {
+          assistantMessage: "Vou preparar a automação.",
+          phase: "analysis" as const,
+          threadSummary: "Criação da automação solicitada.",
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Preparar e aplicar.",
+          confidence: 0.9,
+          toolRequests: [{
+            requestId: "prepare-explicit-automation",
+            toolId: "threadmark-automations",
+            operation: "prepare_automation_draft",
+            argumentsJson: JSON.stringify({ operatorMessageId: "operator-1" }),
+            purpose: "Preparar a automação solicitada.",
+          }],
+        };
+      }
+      assert.equal(current.toolResults?.at(-1)?.operation, "apply_automation_draft");
+      return {
+        assistantMessage: "Automação criada.",
+        phase: "conclusion" as const,
+        threadSummary: "Automação criada e auditada.",
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: null,
+        confidence: 1,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "threadmark-automations",
+      name: "Automações do Threadmark",
+      type: "knowledge",
+      description: "Fluxos internos",
+      scope: "SQLite",
+      operations: [{
+        name: "prepare_automation_draft",
+        description: "Prepara a automação.",
+        argumentsExample: "{}",
+        effect: "prepare",
+        authorization: "none",
+        automaticFollowUpOperation: "apply_automation_draft",
+      }, {
+        name: "apply_automation_draft",
+        description: "Aplica a automação.",
+        argumentsExample: "{}",
+        effect: "write",
+        authorization: "task",
+      }],
+    }],
+    async executeMany(requests) {
+      return requests.map((request) => {
+        executedOperations.push(request.operation);
+        return {
+          requestId: request.requestId,
+          toolId: request.toolId,
+          toolName: "Automações do Threadmark",
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "success" as const,
+          summary: request.operation === "prepare_automation_draft"
+            ? "Prévia de automação preparada."
+            : "Automação aplicada.",
+          content: request.operation === "prepare_automation_draft"
+            ? JSON.stringify({ draftId: "automation-draft-1", executionAuthorized: true })
+            : JSON.stringify({ draftId: "automation-draft-1", workflowId: "workflow-1" }),
+          reference: `tool:threadmark-automations:${request.operation}`,
+          executedAt: "2026-08-28T17:10:00.000Z",
+        };
+      });
+    },
+  };
+  const current = input();
+  current.recentMessages[0]!.body = "Crie essa automação agora.";
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(modelTurns, 2);
+    assert.deepEqual(executedOperations, [
+      "prepare_automation_draft",
+      "apply_automation_draft",
+    ]);
   } finally {
     database.close();
   }
@@ -1048,7 +1256,7 @@ test("proteção de estagnação encerra somente repetição sem nova operação
   }
 });
 
-test("roteador bloqueia requestId já auditado e evidência com origem diferente da ferramenta", async () => {
+test("roteador bloqueia requestId já auditado e normaliza a origem pela referência da ferramenta", async () => {
   const database = createDatabase(":memory:");
   let brokerCalls = 0;
   const audited: string[] = [];
@@ -1147,9 +1355,13 @@ test("roteador bloqueia requestId já auditado e evidência com origem diferente
     const result = await configured.investigateThread(currentInput);
     assert.equal(brokerCalls, 0);
     assert.deepEqual(audited, ["already-audited"]);
-    assert.equal(result.phase, "needs_information");
-    assert.equal(result.suggestedResponse, null);
-    assert.equal(result.evidence.length, 0);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(result.suggestedResponse, "Problema confirmado.");
+    assert.deepEqual(result.evidence, [{
+      source: "code",
+      summary: "Uma leitura de código foi rotulada incorretamente como banco.",
+      reference: "tool:code-tool:read:metrics.ts",
+    }]);
   } finally {
     database.close();
   }
@@ -1275,7 +1487,7 @@ test("roteador neutraliza alegação técnica inventada antes de persistir check
 
   try {
     const result = await configured.investigateThread(input());
-    assert.equal(turns, 2);
+    assert.equal(turns, 4);
     assert.match(checkpointSeen, /aguardando evidência local auditável/);
     assert.doesNotMatch(checkpointSeen, /Banco indisponível/);
     assert.deepEqual(result.evidence, []);
@@ -1458,6 +1670,663 @@ test("roteador bloqueia repetição semântica que altera apenas limites da busc
     assert.equal(modelTurns, 3);
     assert.equal(brokerCalls, 1);
     assert.equal(result.phase, "conclusion");
+  } finally {
+    database.close();
+  }
+});
+
+test("consulta explícita ao banco por pedidos usa investigação profunda", () => {
+  for (const body of [
+    "Procure no banco e me dê o order id de pelo menos 2 pedidos na loja Danzi.",
+    "Você deve procurar pelo ecommerce_id da Danzi para buscar os ecommerce_orders.",
+  ]) {
+    const current = input();
+    current.recentMessages[0]!.body = body;
+    const policy = investigationExecutionPolicy(current);
+    assert.equal(policy.workload, "deep");
+    assert.equal(policy.maxToolRounds, 16);
+    assert.equal(policy.maxToolOperations, 64);
+  }
+});
+
+test("janela do prompt preserva evidências bem-sucedidas quando erros recentes se acumulam", () => {
+  const successes = Array.from({ length: 12 }, (_, index): InvestigationToolResult => ({
+    requestId: `success-${index}`,
+    toolId: "codebase",
+    toolName: "Codebase",
+    operation: index < 6 ? "search_files" : "read_files",
+    argumentsJson: "{}",
+    purpose: "Localizar e ler a implementação.",
+    status: "success",
+    summary: "Leitura concluída.",
+    content: `evidência-${index}`,
+    reference: `tool:codebase:result:${index}`,
+    executedAt: `2026-08-27T20:00:${String(index).padStart(2, "0")}.000Z`,
+  }));
+  const errors = Array.from({ length: 10 }, (_, index): InvestigationToolResult => ({
+    requestId: `error-${index}`,
+    toolId: "codebase",
+    toolName: "Codebase",
+    operation: "search_files",
+    argumentsJson: "{}",
+    purpose: "Busca repetida.",
+    status: "error",
+    summary: "Limite da operação atingido.",
+    content: "Limite da operação atingido.",
+    reference: null,
+    executedAt: `2026-08-27T20:01:${String(index).padStart(2, "0")}.000Z`,
+  }));
+
+  const selected = boundedToolResultsForPrompt([...successes, ...errors]);
+
+  assert.equal(selected.length, 15);
+  assert.equal(selected.filter((result) => result.status === "success").length, 12);
+  assert.equal(selected.filter((result) => result.status === "error").length, 3);
+  assert.deepEqual(
+    selected.filter((result) => result.status === "success").map((result) => result.reference),
+    successes.map((result) => result.reference),
+  );
+});
+
+test("resultado extenso preserva início, trecho central e final no prompt", () => {
+  const content = [
+    "INÍCIO DA CONVERSA",
+    "x".repeat(8_000),
+    "EVIDÊNCIA CENTRAL: migração da Loja Integrada para Shopify",
+    "y".repeat(8_000),
+    "FIM DA CONVERSA",
+  ].join("\n");
+  const selected = boundedToolResultsForPrompt([{
+    requestId: "long-conversation",
+    toolId: "connected-app:intercom",
+    toolName: "Intercom",
+    operation: "get_conversation",
+    argumentsJson: '{"conversationId":"123"}',
+    purpose: "Ler a conversa completa.",
+    status: "success",
+    summary: "Conversa carregada.",
+    content,
+    reference: "tool:connected-app:intercom:get_conversation:123",
+    executedAt: "2026-08-28T17:00:00.000Z",
+  }]);
+
+  assert.match(selected[0]?.content ?? "", /INÍCIO DA CONVERSA/);
+  assert.match(selected[0]?.content ?? "", /EVIDÊNCIA CENTRAL/);
+  assert.match(selected[0]?.content ?? "", /FIM DA CONVERSA/);
+  assert.ok((selected[0]?.content.length ?? Infinity) <= 8_000);
+});
+
+test("operações esgotadas deixam de ser oferecidas sem ocultar outras leituras", () => {
+  const descriptors = [{
+    id: "local-tool:codebase:produto",
+    name: "Codebase",
+    type: "codebase" as const,
+    description: null,
+    scope: "código readonly",
+    operations: [{
+      name: "search_files",
+      description: "Busca",
+      argumentsExample: "{}",
+    }, {
+      name: "read_files",
+      description: "Leitura",
+      argumentsExample: "{}",
+    }],
+  }];
+  const counts = new Map<string, number>([
+    ["local-tool:codebase:produto\u0000search_files", 5],
+    ["local-tool:codebase:produto\u0000read_files", 2],
+  ]);
+
+  const available = availableToolsWithinBudget(descriptors, counts, 8, 5);
+
+  assert.equal(available.length, 1);
+  assert.deepEqual(available[0]!.operations.map((operation) => operation.name), ["read_files"]);
+});
+
+test("bloqueio prematuro é reavaliado quando ainda existe leitura autorizada", async () => {
+  const database = createDatabase(":memory:");
+  let modelTurns = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      if (modelTurns === 1) {
+        return {
+          assistantMessage: "Preciso que você autorize uma consulta ao banco.",
+          phase: "needs_information" as const,
+          threadSummary: "Ainda não consultei a fonte disponível.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Autorizar a leitura.",
+          confidence: 0.1,
+          toolRequests: [],
+        };
+      }
+      if (modelTurns === 2) {
+        assert.equal(current.executionBudget?.readonlyContinuationRequired, true);
+        return {
+          assistantMessage: "Vou consultar diretamente a fonte autorizada.",
+          phase: "analysis" as const,
+          threadSummary: "Consulta readonly solicitada.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Consultar pedidos.",
+          confidence: 0.3,
+          toolRequests: [{
+            requestId: "orders-readonly-1",
+            toolId: "debugger",
+            operation: "query_readonly",
+            argumentsJson: JSON.stringify({
+              query: "SELECT order_id FROM ecommerce_orders WHERE ecommerce_id = 'store-1' LIMIT 2",
+              maxRows: 2,
+            }),
+            purpose: "Localizar dois pedidos da loja.",
+          }],
+        };
+      }
+      return {
+        assistantMessage: "Encontrei dois pedidos da loja.",
+        phase: "conclusion" as const,
+        threadSummary: "Dois pedidos confirmados no banco.",
+        findings: [{
+          statement: "A loja possui os pedidos 1001 e 1002.",
+          kind: "fact" as const,
+          evidenceReferences: ["tool:debugger:query:orders"],
+        }],
+        evidence: [{
+          source: "database" as const,
+          reference: "tool:debugger:query:orders",
+          excerpt: "order_id: 1001, 1002",
+        }],
+        suggestedResponse: null,
+        nextAction: "Nenhuma.",
+        confidence: 0.95,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "debugger",
+      name: "Debugger",
+      type: "postgres_readonly",
+      description: null,
+      scope: "banco readonly",
+      operations: [{
+        name: "query_readonly",
+        description: "Executa SELECT limitado",
+        argumentsExample: '{"query":"SELECT 1","maxRows":1}',
+      }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Debugger",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: "Consulta concluída.",
+        content: "order_id\n1001\n1002",
+        reference: "tool:debugger:query:orders",
+        executedAt: "2026-08-27T20:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body = "Procure no banco dois pedidos da loja Danzi.";
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(modelTurns, 3);
+    assert.equal(brokerCalls, 1);
+    assert.equal(result.phase, "conclusion");
+    assert.match(result.assistantMessage, /dois pedidos/i);
+  } finally {
+    database.close();
+  }
+});
+
+test("orçamento interno abre novo ciclo sem devolver bloqueio ao operador", async () => {
+  const database = createDatabase(":memory:");
+  let modelTurns = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      if (modelTurns === 1) {
+        return analysisRequest("cycle-first", "SELECT 1 AS first_value");
+      }
+      if (modelTurns === 2) {
+        assert.equal(current.executionBudget?.forceConclusion, true);
+        assert.equal(current.executionBudget?.cycle, 1);
+        return analysisRequest("cycle-second", "SELECT 2 AS second_value");
+      }
+      if (modelTurns === 3) {
+        assert.equal(current.executionBudget?.forceConclusion, false);
+        assert.equal(current.executionBudget?.cycle, 2);
+        assert.equal(current.executionBudget?.readonlyContinuationRequired, true);
+        return analysisRequest("cycle-second", "SELECT 2 AS second_value");
+      }
+      return {
+        assistantMessage: "As duas verificações readonly foram concluídas.",
+        phase: "conclusion" as const,
+        threadSummary: "Ciclos internos concluídos sem bloquear o operador.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: null,
+        confidence: 0.8,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const analysisRequest = (requestId: string, query: string) => ({
+    assistantMessage: "Continuando a investigação.",
+    phase: "analysis" as const,
+    threadSummary: "Investigação readonly em andamento.",
+    findings: [],
+    evidence: [],
+    suggestedResponse: null,
+    nextAction: "Executar a próxima leitura.",
+    confidence: 0.4,
+    toolRequests: [{
+      requestId,
+      toolId: "debugger",
+      operation: "query_readonly",
+      argumentsJson: JSON.stringify({ query, maxRows: 1 }),
+      purpose: "Validar a hipótese atual.",
+    }],
+  });
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "debugger",
+      name: "Debugger readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "banco readonly",
+      operations: [{
+        name: "query_readonly",
+        description: "Executa SELECT limitado.",
+        argumentsExample: '{}',
+        effect: "read",
+        authorization: "none",
+      }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Debugger readonly",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success" as const,
+        summary: "Consulta concluída.",
+        content: String(brokerCalls),
+        reference: `tool:debugger:cycle:${brokerCalls}`,
+        executedAt: "2026-08-28T20:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+    { maxToolOperations: 1, maxToolRounds: 4 },
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(result.phase, "conclusion");
+    assert.equal(brokerCalls, 2);
+    assert.equal(modelTurns, 4);
+    assert.doesNotMatch(result.assistantMessage, /orçamento|limite|tente novamente/i);
+  } finally {
+    database.close();
+  }
+});
+
+test("encerramento terminal do terceiro ciclo oculta limites internos e preserva evidência", async () => {
+  const database = createDatabase(":memory:");
+  let modelTurns = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelTurns += 1;
+      const reference = current.toolResults?.at(-1)?.reference ?? null;
+      if (current.executionBudget?.forceConclusion) {
+        return {
+          assistantMessage: "O orçamento e o limite de operações acabaram; tente novamente.",
+          phase: "analysis" as const,
+          threadSummary: "A última leitura confirmou um registro.",
+          findings: reference
+            ? [{
+                statement: "A consulta encontrou um registro confirmado.",
+                kind: "fact" as const,
+                evidenceReferences: [reference],
+              }]
+            : [],
+          evidence: reference
+            ? [{
+                source: "database" as const,
+                summary: "Registro confirmado pela consulta readonly.",
+                reference,
+              }]
+            : [],
+          suggestedResponse: null,
+          nextAction: "O limite foi atingido; tente novamente.",
+          confidence: 0.8,
+          toolRequests: [{
+            requestId: `terminal-force-${modelTurns}`,
+            toolId: "debugger-terminal",
+            operation: "query_readonly",
+            argumentsJson: JSON.stringify({ query: `SELECT ${modelTurns}`, maxRows: 1 }),
+            purpose: "Solicitar mais uma verificação antes da síntese.",
+          }],
+        };
+      }
+      return {
+        assistantMessage: "Executando a leitura autorizada.",
+        phase: "analysis" as const,
+        threadSummary: "Leitura readonly em andamento.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Consultar o registro.",
+        confidence: 0.4,
+        toolRequests: [{
+          requestId: `terminal-read-${modelTurns}`,
+          toolId: "debugger-terminal",
+          operation: "query_readonly",
+          argumentsJson: JSON.stringify({ query: `SELECT ${modelTurns}`, maxRows: 1 }),
+          purpose: "Consultar o registro.",
+        }],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "debugger-terminal",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "Banco de teste",
+      operations: [{
+        name: "query_readonly",
+        description: "Executa SELECT limitado.",
+        argumentsExample: "{}",
+        effect: "read",
+        authorization: "none",
+      }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Banco readonly",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success" as const,
+        summary: "Consulta concluída.",
+        content: `registro-${brokerCalls}`,
+        reference: `tool:debugger-terminal:query:${brokerCalls}`,
+        executedAt: "2026-08-28T20:20:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+    { maxToolOperations: 1, maxToolRounds: 4 },
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(brokerCalls, 3);
+    assert.equal(result.phase, "conclusion");
+    assert.match(result.assistantMessage, /evidências verificadas/i);
+    assert.doesNotMatch(
+      `${result.assistantMessage} ${result.nextAction ?? ""}`,
+      /orçamento|limite|budget|tente novamente/i,
+    );
+    assert.equal(result.evidence.length, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test("leituras internas e de apps independentes executam em paralelo", async () => {
+  const database = createDatabase(":memory:");
+  let turns = 0;
+  let active = 0;
+  let maxActive = 0;
+  let calls = 0;
+  let releaseBoth!: () => void;
+  const bothStarted = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  const modelAgent = {
+    async investigateThread() {
+      turns += 1;
+      if (turns === 1) {
+        return {
+          assistantMessage: "Vou cruzar as duas fontes.",
+          phase: "analysis" as const,
+          threadSummary: "Leituras independentes solicitadas.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Cruzar as fontes.",
+          confidence: 0.4,
+          toolRequests: [{
+            requestId: "parallel-local",
+            toolId: "threadmark-context",
+            operation: "search_support_context",
+            argumentsJson: '{"query":"cliente","scope":"all","limit":5}',
+            purpose: "Consultar o contexto local.",
+          }, {
+            requestId: "parallel-app",
+            toolId: "connected-app:crm",
+            operation: "search_records",
+            argumentsJson: '{"input":{"query":"cliente"}}',
+            purpose: "Consultar o app autorizado.",
+          }],
+        };
+      }
+      return {
+        assistantMessage: "As fontes foram cruzadas.",
+        phase: "conclusion" as const,
+        threadSummary: "Duas fontes consultadas.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: null,
+        confidence: 0.8,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [
+      {
+        id: "threadmark-context",
+        name: "Contexto local",
+        type: "knowledge",
+        description: null,
+        scope: "SQLite",
+        operations: [{
+          name: "search_support_context",
+          description: "Busca local.",
+          argumentsExample: '{}',
+          effect: "read",
+          authorization: "none",
+        }],
+      },
+      {
+        id: "connected-app:crm",
+        name: "CRM",
+        type: "connected_app",
+        description: null,
+        scope: "App autorizado",
+        operations: [{
+          name: "search_records",
+          description: "Busca externa.",
+          argumentsExample: '{}',
+          effect: "read",
+          authorization: "none",
+        }],
+      },
+    ],
+    async executeMany(requests) {
+      calls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (calls === 2) releaseBoth();
+      await bothStarted;
+      active -= 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: request.toolId,
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success" as const,
+        summary: "Leitura concluída.",
+        content: "resultado",
+        reference: `tool:${request.toolId}:${request.requestId}`,
+        executedAt: "2026-08-28T20:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(result.phase, "conclusion");
+    assert.equal(calls, 2);
+    assert.equal(maxActive, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test("leitura concluída permanece auditada quando outra leitura paralela falha", async () => {
+  const database = createDatabase(":memory:");
+  let releaseSlowSuccess!: () => void;
+  const failureStarted = new Promise<void>((resolve) => {
+    releaseSlowSuccess = resolve;
+  });
+  const audited: string[] = [];
+  const modelAgent = {
+    async investigateThread() {
+      return {
+        assistantMessage: "Vou consultar as duas fontes.",
+        phase: "analysis" as const,
+        threadSummary: "Leituras paralelas em andamento.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Cruzar resultados.",
+        confidence: 0.3,
+        toolRequests: [{
+          requestId: "parallel-audited-success",
+          toolId: "local-read",
+          operation: "search",
+          argumentsJson: "{}",
+          purpose: "Concluir uma leitura auditável.",
+        }, {
+          requestId: "parallel-rejection",
+          toolId: "remote-read",
+          operation: "search",
+          argumentsJson: "{}",
+          purpose: "Simular falha concorrente.",
+        }],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => ["local-read", "remote-read"].map((id) => ({
+      id,
+      name: id,
+      type: "knowledge" as const,
+      description: null,
+      scope: "readonly",
+      operations: [{
+        name: "search",
+        description: "Consulta readonly.",
+        argumentsExample: "{}",
+        effect: "read" as const,
+        authorization: "none" as const,
+      }],
+    })),
+    async executeMany(requests) {
+      const request = requests[0]!;
+      if (request.requestId === "parallel-rejection") {
+        releaseSlowSuccess();
+        throw new Error("fonte remota indisponível");
+      }
+      await failureStarted;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: request.toolId,
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success" as const,
+        summary: "Leitura local concluída.",
+        content: "resultado preservado",
+        reference: "tool:local-read:search:1",
+        executedAt: "2026-08-28T20:10:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.onToolExecution = (execution) => {
+    audited.push(execution.requestId);
+  };
+
+  try {
+    await assert.rejects(
+      configured.investigateThread(current),
+      /fonte remota indisponível/,
+    );
+    assert.deepEqual(audited, ["parallel-audited-success"]);
   } finally {
     database.close();
   }

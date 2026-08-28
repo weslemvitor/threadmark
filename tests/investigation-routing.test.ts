@@ -6,6 +6,7 @@ import { investigationExecutionPolicy } from "../server/agent/investigation-rout
 function input(body: string) {
   return {
     currentOperatorMessageId: "operator-current",
+    durableSummary: "",
     recentMessages: [{
       id: "operator-current",
       role: "operator" as const,
@@ -26,11 +27,31 @@ for (const body of [
   test(`conversa objetiva usa rota rápida: ${body}`, () => {
     const policy = investigationExecutionPolicy(input(body));
     assert.equal(policy.workload, "quick");
-    assert.equal(policy.maxToolRounds, 3);
-    assert.equal(policy.maxToolOperations, 8);
-    assert.equal(policy.maxCodeSearchOperations, 1);
+    assert.equal(policy.maxToolRounds, 8);
+    assert.equal(policy.maxToolOperations, 24);
+    assert.equal(policy.maxCodeSearchOperations, 5);
   });
 }
+
+test("criação de ticket que exige descobrir conversa usa rota profunda", () => {
+  const policy = investigationExecutionPolicy(input(
+    "Preciso criar um ticket do Renato; existe um contexto de conversa no Intercom.",
+  ));
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.maxToolRounds, 16);
+  assert.equal(policy.maxToolOperations, 64);
+});
+
+test("continuação curta herda a rota profunda do ticket pendente", () => {
+  const policy = investigationExecutionPolicy({
+    ...input("Tenta novamente"),
+    durableSummary:
+      "Objetivo pendente: criar ticket usando o contexto da conversa do Intercom e anexar as mensagens.",
+  });
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.maxToolRounds, 16);
+  assert.equal(policy.maxToolOperations, 64);
+});
 
 for (const body of [
   "Investigue a causa raiz do ticket #240.",
@@ -40,8 +61,8 @@ for (const body of [
   test(`investigação explícita preserva rota profunda: ${body}`, () => {
     const policy = investigationExecutionPolicy(input(body));
     assert.equal(policy.workload, "deep");
-    assert.equal(policy.maxToolRounds, 8);
-    assert.equal(policy.maxToolOperations, 24);
+    assert.equal(policy.maxToolRounds, 16);
+    assert.equal(policy.maxToolOperations, 64);
   });
 }
 

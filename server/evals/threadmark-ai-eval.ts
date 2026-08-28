@@ -228,7 +228,8 @@ const cases: ThreadmarkAiEvalCase[] = [
     label: "Capacidades conhecidas permitem apenas preparar a proposta",
     repetitions: 3,
     input: () => input({
-      operatorBody: "Prepare a automação solicitada usando essas capacidades.",
+      operatorBody:
+        "Prepare a automação “Aguardando ação interna”: quando um ticket ficar aguardando o time interno, notifique a Pessoa de teste dentro do app.",
       tools: [automationTool],
       toolResults: [toolResult({
         requestId: "automation-capabilities",

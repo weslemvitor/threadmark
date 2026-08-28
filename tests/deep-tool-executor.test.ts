@@ -14,6 +14,42 @@ import {
 } from "../server/tools/deep-tool-executor.js";
 import { LocalToolService } from "../server/tools/local-tool-service.js";
 
+test("auditoria limita resultados extensos sem bloquear o turno do Threadmark AI", () => {
+  const database = createDatabase(":memory:");
+  const store = new SupportStore(database);
+
+  try {
+    const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+    store.addInvestigationThreadMessage(thread.id, {
+      body: "Investigue os registros extensos sem interromper o atendimento.",
+    });
+    const claimed = store.claimNextAgentJob();
+    assert.equal(claimed?.kind, "thread_turn");
+    if (!claimed || claimed.kind !== "thread_turn") assert.fail("turno não reivindicado");
+
+    const persisted = store.appendInvestigationThreadToolExecution(claimed.id, {
+      requestId: "large-audit-result",
+      toolId: "codebase",
+      toolName: "Código local",
+      operation: "search_code",
+      argumentsJson: JSON.stringify({ query: "resultado" }),
+      purpose: "Validar o limite seguro da auditoria.",
+      status: "success",
+      summary: "Busca concluída com muitos resultados.",
+      content: `início\n${"x".repeat(60_000)}\nfim`,
+      reference: "local-tool:codebase:large-audit-result",
+      executedAt: "2026-08-28T17:00:00.000Z",
+    });
+
+    assert.ok(persisted.content.length <= 50_000);
+    assert.match(persisted.content, /^início/);
+    assert.match(persisted.content, /conteúdo excedente omitido da auditoria/i);
+    assert.match(persisted.content, /fim$/);
+  } finally {
+    database.close();
+  }
+});
+
 test("app conectado autorizado fica disponível ao Threadmark AI sem expor o segredo", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-connected-app-tool-"));
   const database = createDatabase(":memory:");
@@ -31,11 +67,23 @@ test("app conectado autorizado fica disponível ao Threadmark AI sem expor o seg
   }, "Teste");
   let observedAuthorization = "";
   let observedBody = "";
+  let externalCalls = 0;
+  const store = new SupportStore(database);
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+  store.addInvestigationThreadMessage(thread.id, {
+    body: "Crie a documentação como rascunho no Intercom.",
+  });
+  const operatorMessage = store.getThreadmarkAiThread(thread.id).messages.find(
+    (message) => message.role === "operator",
+  );
+  assert.ok(operatorMessage);
   const executor = new DeepToolExecutor(localTools, {
+    database,
     connectedApps,
     integrationVault: vault,
     integrationLookup: async () => [{ address: "93.184.216.34" }],
     fetchImpl: async (_input, init) => {
+      externalCalls += 1;
       observedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
       observedBody = String(init?.body ?? "");
       return new Response(JSON.stringify({ id: "article-42", state: "draft" }), {
@@ -63,7 +111,7 @@ test("app conectado autorizado fica disponível ao Threadmark AI sem expor o seg
       toolId: descriptor.id,
       operation: "create_article",
       argumentsJson: JSON.stringify({
-        confirmationMessageId: "operator-message-1",
+        confirmationMessageId: operatorMessage.id,
         title: "Como configurar",
         description: "Orientação revisável",
         body: "<p>Passo a passo</p>",
@@ -87,6 +135,179 @@ test("app conectado autorizado fica disponível ao Threadmark AI sem expor o seg
       parent_type: "collection",
     });
     assert.doesNotMatch(JSON.stringify(result), /intercom-test-token/);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const retryThread = store.addThreadmarkAiMessage(thread.id, { body: "Tenta novamente" });
+    const retryMessage = retryThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(retryMessage);
+    const retried = await executor.execute({
+      requestId: "intercom-create-retry",
+      toolId: descriptor.id,
+      operation: "create_article",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: retryMessage.id,
+        title: "Como configurar novamente",
+        description: "Retomada da tarefa ativa",
+        body: "<p>Passo a passo revisado</p>",
+        authorId: "admin-42",
+        collectionId: "collection-12",
+      }),
+      purpose: "Retomar a ação externa explicitamente solicitada na mesma tarefa.",
+    });
+    assert.equal(retried.status, "success", retried.summary);
+
+    const retryJob = store.claimNextAgentJob();
+    assert.equal(retryJob?.kind, "thread_turn");
+    if (!retryJob || retryJob.kind !== "thread_turn") assert.fail("turno de repetição não reivindicado");
+    store.appendInvestigationThreadToolExecution(retryJob.id, retried);
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE id = ?",
+    ).run(retryJob.id);
+    const completedRetryThread = store.addThreadmarkAiMessage(thread.id, { body: "Tenta novamente" });
+    const completedRetryMessage = completedRetryThread.messages
+      .filter((message) => message.role === "operator")
+      .at(-1);
+    assert.ok(completedRetryMessage);
+    const completedRetry = await executor.execute({
+      requestId: "intercom-create-after-success",
+      toolId: descriptor.id,
+      operation: "create_article",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: completedRetryMessage.id,
+        title: "Não deve duplicar",
+        description: "A ação anterior já terminou",
+        body: "<p>Não executar</p>",
+        authorId: "admin-42",
+        collectionId: "collection-12",
+      }),
+      purpose: "Comprovar que uma repetição não reutiliza autorização já consumida.",
+    });
+    assert.equal(completedRetry.status, "error");
+    assert.equal(externalCalls, 2);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const questionThread = store.addThreadmarkAiMessage(thread.id, {
+      body: "Como criar uma documentação no Intercom?",
+    });
+    const questionMessage = questionThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(questionMessage);
+    const questionMutation = await executor.execute({
+      requestId: "intercom-question-must-not-write",
+      toolId: descriptor.id,
+      operation: "create_article",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: questionMessage.id,
+        title: "Não deve criar",
+        description: "Pergunta não é autorização",
+        body: "<p>Não executar</p>",
+        authorId: "admin-42",
+        collectionId: "collection-12",
+      }),
+      purpose: "Comprovar que uma pergunta não autoriza escrita.",
+    });
+    assert.equal(questionMutation.status, "error");
+    assert.equal(externalCalls, 2);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const ticketThread = store.addThreadmarkAiMessage(thread.id, {
+      body: "Crie um ticket no Threadmark.",
+    });
+    const ticketMessage = ticketThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(ticketMessage);
+    const crossTargetMutation = await executor.execute({
+      requestId: "intercom-ticket-intent-must-not-write",
+      toolId: descriptor.id,
+      operation: "create_article",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: ticketMessage.id,
+        title: "Não deve criar artigo",
+        description: "O alvo solicitado era um ticket",
+        body: "<p>Não executar</p>",
+        authorId: "admin-42",
+        collectionId: "collection-12",
+      }),
+      purpose: "Comprovar que autorização de ticket não autoriza escrita no Intercom.",
+    });
+    assert.equal(crossTargetMutation.status, "error");
+    assert.equal(externalCalls, 2);
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("ação no Slack exige identificar o app além da mensagem a enviar", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-slack-target-"));
+  const database = createDatabase(":memory:");
+  const vault = new LocalSecretVault(path.join(temporary, "secrets"));
+  const localTools = new LocalToolService(database, vault);
+  const connectedApps = new ConnectedAppService(database, vault);
+  const app = await connectedApps.create({
+    type: "slack_webhook",
+    name: "Slack do suporte",
+    enabled: true,
+    aiEnabled: true,
+    endpoint: "https://hooks.slack.com/services/test/test/test",
+  }, "Teste");
+  let externalCalls = 0;
+  const executor = new DeepToolExecutor(localTools, {
+    database,
+    connectedApps,
+    integrationVault: vault,
+    integrationLookup: async () => [{ address: "93.184.216.34" }],
+    fetchImpl: async () => {
+      externalCalls += 1;
+      return new Response("ok", { status: 200 });
+    },
+  });
+  const store = new SupportStore(database);
+  const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+
+  try {
+    store.addInvestigationThreadMessage(thread.id, { body: "Envie a mensagem." });
+    const genericMessage = store.getThreadmarkAiThread(thread.id).messages.find(
+      (message) => message.role === "operator",
+    );
+    assert.ok(genericMessage);
+    const blocked = await executor.execute({
+      requestId: "slack-generic-target",
+      toolId: `connected-app:${app.id}`,
+      operation: "send_message",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: genericMessage.id,
+        text: "Mensagem de teste",
+      }),
+      purpose: "Comprovar que a mensagem sem o app não autoriza envio.",
+    });
+    assert.equal(blocked.status, "error");
+    assert.equal(externalCalls, 0);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const explicitThread = store.addThreadmarkAiMessage(thread.id, {
+      body: "Envie a mensagem no Slack do suporte.",
+    });
+    const explicitMessage = explicitThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(explicitMessage);
+    const allowed = await executor.execute({
+      requestId: "slack-explicit-target",
+      toolId: `connected-app:${app.id}`,
+      operation: "send_message",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: explicitMessage.id,
+        text: "Mensagem de teste",
+      }),
+      purpose: "Enviar ao Slack explicitamente identificado.",
+    });
+    assert.equal(allowed.status, "success", allowed.summary);
+    assert.equal(externalCalls, 1);
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });
@@ -98,6 +319,8 @@ test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem exp
   const database = createDatabase(":memory:");
   const vault = new LocalSecretVault(path.join(temporary, "secrets"));
   const localTools = new LocalToolService(database, vault);
+  let observedMcpArguments: Record<string, unknown> | null = null;
+  let mcpToolCalls = 0;
   const connectedApps = new ConnectedAppService(
     database,
     vault,
@@ -105,7 +328,12 @@ test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem exp
       const request = JSON.parse(String(init?.body ?? "{}")) as {
         id?: string | number;
         method?: string;
+        params?: { arguments?: Record<string, unknown> };
       };
+      if (request.method === "tools/call") {
+        mcpToolCalls += 1;
+        observedMcpArguments = request.params?.arguments ?? null;
+      }
       if (request.id === undefined) return new Response(null, { status: 202 });
       const result = request.method === "initialize"
         ? {
@@ -121,7 +349,12 @@ test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem exp
                 description: "Lista projetos por nome.",
                 inputSchema: {
                   type: "object",
-                  properties: { query: { type: "string" } },
+                  properties: {
+                    workspaceId: { type: "string" },
+                    query: { type: "string" },
+                    cursor: { type: "string" },
+                  },
+                  required: ["workspaceId"],
                 },
                 annotations: { readOnlyHint: true, destructiveHint: false },
               }, {
@@ -165,12 +398,13 @@ test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem exp
         confirmationRequired: false,
       }, {
         name: "delete_project",
-        aiEnabled: false,
+        aiEnabled: true,
         automationEnabled: false,
         confirmationRequired: true,
       }],
     }, "Teste");
     const executor = new DeepToolExecutor(localTools, {
+      database,
       connectedApps,
       integrationVault: vault,
     });
@@ -178,19 +412,102 @@ test("Threadmark AI recebe somente ferramentas MCP autorizadas e executa sem exp
       (candidate) => candidate.id === `connected-app:${created.id}`,
     );
     assert.ok(descriptor);
-    assert.deepEqual(descriptor.operations.map((operation) => operation.name), ["search_projects"]);
+    assert.deepEqual(descriptor.operations.map((operation) => operation.name), [
+      "search_projects",
+      "delete_project",
+    ]);
+    const searchOperation = descriptor.operations.find((operation) => operation.name === "search_projects");
+    assert.ok(searchOperation);
+    assert.deepEqual(JSON.parse(searchOperation.argumentsExample), {
+      input: { workspaceId: "<workspaceId>" },
+    });
+    assert.match(searchOperation.description, /Campos opcionais: query:string, cursor:string/);
     assert.doesNotMatch(JSON.stringify(descriptor), /ai-mcp-secret/);
 
     const result = await executor.execute({
       requestId: "mcp-search-1",
       toolId: descriptor.id,
       operation: "search_projects",
-      argumentsJson: JSON.stringify({ input: { query: "Suporte" } }),
+      argumentsJson: JSON.stringify({
+        input: {
+          workspaceId: "workspace-1",
+          query: "Suporte",
+          cursor: null,
+        },
+      }),
       purpose: "Localizar o projeto solicitado.",
     });
     assert.equal(result.status, "success");
+    assert.deepEqual(observedMcpArguments, {
+      workspaceId: "workspace-1",
+      query: "Suporte",
+    });
     assert.match(result.content, /project-1/);
     assert.doesNotMatch(JSON.stringify(result), /ai-mcp-secret/);
+
+    const store = new SupportStore(database);
+    const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
+    store.addInvestigationThreadMessage(thread.id, {
+      body: "Exclua o projeto.",
+    });
+    const ticketMessage = store.getThreadmarkAiThread(thread.id).messages.find(
+      (message) => message.role === "operator",
+    );
+    assert.ok(ticketMessage);
+    const blockedMutation = await executor.execute({
+      requestId: "mcp-delete-cross-target",
+      toolId: descriptor.id,
+      operation: "delete_project",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: ticketMessage.id,
+        input: { projectId: "project-1" },
+      }),
+      purpose: "Comprovar que o objeto sem o app de destino não autoriza a mutação.",
+    });
+    assert.equal(blockedMutation.status, "error");
+    assert.equal(mcpToolCalls, 1);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const archiveThread = store.addThreadmarkAiMessage(thread.id, {
+      body: "Arquive o projeto no Projetos MCP.",
+    });
+    const archiveMessage = archiveThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(archiveMessage);
+    const wrongVerbMutation = await executor.execute({
+      requestId: "mcp-delete-wrong-verb",
+      toolId: descriptor.id,
+      operation: "delete_project",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: archiveMessage.id,
+        input: { projectId: "project-1" },
+      }),
+      purpose: "Comprovar que arquivar não autoriza excluir.",
+    });
+    assert.equal(wrongVerbMutation.status, "error");
+    assert.equal(mcpToolCalls, 1);
+
+    database.prepare(
+      "UPDATE investigation_thread_jobs SET state = 'completed', finished_at = requested_at, result_json = '{}' WHERE thread_id = ? AND state IN ('queued', 'running')",
+    ).run(thread.id);
+    const deleteThread = store.addThreadmarkAiMessage(thread.id, {
+      body: "Exclua o projeto no Projetos MCP.",
+    });
+    const deleteMessage = deleteThread.messages.filter((message) => message.role === "operator").at(-1);
+    assert.ok(deleteMessage);
+    const allowedMutation = await executor.execute({
+      requestId: "mcp-delete-explicit-target",
+      toolId: descriptor.id,
+      operation: "delete_project",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: deleteMessage.id,
+        input: { projectId: "project-1" },
+      }),
+      purpose: "Excluir o projeto explicitamente solicitado.",
+    });
+    assert.equal(allowedMutation.status, "success", allowedMutation.summary);
+    assert.equal(mcpToolCalls, 2);
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });
@@ -247,6 +564,8 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     summary: "Explicamos que a métrica consolida o retorno dos canais configurados.",
     validatedBy: "Operador",
   });
+  store.createCategory({ facet: "reason", label: "Dúvida" });
+  store.createCategory({ facet: "product", label: "Dashboard" });
   const service = new LocalToolService(
     database,
     new LocalSecretVault(path.join(temporary, "secrets")),
@@ -258,12 +577,38 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     assert.equal(descriptor?.id, "threadmark-context");
     assert.deepEqual(descriptor?.operations.map((item) => item.name), [
       "search_support_context",
+      "search_ticket_groups",
       "list_ticket_categories",
       "prepare_ticket_draft",
       "create_ticket_from_draft",
       "prepare_ticket_update_draft",
       "apply_ticket_update_draft",
     ]);
+
+    const groups = await executor.execute({
+      requestId: "threadmark-groups-1",
+      toolId: "threadmark-context",
+      operation: "search_ticket_groups",
+      argumentsJson: JSON.stringify({ query: "Cliente Metricas Ecommerce", limit: 10 }),
+      purpose: "Localizar o grupo apesar das diferenças de pontuação.",
+    });
+    assert.equal(groups.status, "success");
+    const groupResults = JSON.parse(groups.content) as { groups: Array<{ id: string }> };
+    assert.equal(groupResults.groups[0]?.id, group.id);
+
+    const categories = await executor.execute({
+      requestId: "threadmark-categories-fuzzy-1",
+      toolId: "threadmark-context",
+      operation: "list_ticket_categories",
+      argumentsJson: JSON.stringify({
+        query: "duvida dashboard roas",
+        facets: ["contactReason", "productArea"],
+        limit: 10,
+      }),
+      purpose: "Localizar categorias por termos independentes.",
+    });
+    assert.equal(categories.status, "success");
+    assert.match(categories.content, /Dashboard/i);
 
     const result = await executor.execute({
       requestId: "threadmark-search-1",
@@ -277,6 +622,30 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     assert.match(result.content, /consolida o retorno/);
     assert.match(result.content, /Como funciona o ROAS Global/);
     assert.match(result.reference ?? "", /threadmark-search-1$/);
+
+    const aliasResult = await executor.execute({
+      requestId: "threadmark-search-alias-1",
+      toolId: "threadmark-context",
+      operation: "search_support_context",
+      argumentsJson: JSON.stringify({ query: "ROAS Global", scope: "messages", limit: 10 }),
+      purpose: "Aceitar o alias natural de busca por mensagens.",
+    });
+    assert.equal(aliasResult.status, "success");
+    assert.match(aliasResult.content, /Como funciona o ROAS Global/);
+
+    const categoryAliasResult = await executor.execute({
+      requestId: "threadmark-category-alias-1",
+      toolId: "threadmark-context",
+      operation: "list_ticket_categories",
+      argumentsJson: JSON.stringify({
+        query: "duvida dashboard",
+        facets: ["contact_reason", "product_area"],
+        limit: 10,
+      }),
+      purpose: "Aceitar aliases snake_case das facetas.",
+    });
+    assert.equal(categoryAliasResult.status, "success");
+    assert.match(categoryAliasResult.content, /Dashboard/i);
 
     const unsupported = await executor.execute({
       requestId: "threadmark-search-2",
@@ -374,12 +743,18 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
       requestId: "intercom-search-1",
       toolId,
       operation: "search_conversations",
-      argumentsJson: JSON.stringify({ query: "Pessoa Cliente", limit: 5 }),
+      argumentsJson: JSON.stringify({
+        query: "Pessoa Cliente",
+        contentQuery: "liberar acesso",
+        limit: 5,
+      }),
       purpose: "Localizar a conversa recente do cliente.",
     });
     assert.equal(search.status, "success");
     assert.match(search.content, /Pessoa Cliente/);
     assert.match(search.content, /Não consigo criar uma campanha/);
+    assert.match(search.content, /contentMatches/);
+    assert.match(search.content, /Preciso liberar o acesso/);
 
     const conversation = await executor.execute({
       requestId: "intercom-get-1",
@@ -410,10 +785,20 @@ test("Intercom autorizado permite somente leituras nativas limitadas sem expor o
     assert.match(collections.content, /collection-12/);
     assert.equal(requests[0]?.url.pathname, "/conversations/search");
     assert.equal(requests[0]?.init.method, "POST");
+    const searchBody = JSON.parse(String(requests[0]?.init.body)) as {
+      query: { value: Array<{ field: string; operator: string; value: string }> };
+    };
+    assert.deepEqual(searchBody.query.value, [
+      { field: "source.author.name", operator: "~", value: "Pessoa Cliente" },
+      { field: "source.subject", operator: "~", value: "Pessoa Cliente" },
+      { field: "source.body", operator: "~", value: "Pessoa Cliente" },
+    ]);
     assert.equal(requests[1]?.url.pathname, "/conversations/987");
     assert.equal(requests[1]?.url.searchParams.get("display_as"), "plaintext");
-    assert.equal(requests[2]?.url.pathname, "/me");
-    assert.equal(requests[3]?.url.pathname, "/help_center/collections");
+    assert.equal(requests[2]?.url.pathname, "/conversations/987");
+    assert.equal(requests[2]?.url.searchParams.get("display_as"), "plaintext");
+    assert.equal(requests[3]?.url.pathname, "/me");
+    assert.equal(requests[4]?.url.pathname, "/help_center/collections");
     assert.equal(new Headers(requests[0]?.init.headers).get("authorization"), "Bearer intercom-read-token");
     assert.doesNotMatch(JSON.stringify(search), /intercom-read-token/);
     assert.doesNotMatch(JSON.stringify(conversation), /intercom-read-token/);
@@ -472,6 +857,11 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
     label: "Acesso indisponível",
     color: "#ef4444",
   });
+  const secondarySymptomCategory = store.createCategory({
+    facet: "symptom",
+    label: "Falha de integração",
+    color: "#f97316",
+  });
   const thread = store.createThreadmarkAiThread({}, "Pessoa Proprietária");
   const withRequest = store.addInvestigationThreadMessage(thread.id, {
     body: "Transforme a conversa 987 do Intercom em um ticket do Threadmark.",
@@ -512,7 +902,7 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
         title: "Acesso para criar campanhas",
         summary: "A pessoa cliente informou no Intercom que não consegue criar campanhas e pediu liberação de acesso.",
         priority: "high",
-        categoryIds: [productCategory.id, symptomCategory.id],
+        categoryIds: [productCategory.id, symptomCategory.id, secondarySymptomCategory.id],
         messageIds: [sourceMessage.id],
         sourceMessages: [{
           id: "intercom-part-987-1",
@@ -621,7 +1011,7 @@ test("Threadmark AI prepara prévia e cria ticket idempotente somente após conf
   }
 });
 
-test("Threadmark AI cria ticket manual a partir de mensagem interna confirmada sem liberar triagem automática", async () => {
+test("ordem explícita cria ticket interno na mesma execução sem confirmação duplicada", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-internal-ticket-"));
   const database = createDatabase(":memory:");
   const store = new SupportStore(database);
@@ -694,24 +1084,15 @@ test("Threadmark AI cria ticket manual a partir de mensagem interna confirmada s
     assert.equal(preview.sourceMessageCount, 1);
     assert.equal(preview.sourceKind, "internal_manual");
 
-    database.prepare(
-      `UPDATE investigation_thread_jobs
-       SET state = 'completed', finished_at = requested_at, result_json = '{}'
-       WHERE thread_id = ?`,
-    ).run(thread.id);
-    const confirmation = store.addInvestigationThreadMessage(thread.id, {
-      body: "Pode criar o ticket exatamente como está na prévia.",
-    }).messages.filter((message) => message.role === "operator").at(-1);
-    assert.ok(confirmation);
     const created = await executor.execute({
       requestId: "create-internal-ticket",
       toolId: "threadmark-context",
       operation: "create_ticket_from_draft",
       argumentsJson: JSON.stringify({
-        confirmationMessageId: confirmation.id,
+        confirmationMessageId: request.id,
         draftId: preview.draftId,
       }),
-      purpose: "Criar o ticket interno confirmado pelo operador.",
+      purpose: "Executar a ordem explícita de criação sem pedir confirmação duplicada.",
     });
     assert.equal(created.status, "success");
     const ticket = database.prepare(
@@ -723,6 +1104,48 @@ test("Threadmark AI cria ticket manual a partir de mensagem interna confirmada s
       `SELECT triage_kind, triage_state FROM messages WHERE id = ?`,
     ).get(sourceMessage.id) as { triage_kind: string; triage_state: string };
     assert.deepEqual(triage, { triage_kind: "context", triage_state: "context" });
+
+    const retry = { id: "retry-explicit-ticket-creation" };
+    database.prepare(
+      `INSERT INTO investigation_thread_messages (
+         id, thread_id, role, body, created_at
+       ) VALUES (?, ?, 'operator', 'Tenta novamente', ?)`,
+    ).run(retry.id, thread.id, new Date(Date.now() + 1_000).toISOString());
+    const retrySourceMessage = store.upsertMessage({
+      id: "ai-internal-retry-source-message",
+      externalId: "ai-internal-retry-source-message-external",
+      groupId: group.id,
+      senderId: staff.id,
+      occurredAt: "2026-08-26T12:01:00.000Z",
+      text: "A migração deve ser revalidada.",
+      messageType: "text",
+    });
+    const retriedDraft = await executor.execute({
+      requestId: "prepare-retried-ticket",
+      toolId: "threadmark-context",
+      operation: "prepare_ticket_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: retry.id,
+        groupId: group.id,
+        title: "Migração da operação revalidada",
+        summary: "A tarefa explícita anterior deve continuar autorizada ao tentar novamente.",
+        priority: "normal",
+        messageIds: [retrySourceMessage.id],
+      }),
+      purpose: "Repetir a criação solicitada anteriormente.",
+    });
+    const retriedPreview = JSON.parse(retriedDraft.content) as { draftId: string };
+    const retriedCreation = await executor.execute({
+      requestId: "create-retried-ticket",
+      toolId: "threadmark-context",
+      operation: "create_ticket_from_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: retry.id,
+        draftId: retriedPreview.draftId,
+      }),
+      purpose: "Concluir a repetição da ordem explícita anterior.",
+    });
+    assert.equal(retriedCreation.status, "success");
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });
@@ -852,7 +1275,7 @@ test("Threadmark AI atualiza metadados e categorias somente após confirmação 
   }
 });
 
-test("Threadmark AI anexa mensagens locais e externas a ticket existente somente após confirmação", async () => {
+test("ordem explícita anexa mensagens locais e externas sem confirmação duplicada", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-ai-ticket-attach-"));
   const database = createDatabase(":memory:");
   const store = new SupportStore(database);
@@ -903,9 +1326,48 @@ test("Threadmark AI anexa mensagens locais e externas a ticket existente somente
     body: `Anexe ao ticket #${ticket.number} a mensagem local e as duas mensagens da conversa 240 do Intercom.`,
   }).messages.filter((message) => message.role === "operator").at(-1);
   assert.ok(request);
+  const vault = new LocalSecretVault(path.join(temporary, "secrets"));
+  const connectedApps = new ConnectedAppService(database, vault);
+  await connectedApps.create({
+    type: "intercom",
+    name: "Intercom",
+    description: "Conversa externa de teste.",
+    enabled: true,
+    aiEnabled: true,
+    endpoint: "https://api.intercom.io/",
+    secret: "intercom-attach-test-token",
+  }, "Teste");
   const executor = new DeepToolExecutor(
-    new LocalToolService(database, new LocalSecretVault(path.join(temporary, "secrets"))),
-    { database, supportStore: store },
+    new LocalToolService(database, vault),
+    {
+      database,
+      supportStore: store,
+      connectedApps,
+      integrationVault: vault,
+      fetchImpl: async () => new Response(JSON.stringify({
+        id: "240",
+        created_at: 1_777_118_700,
+        updated_at: 1_777_118_760,
+        source: {
+          id: "intercom-part-240-4",
+          created_at: 1_777_118_700,
+          author: { id: "customer-1", type: "user", name: "Pessoa Cliente" },
+          body: "O GA4 também aparece desconectado.",
+        },
+        conversation_parts: {
+          conversation_parts: [{
+            id: "intercom-part-240-5",
+            created_at: 1_777_118_760,
+            part_type: "comment",
+            author: { id: "support-1", type: "admin", name: "Pessoa Suporte" },
+            body: "Vou reunir as evidências no mesmo atendimento.",
+          }],
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    },
   );
 
   try {
@@ -947,19 +1409,7 @@ test("Threadmark AI anexa mensagens locais e externas a ticket existente somente
         operatorMessageId: request.id,
         ticketId: ticket.id,
         messageIds: [localMessage.id],
-        sourceMessages: [{
-          id: "intercom-part-240-4",
-          author: "Pessoa Cliente",
-          authorRole: "customer",
-          body: "O GA4 também aparece desconectado.",
-          occurredAt: "2026-08-25T12:05:00.000Z",
-        }, {
-          id: "intercom-part-240-5",
-          author: "Pessoa Suporte",
-          authorRole: "support",
-          body: "Vou reunir as evidências no mesmo atendimento.",
-          occurredAt: "2026-08-25T12:06:00.000Z",
-        }],
+        sourceMessages: [],
         externalSource: { type: "intercom_conversation", id: "240" },
       }),
       purpose: "Preparar o anexo das mensagens sem alterar o ticket.",
@@ -973,39 +1423,15 @@ test("Threadmark AI anexa mensagens locais e externas a ticket existente somente
     assert.deepEqual(preview.changes.messages, { local: 1, external: 2, total: 3 });
     assert.equal(store.getTicketDetail(ticket.id).messageCount, 0);
 
-    const unconfirmed = await executor.execute({
-      requestId: "apply-attach-without-confirmation",
+    const applied = await executor.execute({
+      requestId: "apply-attach-explicit-request",
       toolId: "threadmark-context",
       operation: "apply_ticket_update_draft",
       argumentsJson: JSON.stringify({
         confirmationMessageId: request.id,
         draftId: preview.draftId,
       }),
-      purpose: "Validar que a prévia não pode se autoaplicar.",
-    });
-    assert.equal(unconfirmed.status, "error");
-    assert.match(unconfirmed.summary, /não confirma explicitamente/i);
-    assert.equal(store.getTicketDetail(ticket.id).messageCount, 0);
-
-    database.prepare(
-      `UPDATE investigation_thread_jobs
-       SET state = 'completed', finished_at = requested_at, result_json = '{}'
-       WHERE thread_id = ?`,
-    ).run(thread.id);
-    const confirmation = store.addInvestigationThreadMessage(thread.id, {
-      body: "Confirmo, pode anexar essas mensagens ao ticket conforme a prévia.",
-    }).messages.filter((message) => message.role === "operator").at(-1);
-    assert.ok(confirmation);
-
-    const applied = await executor.execute({
-      requestId: "apply-attach-1",
-      toolId: "threadmark-context",
-      operation: "apply_ticket_update_draft",
-      argumentsJson: JSON.stringify({
-        confirmationMessageId: confirmation.id,
-        draftId: preview.draftId,
-      }),
-      purpose: "Anexar as mensagens confirmadas ao ticket.",
+      purpose: "Executar o anexo explicitamente solicitado pelo operador.",
     });
     assert.equal(applied.status, "success");
     const updated = store.getTicketDetail(ticket.id);
@@ -1013,12 +1439,13 @@ test("Threadmark AI anexa mensagens locais e externas a ticket existente somente
     assert.deepEqual(
       updated.timeline
         .filter((item) => item.type === "message")
-        .map((message) => message.text),
+        .map((message) => message.text)
+        .sort(),
       [
         "O Google Ads continua desconectado e o GA4 também caiu.",
         "O GA4 também aparece desconectado.",
         "Vou reunir as evidências no mesmo atendimento.",
-      ],
+      ].sort(),
     );
 
     const replay = await executor.execute({
@@ -1026,7 +1453,7 @@ test("Threadmark AI anexa mensagens locais e externas a ticket existente somente
       toolId: "threadmark-context",
       operation: "apply_ticket_update_draft",
       argumentsJson: JSON.stringify({
-        confirmationMessageId: confirmation.id,
+        confirmationMessageId: request.id,
         draftId: preview.draftId,
       }),
       purpose: "Repetir a confirmação sem duplicar mensagens.",
@@ -1053,6 +1480,15 @@ test("executor profundo lê somente dentro da raiz explicitamente autorizada", a
   await writeFile(path.join(root, ".data", "session.json"), "secret session\n");
   await writeFile(path.join(root, "auth", "credentials.json"), "secret credentials\n");
   await writeFile(outside, "segredo fora da raiz\n");
+  await mkdir(path.join(root, "server", "generated"), { recursive: true });
+  await Promise.all(Array.from({ length: 160 }, (_, index) =>
+    writeFile(
+      path.join(root, "server", "generated", `long-module-${index}.ts`),
+      Array.from({ length: 20 }, (__, line) =>
+        `export const searchable_${index}_${line} = "distinctive-search-term";`,
+      ).join("\n"),
+    )
+  ));
   const database = createDatabase(":memory:");
   const service = new LocalToolService(
     database,
@@ -1069,7 +1505,8 @@ test("executor profundo lê somente dentro da raiz explicitamente autorizada", a
 
   try {
     const descriptor = executor.descriptors()[0];
-    assert.equal(descriptor?.id, tool.id);
+    assert.equal(descriptor?.id, "local-tool:codebase:codigo-do-produto");
+    assert.doesNotMatch(descriptor?.id ?? "", /[0-9a-f]{8}-[0-9a-f-]{27}/i);
     assert.deepEqual(descriptor?.operations.map((item) => item.name), [
       "list_files",
       "search_files",
@@ -1123,7 +1560,7 @@ test("executor profundo lê somente dentro da raiz explicitamente autorizada", a
       requestId: "list-sensitive",
       toolId: tool.id,
       operation: "list_files",
-      argumentsJson: JSON.stringify({ path: ".", maxDepth: 3, maxFiles: 100 }),
+      argumentsJson: JSON.stringify({ path: ".", maxDepth: 3, maxFiles: 300 }),
       purpose: "Listar arquivos permitidos.",
     });
     assert.equal(listing.status, "success");
@@ -1131,6 +1568,22 @@ test("executor profundo lê somente dentro da raiz explicitamente autorizada", a
     assert.doesNotMatch(listing.content, /^\.env$/m);
     assert.doesNotMatch(listing.content, /^\.data\//m);
     assert.doesNotMatch(listing.content, /^auth\//m);
+
+    const boundedSearch = await executor.execute({
+      requestId: "search-bounded-output",
+      toolId: tool.id,
+      operation: "search_files",
+      argumentsJson: JSON.stringify({
+        query: "distinctive-search-term",
+        path: "server",
+        glob: "*.ts",
+        maxResults: 5,
+      }),
+      purpose: "Encontrar os primeiros arquivos sem acumular toda a saída do repositório.",
+    });
+    assert.equal(boundedSearch.status, "success");
+    assert.equal(boundedSearch.content.split("\n").length, 5);
+    assert.match(boundedSearch.summary, /5 ocorrência/);
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });

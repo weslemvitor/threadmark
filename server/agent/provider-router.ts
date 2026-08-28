@@ -2,7 +2,10 @@ import type { SupportDatabase } from "../db/index.js";
 import type { CodexSupportAgent } from "./codex-runner.js";
 import type { AiProviderSettingsService } from "./provider-settings.js";
 import type { SupportAgent } from "./provider.js";
-import { isAffirmativePreviewConfirmation } from "./confirmation-intent.js";
+import {
+  isAffirmativePreviewConfirmation,
+  isRetryInstruction,
+} from "./confirmation-intent.js";
 import { investigationExecutionPolicy } from "./investigation-routing.js";
 import type {
   InvestigationToolDescriptor,
@@ -26,10 +29,12 @@ const MAX_TOOL_RESULT_PROMPT_TOTAL_CHARS = 30_000;
 const MAX_SINGLE_TOOL_CONTENT_PROMPT_CHARS = 8_000;
 const MAX_PERSISTED_TOOL_CONTENT_CHARS = 4_000;
 const MAX_CHECKPOINT_SUMMARY_CHARS = 24_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 8;
-const DEFAULT_MAX_TOOL_OPERATIONS = 24;
-const DEFAULT_MAX_SAME_OPERATION = 8;
-const DEFAULT_MAX_CODE_SEARCH_OPERATIONS = 5;
+const DEFAULT_MAX_TOOL_ROUNDS = 16;
+const DEFAULT_MAX_TOOL_OPERATIONS = 64;
+const DEFAULT_MAX_SAME_OPERATION = 16;
+const DEFAULT_MAX_CODE_SEARCH_OPERATIONS = 12;
+const MAX_PREMATURE_READONLY_BLOCK_RETRIES = 2;
+const MAX_AUTONOMOUS_BUDGET_CYCLES = 3;
 const TECHNICAL_EVIDENCE_SOURCES = new Set([
   "database",
   "clickhouse",
@@ -252,6 +257,8 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       for (const execution of executions) {
         toolResults.push(execution);
         await input.onToolExecution?.(execution);
+        const completion = completedTicketActionResult(execution, toolResults);
+        if (completion) return completion;
       }
     }
     const observedRequestIds = new Set(toolResults.map((result) => result.requestId));
@@ -262,8 +269,11 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
     const operationCounts = countToolOperations(toolResults);
     let durableSummary = input.durableSummary;
     let consecutiveStalledRounds = 0;
+    let prematureReadonlyBlockRetries = 0;
+    let readonlyContinuationRequired = false;
     let usedToolRounds = 0;
     let usedToolOperations = toolResults.length;
+    let budgetCycle = 1;
     const appendToolResult = async (execution: InvestigationToolResult): Promise<void> => {
       toolResults.push(execution);
       await input.onToolExecution?.(execution);
@@ -271,13 +281,24 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
 
     while (true) {
       signal?.throwIfAborted();
+      const operationAvailableTools = availableToolsWithinBudget(
+        availableTools,
+        operationCounts,
+        maxSameOperation,
+        maxCodeSearchOperations,
+      );
       const forceConclusion =
         usedToolRounds >= maxToolRounds ||
-        usedToolOperations >= maxToolOperations;
+        usedToolOperations >= maxToolOperations ||
+        (
+          availableTools.length > 0 &&
+          toolResults.length > 0 &&
+          operationAvailableTools.length === 0
+        );
       const rawResult = await resolved.agent.investigateThread({
         ...input,
         durableSummary,
-        availableTools: forceConclusion ? [] : availableTools,
+        availableTools: forceConclusion ? [] : operationAvailableTools,
         toolResults: boundedToolResultsForPrompt(toolResults),
         executionBudget: {
           workload: executionPolicy.workload,
@@ -286,6 +307,9 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           maxToolOperations,
           usedToolOperations,
           forceConclusion,
+          cycle: budgetCycle,
+          maxCycles: MAX_AUTONOMOUS_BUDGET_CYCLES,
+          readonlyContinuationRequired,
         },
       }, signal);
       signal?.throwIfAborted();
@@ -295,6 +319,25 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         availableTools,
       );
       if (!result.toolRequests.length) {
+        if (
+          result.phase === "needs_information" &&
+          (
+            prematureReadonlyBlockRetries < MAX_PREMATURE_READONLY_BLOCK_RETRIES ||
+            (forceConclusion && budgetCycle < MAX_AUTONOMOUS_BUDGET_CYCLES)
+          ) &&
+          hasAuthorizedReadonlyOperation(operationAvailableTools)
+        ) {
+          prematureReadonlyBlockRetries += 1;
+          if (forceConclusion) {
+            budgetCycle += 1;
+            usedToolRounds = 0;
+            usedToolOperations = 0;
+          }
+          readonlyContinuationRequired = true;
+          durableSummary = checkpointSummary(result.threadSummary);
+          this.persistInvestigationCheckpoint(input.threadId, durableSummary);
+          continue;
+        }
         return {
           ...result,
           toolRequests: [],
@@ -302,8 +345,22 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         };
       }
       if (forceConclusion) {
-        return budgetExhaustedInvestigationResult(result, toolResults);
+        if (
+          budgetCycle < MAX_AUTONOMOUS_BUDGET_CYCLES &&
+          operationAvailableTools.length > 0
+        ) {
+          budgetCycle += 1;
+          usedToolRounds = 0;
+          usedToolOperations = 0;
+          readonlyContinuationRequired = true;
+          durableSummary = checkpointSummary(result.threadSummary);
+          this.persistInvestigationCheckpoint(input.threadId, durableSummary);
+          continue;
+        }
+        return finalizeAtExecutionBoundary(result, toolResults);
       }
+
+      readonlyContinuationRequired = false;
 
       usedToolRounds += 1;
 
@@ -368,28 +425,38 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         continue;
       }
       consecutiveStalledRounds = 0;
+      prematureReadonlyBlockRetries = 0;
 
       const readonlyRequests = pending.filter((request) => {
         const descriptor = availableTools.find((tool) => tool.id === request.toolId);
-        return descriptor?.type !== "connected_app" &&
-          request.toolId !== "threadmark-context" &&
-          request.toolId !== "threadmark-automations" &&
-          !requiresCurrentOperatorConfirmation(descriptor, request);
+        return resolveOperationPolicy(descriptor, request.operation).effect === "read";
       });
       const mutationRequests = pending.filter(
         (request) => !readonlyRequests.includes(request),
       );
-      const readonlyExecutions = this.deepTools
-        ? await Promise.all(
-            readonlyRequests.map((request) =>
-              this.deepTools!.executeMany([request], signal),
-            ),
+      const readonlySettled = this.deepTools
+        ? await Promise.allSettled(
+            readonlyRequests.map(async (request) => {
+              const executions = await this.deepTools!.executeMany([request], signal);
+              for (const execution of executions) await appendToolResult(execution);
+              return executions;
+            }),
           )
-        : readonlyRequests.map((request) => [unavailableToolResult(request)]);
-      for (const executions of readonlyExecutions) {
-        for (const execution of executions) await appendToolResult(execution);
-        usedToolOperations += executions.length;
-      }
+        : await Promise.allSettled(
+            readonlyRequests.map(async (request) => {
+              const executions = [unavailableToolResult(request)];
+              for (const execution of executions) await appendToolResult(execution);
+              return executions;
+            }),
+          );
+      const failedReadonly = readonlySettled.find(
+        (settled): settled is PromiseRejectedResult => settled.status === "rejected",
+      );
+      if (failedReadonly) throw failedReadonly.reason;
+      const readonlyExecutions = readonlySettled.flatMap((settled) =>
+        settled.status === "fulfilled" ? [settled.value] : []
+      );
+      for (const executions of readonlyExecutions) usedToolOperations += executions.length;
       for (const request of mutationRequests) {
         signal?.throwIfAborted();
         const executions = this.deepTools
@@ -397,6 +464,23 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           : [unavailableToolResult(request)];
         for (const execution of executions) await appendToolResult(execution);
         usedToolOperations += executions.length;
+        for (const execution of executions) {
+          const authorizedFollowUp = authorizedDraftFollowUp(
+            execution,
+            input.currentOperatorMessageId,
+            availableTools,
+          );
+          if (!authorizedFollowUp) continue;
+          const followUpExecutions = this.deepTools
+            ? await this.deepTools.executeMany([authorizedFollowUp], signal)
+            : [unavailableToolResult(authorizedFollowUp)];
+          for (const followUpExecution of followUpExecutions) {
+            await appendToolResult(followUpExecution);
+            const completion = completedTicketActionResult(followUpExecution, toolResults);
+            if (completion) return completion;
+          }
+          usedToolOperations += followUpExecutions.length;
+        }
       }
     }
   }
@@ -439,6 +523,86 @@ function hasCurrentOperatorConfirmation(
   }
 }
 
+function authorizedDraftFollowUp(
+  execution: InvestigationToolResult,
+  currentOperatorMessageId: string,
+  descriptors: InvestigationToolDescriptor[],
+): InvestigationToolRequest | null {
+  if (execution.status !== "success") return null;
+  const descriptor = descriptors.find((item) => item.id === execution.toolId);
+  const operation = descriptor?.operations.find((item) => item.name === execution.operation);
+  const followUpOperation = operation?.automaticFollowUpOperation;
+  if (!followUpOperation) return null;
+  try {
+    const preview = JSON.parse(execution.content) as {
+      draftId?: unknown;
+      executionAuthorized?: unknown;
+    };
+    if (preview.executionAuthorized !== true || typeof preview.draftId !== "string") {
+      return null;
+    }
+    return {
+      requestId: `auto-follow-up:${followUpOperation}:${preview.draftId}`,
+      toolId: execution.toolId,
+      operation: followUpOperation,
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: currentOperatorMessageId,
+        draftId: preview.draftId,
+      }),
+      purpose: "Concluir a ação explicitamente autorizada pela tarefa ativa.",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function completedTicketActionResult(
+  execution: InvestigationToolResult,
+  toolResults: InvestigationToolResult[],
+): InvestigationTurnResult | null {
+  if (
+    execution.toolId !== "threadmark-context" ||
+    execution.status !== "success" ||
+    !["create_ticket_from_draft", "apply_ticket_update_draft"].includes(execution.operation) ||
+    !execution.reference
+  ) {
+    return null;
+  }
+  try {
+    const content = JSON.parse(execution.content) as {
+      ticket?: { number?: unknown; title?: unknown; internalUrl?: unknown };
+    };
+    const number = content.ticket?.number;
+    if (typeof number !== "number") return null;
+    const updated = execution.operation === "apply_ticket_update_draft";
+    const title = typeof content.ticket?.title === "string" ? content.ticket.title : null;
+    const action = updated ? "atualizado" : "criado";
+    const statement = `Ticket #${number} ${action} no Threadmark${title ? `: ${title}` : "."}`;
+    return {
+      assistantMessage: statement,
+      phase: "conclusion",
+      threadSummary: statement,
+      findings: [{
+        statement,
+        kind: "fact",
+        evidenceReferences: [execution.reference],
+      }],
+      evidence: [{
+        source: "knowledge",
+        summary: execution.summary,
+        reference: execution.reference,
+      }],
+      suggestedResponse: null,
+      nextAction: null,
+      confidence: 1,
+      toolRequests: [],
+      toolExecutions: compactToolExecutions(toolResults),
+    };
+  } catch {
+    return null;
+  }
+}
+
 interface PendingDraftConfirmationRow {
   draft_id: string;
   operator_message_id: string;
@@ -458,7 +622,10 @@ function resolvePendingDraftConfirmation(
   ).get(currentOperatorMessageId, threadId) as
     | { message_order: number; body: string }
     | undefined;
-  if (!current || !isAffirmativePreviewConfirmation(current.body)) return null;
+  if (
+    !current ||
+    (!isAffirmativePreviewConfirmation(current.body) && !isRetryInstruction(current.body))
+  ) return null;
 
   const previous = database.prepare(
     `SELECT rowid AS message_order, role, job_id
@@ -540,21 +707,35 @@ function requiresCurrentOperatorConfirmation(
   descriptor: InvestigationToolDescriptor | undefined,
   request: InvestigationToolRequest,
 ): boolean {
-  if (request.toolId === "threadmark-context") {
-    return [
-      "create_ticket_from_draft",
-      "apply_ticket_update_draft",
-    ].includes(request.operation);
+  return resolveOperationPolicy(descriptor, request.operation).authorization !== "none";
+}
+
+function resolveOperationPolicy(
+  descriptor: InvestigationToolDescriptor | undefined,
+  operationName: string,
+): { effect: "read" | "prepare" | "write"; authorization: "none" | "task" } {
+  const operation = descriptor?.operations.find((item) => item.name === operationName);
+  if (operation?.effect) {
+    return {
+      effect: operation.effect,
+      authorization: operation.authorization ?? (operation.effect === "write" ? "task" : "none"),
+    };
   }
-  if (request.toolId === "threadmark-automations") {
-    return [
-      "apply_automation_draft",
-      "set_automation_status",
-      "delete_automation",
-    ].includes(request.operation);
+  if (/^prepare_/u.test(operationName)) return { effect: "prepare", authorization: "none" };
+  if (/^(?:create|apply|update|delete|set|send|publish|execute_request|archive|remove|assign)_?/u.test(operationName)) {
+    return { effect: "write", authorization: "task" };
   }
-  if (descriptor?.type !== "connected_app") return false;
-  return ["execute_request", "send_message", "create_article"].includes(request.operation);
+  return { effect: "read", authorization: "none" };
+}
+
+function hasAuthorizedReadonlyOperation(
+  descriptors: InvestigationToolDescriptor[],
+): boolean {
+  return descriptors.some((descriptor) =>
+    descriptor.operations.some((operation) =>
+      resolveOperationPolicy(descriptor, operation.name).effect === "read"
+    )
+  );
 }
 
 function connectedAppConfirmationRequiredResult(
@@ -609,12 +790,28 @@ function stalledInvestigationResult(
   };
 }
 
-function boundedToolResultsForPrompt(
+export function boundedToolResultsForPrompt(
   results: InvestigationToolResult[],
 ): InvestigationToolResult[] {
   const selected: InvestigationToolResult[] = [];
   let remaining = MAX_TOOL_RESULT_PROMPT_TOTAL_CHARS;
-  const candidates = results.slice(-MAX_TOOL_RESULTS_IN_PROMPT);
+  const successful = results
+    .filter((result) => result.status === "success" && Boolean(result.reference))
+    .slice(-(MAX_TOOL_RESULTS_IN_PROMPT - 3));
+  const recentErrors = results
+    .filter((result) => result.status === "error")
+    .slice(-3);
+  const prioritized = new Set([...successful, ...recentErrors]);
+  const candidates = [...prioritized];
+  if (candidates.length < MAX_TOOL_RESULTS_IN_PROMPT) {
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+      const candidate = results[index]!;
+      if (prioritized.has(candidate)) continue;
+      candidates.push(candidate);
+      if (candidates.length >= MAX_TOOL_RESULTS_IN_PROMPT) break;
+    }
+  }
+  candidates.sort((left, right) => results.indexOf(left) - results.indexOf(right));
   for (let index = candidates.length - 1; index >= 0 && remaining > 0; index -= 1) {
     const result = candidates[index]!;
     const compact = {
@@ -627,14 +824,35 @@ function boundedToolResultsForPrompt(
     const metadataChars = JSON.stringify(compact).length;
     if (metadataChars >= remaining) continue;
     const contentLimit = Math.min(
-      MAX_SINGLE_TOOL_CONTENT_PROMPT_CHARS,
+      result.status === "success" ? MAX_SINGLE_TOOL_CONTENT_PROMPT_CHARS : 1_000,
       remaining - metadataChars,
     );
-    compact.content = truncatePromptField(result.content, contentLimit);
+    compact.content = truncateToolContentForPrompt(result.content, contentLimit);
     remaining -= metadataChars + compact.content.length;
     selected.unshift(compact);
   }
   return selected;
+}
+
+export function availableToolsWithinBudget(
+  descriptors: InvestigationToolDescriptor[],
+  operationCounts: Map<string, number>,
+  maxSameOperation: number,
+  maxCodeSearchOperations: number,
+): InvestigationToolDescriptor[] {
+  return descriptors.flatMap((descriptor) => {
+    const operations = descriptor.operations.filter((operation) => {
+      const limit = descriptor.type === "codebase" && operation.name === "search_files"
+        ? maxCodeSearchOperations
+        : maxSameOperation;
+      const count = operationCounts.get(toolOperationKey({
+        toolId: descriptor.id,
+        operation: operation.name,
+      })) ?? 0;
+      return count < limit;
+    });
+    return operations.length ? [{ ...descriptor, operations }] : [];
+  });
 }
 
 function compactToolExecutions(
@@ -779,23 +997,32 @@ function coordinatorErrorResult(
   };
 }
 
-function budgetExhaustedInvestigationResult(
+function finalizeAtExecutionBoundary(
   result: InvestigationTurnResult,
   toolResults: InvestigationToolResult[],
 ): InvestigationTurnResult {
+  const hasVerifiedEvidence = result.evidence.some((evidence) => evidence.reference) ||
+    result.findings?.some((finding) =>
+      finding.kind !== "hypothesis" && finding.kind !== "missing_information" &&
+      finding.evidenceReferences.length > 0
+    ) === true;
+  const internalLimitPattern = /\b(?:orcamento|orçamento|limite|budget|tool rounds?|operacoes? disponiveis?)\b/iu;
+  const assistantMessage = internalLimitPattern.test(result.assistantMessage)
+    ? hasVerifiedEvidence
+      ? "Concluí esta etapa com as evidências verificadas disponíveis. Os pontos ainda não confirmados permanecem identificados como lacunas."
+      : "Não foi possível confirmar a causa com as evidências disponíveis nesta etapa."
+    : result.assistantMessage;
+  const nextAction = result.nextAction && !internalLimitPattern.test(result.nextAction)
+    ? result.nextAction
+    : hasVerifiedEvidence
+      ? "Revisar as lacunas não verificadas antes de executar qualquer alteração."
+      : "Fornecer a menor informação indispensável que não pôde ser localizada nas fontes autorizadas.";
   return {
     ...result,
-    assistantMessage:
-      "A exploração automática atingiu o orçamento seguro deste turno. Preservei as evidências encontradas, mas a IA não produziu a síntese final solicitada.",
-    phase: "needs_information",
-    findings: [{
-      statement: "A investigação precisa de um foco mais específico para continuar sem repetir buscas.",
-      kind: "missing_information",
-      evidenceReferences: [],
-    }],
-    suggestedResponse: null,
-    nextAction: "Informe qual hipótese ou área deve ser aprofundada na próxima mensagem.",
-    confidence: Math.min(result.confidence, 0.5),
+    assistantMessage,
+    phase: hasVerifiedEvidence ? "conclusion" : "needs_information",
+    nextAction,
+    confidence: hasVerifiedEvidence ? result.confidence : Math.min(result.confidence, 0.5),
     toolRequests: [],
     toolExecutions: compactToolExecutions(toolResults),
   };
@@ -826,25 +1053,56 @@ function truncatePromptField(value: string, limit: number): string {
   return `${value.slice(0, limit - 20)}\n[conteúdo truncado]`;
 }
 
+function truncateToolContentForPrompt(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const firstMarker = "\n[… trecho intermediário selecionado …]\n";
+  const secondMarker = "\n[… final do resultado …]\n";
+  const available = Math.max(0, limit - firstMarker.length - secondMarker.length);
+  const chunkLength = Math.floor(available / 3);
+  const middleStart = Math.max(0, Math.floor((value.length - chunkLength) / 2));
+  return [
+    value.slice(0, chunkLength),
+    firstMarker,
+    value.slice(middleStart, middleStart + chunkLength),
+    secondMarker,
+    value.slice(-chunkLength),
+  ].join("");
+}
+
 function enforceVerifiedTechnicalEvidence(
   result: InvestigationTurnResult,
   executions: InvestigationToolResult[],
   descriptors: InvestigationToolDescriptor[],
 ): InvestigationTurnResult {
+  type EvidenceSource = InvestigationTurnResult["evidence"][number]["source"];
   const descriptorsById = new Map(
     descriptors.map((descriptor) => [descriptor.id, descriptor] as const),
   );
-  const successfulSourcesByReference = new Map<string, Set<string>>();
+  const successfulSourcesByReference = new Map<string, Set<EvidenceSource>>();
   for (const execution of executions) {
     if (execution.status !== "success" || !execution.reference) continue;
     const descriptor = descriptorsById.get(execution.toolId);
     if (!descriptor || descriptor.type === "debugger_skill") continue;
-    const source = TOOL_EVIDENCE_SOURCE[descriptor.type];
-    const sources = successfulSourcesByReference.get(execution.reference) ?? new Set<string>();
+    const source = TOOL_EVIDENCE_SOURCE[descriptor.type] as EvidenceSource;
+    const sources = successfulSourcesByReference.get(execution.reference) ?? new Set<EvidenceSource>();
     sources.add(source);
     successfulSourcesByReference.set(execution.reference, sources);
   }
-  const invalidTechnicalEvidence = result.evidence.filter(
+  const normalizedEvidence = result.evidence.map((evidence) => {
+    if (!evidence.reference) return evidence;
+    const verifiedSources = successfulSourcesByReference.get(evidence.reference);
+    if (!verifiedSources || verifiedSources.size !== 1) return evidence;
+    const [verifiedSource] = verifiedSources;
+    return verifiedSource === evidence.source
+      ? evidence
+      : { ...evidence, source: verifiedSource };
+  });
+  const normalizedResult = normalizedEvidence.every(
+    (evidence, index) => evidence === result.evidence[index],
+  )
+    ? result
+    : { ...result, evidence: normalizedEvidence };
+  const invalidTechnicalEvidence = normalizedResult.evidence.filter(
     (evidence) => {
       if (!TECHNICAL_EVIDENCE_SOURCES.has(evidence.source)) return false;
       if (!evidence.reference) return true;
@@ -853,18 +1111,18 @@ function enforceVerifiedTechnicalEvidence(
         ?.has(evidence.source);
     },
   );
-  if (!invalidTechnicalEvidence.length) return result;
+  if (!invalidTechnicalEvidence.length) return normalizedResult;
 
-  const verifiedEvidence = result.evidence.filter(
+  const verifiedEvidence = normalizedResult.evidence.filter(
     (evidence) => !invalidTechnicalEvidence.includes(evidence),
   );
   const blocksOperationalResponse =
-    result.phase === "conclusion" || Boolean(result.suggestedResponse);
+    normalizedResult.phase === "conclusion" || Boolean(normalizedResult.suggestedResponse);
   return {
-    ...result,
+    ...normalizedResult,
     assistantMessage:
       "A orientação técnica não foi liberada porque as referências apresentadas não correspondem a uma execução local concluída com sucesso.",
-    phase: blocksOperationalResponse ? "needs_information" : result.phase,
+    phase: blocksOperationalResponse ? "needs_information" : normalizedResult.phase,
     threadSummary: "Orientação técnica aguardando evidência local auditável.",
     findings: [{
       statement: "A orientação técnica ainda não possui uma referência local validada.",
@@ -875,8 +1133,8 @@ function enforceVerifiedTechnicalEvidence(
     suggestedResponse: null,
     nextAction:
       "Execute novamente a ferramenta necessária e cite exatamente a referência retornada pelo Threadmark.",
-    confidence: Math.min(result.confidence, 0.5),
-    toolRequests: blocksOperationalResponse ? [] : result.toolRequests,
+    confidence: Math.min(normalizedResult.confidence, 0.5),
+    toolRequests: blocksOperationalResponse ? [] : normalizedResult.toolRequests,
   };
 }
 

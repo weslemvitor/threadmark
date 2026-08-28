@@ -127,6 +127,7 @@ import type {
 } from "../agent/types.js";
 import { DOCUMENTATION_PROMPT_VERSION } from "../agent/prompt.js";
 import { KNOWLEDGE_EXTRACTION_PROMPT_VERSION } from "../agent/prompt.js";
+import { isTaskContinuationInstruction } from "../agent/confirmation-intent.js";
 import { renderKnowledgeDocument } from "../knowledge/renderer.js";
 import type {
   QuotedTicketReference,
@@ -1409,6 +1410,16 @@ function truncatePromptText(value: string, limit: number): string {
   const beginning = Math.ceil(available * 0.6);
   const ending = available - beginning;
   return `${value.slice(0, beginning)}${marker}${ending > 0 ? value.slice(-ending) : ""}`;
+}
+
+function truncateToolAuditContent(value: string): string {
+  if (value.length <= TOOL_AUDIT_CONTENT_MAX_LENGTH) return value;
+  const marker =
+    "\n[… conteúdo excedente omitido da auditoria; consulte a referência da execução quando disponível …]\n";
+  const available = TOOL_AUDIT_CONTENT_MAX_LENGTH - marker.length;
+  const beginning = Math.ceil(available * 0.7);
+  const ending = available - beginning;
+  return `${value.slice(0, beginning)}${marker}${value.slice(-ending)}`;
 }
 
 function limitSupportPromptMessages(
@@ -10175,13 +10186,72 @@ export class SupportStore {
     }));
     const operatorMessage = this.database
       .prepare(
-        `SELECT body, context_json
+        `SELECT rowid AS message_order, body, context_json
          FROM investigation_thread_messages
          WHERE id = ? AND thread_id = ?`,
       )
       .get(job.operator_message_id, job.thread_id) as
-      | { body: string; context_json: string }
+      | { message_order: number; body: string; context_json: string }
       | undefined;
+    const currentContinuesTask = isTaskContinuationInstruction(
+      operatorMessage?.body ?? "",
+    );
+    const lastConclusion = operatorMessage
+      ? (this.database.prepare(
+          `SELECT COALESCE(MAX(rowid), 0) AS message_order
+           FROM investigation_thread_messages
+           WHERE thread_id = ? AND role = 'assistant' AND phase = 'conclusion'
+             AND rowid < ?`,
+        ).get(job.thread_id, operatorMessage.message_order) as { message_order: number })
+      : { message_order: 0 };
+    const previousOperatorRows = operatorMessage && currentContinuesTask
+      ? this.database.prepare(
+          `SELECT id, body, created_at, rowid AS message_order
+           FROM investigation_thread_messages
+           WHERE thread_id = ? AND role = 'operator' AND rowid < ?
+           ORDER BY rowid DESC LIMIT 20`,
+        ).all(job.thread_id, operatorMessage.message_order) as Array<{
+          id: string;
+          body: string;
+          created_at: string;
+          message_order: number;
+        }>
+      : [];
+    const resumedTaskRoot = previousOperatorRows.find(
+      (message) => !isTaskContinuationInstruction(message.body),
+    );
+    const taskRoot = operatorMessage
+      ? resumedTaskRoot ?? this.database.prepare(
+          `SELECT id, body, created_at, rowid AS message_order
+           FROM investigation_thread_messages
+           WHERE thread_id = ? AND role = 'operator'
+             AND rowid > ? AND rowid <= ?
+           ORDER BY rowid ASC LIMIT 1`,
+        ).get(
+          job.thread_id,
+          lastConclusion.message_order,
+          operatorMessage.message_order,
+        ) as {
+          id: string;
+          body: string;
+          created_at: string;
+          message_order: number;
+        } | undefined
+      : undefined;
+    const taskStartOrder = taskRoot?.message_order ?? lastConclusion.message_order;
+    const taskDirectiveRows = operatorMessage
+      ? (this.database.prepare(
+          `SELECT id, body, created_at
+           FROM investigation_thread_messages
+           WHERE thread_id = ? AND role = 'operator'
+             AND rowid >= ? AND rowid <= ?
+           ORDER BY rowid DESC LIMIT 12`,
+        ).all(
+          job.thread_id,
+          taskStartOrder,
+          operatorMessage.message_order,
+        ) as Array<{ id: string; body: string; created_at: string }>).reverse()
+      : [];
     const images = this.database
       .prepare(
         `SELECT attachment.id, attachment.message_id, attachment.file_name,
@@ -10265,6 +10335,18 @@ export class SupportStore {
       mode: job.scope,
       currentOperatorMessageId: job.operator_message_id,
       durableSummary: job.summary,
+      activeTask: taskRoot && operatorMessage
+        ? {
+            rootOperatorMessageId: taskRoot.id,
+            objective: taskRoot.body.slice(0, 4_000),
+            operatorDirectives: taskDirectiveRows.map((message) => ({
+              id: message.id,
+              body: message.body.slice(0, 4_000),
+              createdAt: message.created_at,
+            })),
+            continuation: currentContinuesTask,
+          }
+        : null,
       recentMessages: limitRecentThreadMessages(recentMessages),
       images: images.map((image) => ({
         id: image.id,
@@ -13899,7 +13981,7 @@ export class SupportStore {
         TOOL_AUDIT_SUMMARY_MAX_LENGTH,
       ),
       content: normalizedBoundedText(
-        execution.content,
+        truncateToolAuditContent(execution.content),
         "Conteúdo da execução",
         TOOL_AUDIT_CONTENT_MAX_LENGTH,
       ),

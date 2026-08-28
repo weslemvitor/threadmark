@@ -98,6 +98,69 @@ test("Threadmark AI prepara, confirma, testa e gerencia automações com autoriz
     assert.match(capabilities.content, /owner-1/);
     assert.doesNotMatch(capabilities.content, /sendMessage/);
 
+    const directMessage = addOperatorMessage(
+      "Crie uma automação para registrar uma nota quando o ticket for criado.",
+    );
+    const directPrepared = await executor.execute({
+      requestId: "automation-direct-prepare",
+      toolId: "threadmark-automations",
+      operation: "prepare_automation_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: directMessage.id,
+        automationId: null,
+        name: "Teste de tarefa direta",
+        description: "Valida autorização na mesma tarefa.",
+        definition,
+      }),
+      purpose: "Preparar a automação explicitamente solicitada.",
+    });
+    assert.equal(directPrepared.status, "success");
+    const directPreview = JSON.parse(directPrepared.content) as {
+      draftId: string;
+      executionAuthorized: boolean;
+    };
+    assert.equal(directPreview.executionAuthorized, true);
+    const directApplied = await executor.execute({
+      requestId: "automation-direct-apply",
+      toolId: "threadmark-automations",
+      operation: "apply_automation_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: directMessage.id,
+        draftId: directPreview.draftId,
+      }),
+      purpose: "Concluir a tarefa explicitamente autorizada sem confirmação duplicada.",
+    });
+    assert.equal(directApplied.status, "success", directApplied.summary);
+    const directWorkflow = (JSON.parse(directApplied.content) as { workflow: { id: string } }).workflow;
+    const directJob = store.claimNextAgentJob();
+    assert.equal(directJob?.kind, "thread_turn");
+    if (!directJob || directJob.kind !== "thread_turn") assert.fail("turno da automação não reivindicado");
+    store.appendInvestigationThreadToolExecution(directJob.id, directApplied);
+    const consumedRetryMessage = addOperatorMessage("Tenta novamente");
+    const consumedRetry = await executor.execute({
+      requestId: "automation-direct-consumed-retry",
+      toolId: "threadmark-automations",
+      operation: "apply_automation_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: consumedRetryMessage.id,
+        draftId: directPreview.draftId,
+      }),
+      purpose: "Comprovar que uma repetição não reutiliza autorização já consumida.",
+    });
+    assert.equal(consumedRetry.status, "error");
+    const directDeleteMessage = addOperatorMessage("Exclua a automação de teste agora.");
+    const directDeleted = await executor.execute({
+      requestId: "automation-direct-delete",
+      toolId: "threadmark-automations",
+      operation: "delete_automation",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: directDeleteMessage.id,
+        automationId: directWorkflow.id,
+      }),
+      purpose: "Limpar a automação criada no cenário isolado.",
+    });
+    assert.equal(directDeleted.status, "success");
+
     const requestMessage = addOperatorMessage("Prepare uma automação para registrar uma nota quando o ticket for criado.");
     const prepared = await executor.execute({
       requestId: "automation-prepare-create",
