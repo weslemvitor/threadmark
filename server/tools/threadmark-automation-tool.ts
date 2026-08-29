@@ -362,7 +362,10 @@ export class ThreadmarkAutomationTool {
     const executionAuthorized =
       explicitAutomationDraftRequest(operator.body, intent) ||
       (
-        isRetryInstruction(operator.body) &&
+        (
+          isRetryInstruction(operator.body) ||
+          isAffirmativePreviewConfirmation(operator.body)
+        ) &&
         hasPriorAutomationInstruction(
           this.database,
           operator.threadId,
@@ -435,7 +438,10 @@ export class ThreadmarkAutomationTool {
       (
         explicitAutomationDraftRequest(operator.body, draft.intent) ||
         (
-          isRetryInstruction(operator.body) &&
+          (
+            isRetryInstruction(operator.body) ||
+            isAffirmativePreviewConfirmation(operator.body)
+          ) &&
           hasPriorAutomationInstruction(
             this.database,
             operator.threadId,
@@ -766,7 +772,7 @@ function explicitAutomationDraftRequest(
   const value = normalize(message);
   const action = intent === "create"
     ? /\b(criar|crie|cria|montar|monte|gerar|gere)\b/
-    : /\b(editar|edite|atualizar|atualize|alterar|altere|ajustar|ajuste)\b/;
+    : /\b(editar|edite|atualizar|atualize|alterar|altere|ajustar|ajuste|melhorar|melhore|aplicar|aplique)\b/;
   return action.test(value) && /\b(automacao|fluxo)\b/.test(value);
 }
 

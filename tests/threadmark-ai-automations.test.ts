@@ -294,6 +294,45 @@ test("Threadmark AI prepara, confirma, testa e gerencia automações com autoriz
       "Registrar início do atendimento",
     );
 
+    addOperatorMessage(
+      "Você poderia melhorar então as automações existentes com base na análise?",
+    );
+    const naturalConfirmation = addOperatorMessage("Pode aplicar as mudanças");
+    const inheritedPrepared = await executor.execute({
+      requestId: "automation-natural-confirmation-prepare",
+      toolId: "threadmark-automations",
+      operation: "prepare_automation_draft",
+      argumentsJson: JSON.stringify({
+        operatorMessageId: naturalConfirmation.id,
+        automationId: workflow.id,
+        name: "Registrar início do atendimento melhorado",
+        description: "Mantém o fluxo e valida a confirmação natural.",
+        definition,
+      }),
+      purpose: "Preparar a melhoria confirmada pelo operador.",
+    });
+    assert.equal(inheritedPrepared.status, "success", inheritedPrepared.summary);
+    const inheritedPreview = JSON.parse(inheritedPrepared.content) as {
+      draftId: string;
+      executionAuthorized: boolean;
+    };
+    assert.equal(inheritedPreview.executionAuthorized, true);
+    const inheritedApplied = await executor.execute({
+      requestId: "automation-natural-confirmation-apply",
+      toolId: "threadmark-automations",
+      operation: "apply_automation_draft",
+      argumentsJson: JSON.stringify({
+        confirmationMessageId: naturalConfirmation.id,
+        draftId: inheritedPreview.draftId,
+      }),
+      purpose: "Aplicar a melhoria naturalmente confirmada.",
+    });
+    assert.equal(inheritedApplied.status, "success", inheritedApplied.summary);
+    assert.equal(
+      (database.prepare("SELECT name FROM automation_workflows WHERE id = ?").get(workflow.id) as { name: string }).name,
+      "Registrar início do atendimento melhorado",
+    );
+
     const deleteMessage = addOperatorMessage("Exclua essa automação definitivamente.");
     const deleted = await executor.execute({
       requestId: "automation-delete",
