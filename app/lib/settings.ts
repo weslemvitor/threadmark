@@ -117,7 +117,12 @@ export interface AiConnectionTestResult {
   models?: string[];
 }
 
-export type AiTaskKind = "triage" | "automatic" | "deep" | "documentation";
+export type AiTaskKind =
+  | "triage"
+  | "automatic"
+  | "quick"
+  | "deep"
+  | "documentation";
 
 export interface AiTaskProfile {
   taskKind: AiTaskKind;
@@ -264,7 +269,11 @@ function providerValue(value: unknown): AiProviderId {
 }
 
 function taskKindValue(value: unknown): AiTaskKind {
-  return value === "triage" || value === "automatic" || value === "deep" || value === "documentation"
+  return value === "triage" ||
+    value === "automatic" ||
+    value === "quick" ||
+    value === "deep" ||
+    value === "documentation"
     ? value
     : "automatic";
 }

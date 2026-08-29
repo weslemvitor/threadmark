@@ -75,6 +75,30 @@ export async function cleanupStoredThreadmarkAiImages(
   await Promise.all(images.map((image) => rm(image.localPath, { force: true })));
 }
 
+export async function deleteThreadmarkAiImageFiles(
+  attachmentsDirectory: string,
+  localPaths: readonly string[],
+): Promise<void> {
+  const trustedDirectory = path.join(
+    path.resolve(attachmentsDirectory),
+    "threadmark-ai",
+  );
+  await Promise.all(
+    localPaths.map(async (localPath) => {
+      const target = path.resolve(localPath);
+      const relativePath = path.relative(trustedDirectory, target);
+      if (
+        !relativePath ||
+        relativePath.startsWith("..") ||
+        path.isAbsolute(relativePath)
+      ) {
+        throw new ValidationError("Caminho de anexo do Threadmark AI inválido.");
+      }
+      await rm(target, { force: true });
+    }),
+  );
+}
+
 function decodeThreadmarkAiImage(upload: ThreadmarkAiImageUploadInput): {
   fileName: string;
   mimeType: ThreadmarkAiImageMimeType;

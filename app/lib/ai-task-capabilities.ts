@@ -1,4 +1,9 @@
-export type AiTaskCapabilityKind = "triage" | "automatic" | "deep" | "documentation";
+export type AiTaskCapabilityKind =
+  | "triage"
+  | "automatic"
+  | "quick"
+  | "deep"
+  | "documentation";
 
 export interface TaskCapableConnection {
   enabled: boolean;

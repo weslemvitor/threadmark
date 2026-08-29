@@ -3612,4 +3612,119 @@ export const migrations: Migration[] = [
           CHECK (suggested_priority IN ('low', 'normal', 'high', 'urgent'));
     `,
   },
+  {
+    version: 68,
+    name: "threadmark_ai_user_ownership",
+    sql: `
+      ALTER TABLE investigation_threads
+        ADD COLUMN created_by_user_id TEXT
+          REFERENCES local_users(id) ON DELETE SET NULL;
+
+      UPDATE investigation_threads
+      SET created_by_user_id = COALESCE(
+        (
+          SELECT MIN(message.actor_user_id)
+          FROM investigation_thread_messages message
+          WHERE message.thread_id = investigation_threads.id
+            AND message.role = 'operator'
+            AND message.actor_user_id IS NOT NULL
+          HAVING COUNT(DISTINCT message.actor_user_id) = 1
+        ),
+        (
+          SELECT MIN(user.id)
+          FROM local_users user
+          WHERE lower(trim(user.display_name)) =
+                lower(trim(investigation_threads.created_by))
+            AND NOT EXISTS (
+              SELECT 1
+              FROM investigation_thread_messages authored_message
+              WHERE authored_message.thread_id = investigation_threads.id
+                AND authored_message.role = 'operator'
+                AND authored_message.actor_user_id IS NOT NULL
+            )
+          HAVING COUNT(*) = 1
+        )
+      )
+      WHERE scope = 'workspace'
+        AND created_by_user_id IS NULL;
+
+      CREATE INDEX investigation_threads_owner_updated_idx
+        ON investigation_threads(created_by_user_id, updated_at DESC, id);
+    `,
+  },
+  {
+    version: 69,
+    name: "threadmark_ai_models_by_workload",
+    sql: `
+      ALTER TABLE ai_task_profiles RENAME TO ai_task_profiles_v68;
+
+      CREATE TABLE ai_task_profiles (
+        task_kind TEXT PRIMARY KEY
+          CHECK (task_kind IN (
+            'triage', 'automatic', 'quick', 'deep', 'documentation'
+          )),
+        connection_id TEXT REFERENCES ai_provider_connections(id) ON DELETE SET NULL,
+        model TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        updated_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      INSERT INTO ai_task_profiles (
+        task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      )
+      SELECT task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      FROM ai_task_profiles_v68;
+
+      INSERT INTO ai_task_profiles (
+        task_kind, connection_id, model, enabled, updated_by, created_at, updated_at
+      )
+      SELECT
+        'quick', connection_id, model, enabled, 'migration-69',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM ai_task_profiles_v68
+      WHERE task_kind = 'deep';
+
+      DROP TABLE ai_task_profiles_v68;
+
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_workload TEXT
+          CHECK (ai_workload IN ('quick', 'deep'));
+    `,
+  },
+  {
+    version: 70,
+    name: "threadmark_ai_unread_responses",
+    sql: `
+      ALTER TABLE investigation_threads
+        ADD COLUMN last_viewed_at TEXT;
+
+      UPDATE investigation_threads
+      SET last_viewed_at = updated_at
+      WHERE scope = 'workspace';
+    `,
+  },
+  {
+    version: 71,
+    name: "threadmark_ai_token_usage",
+    sql: `
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_model_calls INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_model_calls >= 0);
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_input_tokens INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_input_tokens >= 0);
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_cached_input_tokens INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_cached_input_tokens >= 0);
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_output_tokens INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_output_tokens >= 0);
+      ALTER TABLE investigation_thread_jobs
+        ADD COLUMN ai_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0
+          CHECK (ai_reasoning_output_tokens >= 0);
+    `,
+  },
 ];

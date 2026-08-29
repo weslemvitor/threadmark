@@ -1883,7 +1883,11 @@ export function SupportApp({
           returnFocusRef={productForwardingReturnFocusRef}
         />
       ) : null}
-      <ThreadmarkAi context={threadmarkAiContext} />
+      <ThreadmarkAi
+        context={threadmarkAiContext}
+        currentUserId={access?.user.id ?? null}
+        key={access?.user.id ?? "anonymous"}
+      />
       {roomSearchOpen ? (
         <SupportSearchOverlay
           onClose={() => setRoomSearchOpen(false)}

@@ -261,7 +261,6 @@ function fixtureConfig(projectRoot: string): SupportConfig {
     startWeb: true,
     agentEnabled: false,
     agentConcurrency: 2,
-    agentQuickModel: "gpt-5.6-terra",
     triageAiEnabled: false,
     triageAiModel: "gpt-5.4-mini",
     triageAiQuietMs: 30_000,

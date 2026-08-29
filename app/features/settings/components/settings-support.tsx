@@ -68,9 +68,14 @@ export const TASKS: Array<{
     description: "Separa contexto, elogios e demandas que podem virar ticket.",
   },
   {
+    id: "quick",
+    label: "Threadmark AI · Respostas rápidas",
+    description: "Usado em dúvidas diretas, confirmações e ações simples que não exigem uma investigação extensa.",
+  },
+  {
     id: "deep",
-    label: "Threadmark AI",
-    description: "Atende dúvidas, investiga casos e prepara respostas ou ações em um chat global persistente.",
+    label: "Threadmark AI · Investigações",
+    description: "Usado quando o pedido exige buscar conversas, banco, logs, código, ferramentas ou analisar imagens.",
   },
   {
     id: "documentation",
@@ -157,10 +162,14 @@ export function TaskSecurityNote({
   const provider = providerMeta(connection.providerId);
   let description: string;
 
-  if (connection.providerId === "codex" && taskKind !== "deep") {
+  if (
+    connection.providerId === "codex" &&
+    taskKind !== "deep" &&
+    taskKind !== "quick"
+  ) {
     description = "Codex CLI local: execução efêmera, isolada e somente leitura, sem regras, MCPs ou acesso à codebase. Ao usar um modelo hospedado, o contexto selecionado é processado pela OpenAI.";
   } else if (
-    taskKind === "deep" &&
+    (taskKind === "deep" || taskKind === "quick") &&
     (connection.capabilities.codebaseAccess || connection.capabilities.localTools)
   ) {
     description = "Codex CLI local: execução somente leitura com acesso autorizado à codebase e às ferramentas configuradas. Ao usar um modelo hospedado, o contexto selecionado é processado pela OpenAI.";

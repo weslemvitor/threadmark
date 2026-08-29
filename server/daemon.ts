@@ -227,7 +227,6 @@ async function main(): Promise<void> {
       providerSettings,
       codexAgent,
       deepTools,
-      { quickModel: config.agentQuickModel },
     );
     const investigations = new InvestigationWorker(store, agent, {
       executionRegistry: investigationExecutions,

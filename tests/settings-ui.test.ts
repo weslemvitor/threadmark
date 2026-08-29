@@ -7,12 +7,13 @@ import {
 } from "../app/lib/ai-task-capabilities.js";
 
 test("configurações fazem parte da navegação e preservam fronteira local-first", async () => {
-  const [sidebar, app, settings, api, aiSection] = await Promise.all([
+  const [sidebar, app, settings, api, aiSection, settingsSupport] = await Promise.all([
     readFile(new URL("../app/components/layout/sidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/features/settings/components/settings-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../server/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/features/settings/components/sections/ai-section.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/features/settings/components/settings-support.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(sidebar, /id: "settings"/);
@@ -41,6 +42,10 @@ test("configurações fazem parte da navegação e preservam fronteira local-fir
   assert.match(settings, /silenceWindowSeconds/);
   assert.doesNotMatch(settings, /Análise automática/);
   assert.match(settings, /Threadmark AI/);
+  assert.match(settingsSupport, /Threadmark AI · Respostas rápidas/);
+  assert.match(settingsSupport, /Threadmark AI · Investigações/);
+  assert.match(aiSection, /Como o Threadmark AI escolhe o modelo/);
+  assert.match(aiSection, /Cada modo usa exatamente a conexão e o modelo configurados abaixo/);
   assert.match(settings, /Padrão da conta Codex/);
   assert.match(settings, /Atualizar modelos/);
   assert.match(aiSection, /className="absolute -top-1 right-0"/);
@@ -101,6 +106,7 @@ test("conexões são oferecidas conforme a capacidade específica de cada tarefa
   assert.equal(connectionSupportsTask(connection, "triage"), true);
   assert.equal(connectionSupportsTask(connection, "automatic"), true);
   assert.equal(connectionSupportsTask(connection, "deep"), false);
+  assert.equal(connectionSupportsTask(connection, "quick"), false);
   assert.equal(
     connectionSupportsTask({
       ...connection,
@@ -130,6 +136,7 @@ test("conexões são oferecidas conforme a capacidade específica de cada tarefa
   assert.equal(connectionSupportsTask(codex, "triage"), true);
   assert.equal(connectionSupportsTask(codex, "automatic"), true);
   assert.equal(connectionSupportsTask(codex, "deep"), true);
+  assert.equal(connectionSupportsTask(codex, "quick"), true);
 });
 
 test("clientes de API encerram a sessão visual ao receber 401", async () => {

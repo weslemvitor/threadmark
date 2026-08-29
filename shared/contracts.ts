@@ -1267,6 +1267,8 @@ export interface InvestigationThreadSummaryDto {
   updatedAt: string;
   /** Timestamp of the latest persisted assistant turn; opening the room alone keeps this null. */
   lastAssistantMessageAt: string | null;
+  /** Workspace conversations remain unread until their owner opens the response. */
+  unread?: boolean;
   activeTurnState: InvestigationJobState | null;
 }
 
@@ -1287,8 +1289,23 @@ export interface InvestigationToolExecutionDto {
 export interface InvestigationThreadMessageDto {
   id: string;
   role: "operator" | "assistant";
+  /** Authenticated local user who sent the operator message, when available. */
+  author: {
+    userId: string;
+    displayName: string;
+  } | null;
   body: string;
   phase: InvestigationTurnPhase | null;
+  aiProviderId:
+    | "codex"
+    | "openai"
+    | "anthropic"
+    | "openrouter"
+    | "ollama"
+    | null;
+  aiModel: string | null;
+  aiWorkload: "quick" | "deep" | null;
+  aiTokenUsage: AiTokenUsageDto | null;
   evidence: InvestigationEvidenceDto[];
   suggestedResponse: string | null;
   nextAction: string | null;
@@ -1341,11 +1358,29 @@ export interface InvestigationThreadTurnDto {
   finishedAt: string | null;
   attemptCount: number;
   error: string | null;
+  aiProviderId:
+    | "codex"
+    | "openai"
+    | "anthropic"
+    | "openrouter"
+    | "ollama"
+    | null;
+  aiModel: string | null;
+  aiWorkload: "quick" | "deep" | null;
+  aiTokenUsage: AiTokenUsageDto | null;
   cancelledAt: string | null;
   cancelledBy: string | null;
   /** Append-only audit, available even when the model turn fails or is aborted. */
   toolExecutions: InvestigationToolExecutionDto[];
   result: InvestigationTurnResultDto | null;
+}
+
+export interface AiTokenUsageDto {
+  modelCalls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
 }
 
 export interface InvestigationThreadDto extends InvestigationThreadSummaryDto {
@@ -1382,6 +1417,7 @@ export interface ThreadmarkAiThreadDto extends InvestigationThreadSummaryDto {
   scope: "workspace";
   ticketId: null;
   title: string;
+  unread: boolean;
   context: ThreadmarkAiContextDto | null;
   summary: string;
   createdAt: string;
@@ -1398,9 +1434,15 @@ export interface ThreadmarkAiThreadListResponse {
       | "status"
       | "updatedAt"
       | "lastAssistantMessageAt"
+      | "unread"
       | "activeTurnState"
     >
   >;
+}
+
+export interface DeleteThreadmarkAiThreadResponse {
+  id: string;
+  deleted: true;
 }
 
 export interface CreateThreadmarkAiThreadInput {

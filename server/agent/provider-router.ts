@@ -6,7 +6,10 @@ import {
   isAffirmativePreviewConfirmation,
   isRetryInstruction,
 } from "./confirmation-intent.js";
-import { investigationExecutionPolicy } from "./investigation-routing.js";
+import {
+  investigationExecutionPolicy,
+  type InvestigationExecutionPolicy,
+} from "./investigation-routing.js";
 import type {
   InvestigationToolDescriptor,
   DocumentationDraftInput,
@@ -17,6 +20,7 @@ import type {
   InvestigationToolResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
+  ModelTokenUsage,
   SupportAnalysis,
   SupportAnalysisInput,
   TriageAnalysis,
@@ -67,7 +71,6 @@ export interface DeepInvestigationCoordinatorOptions {
   maxToolOperations?: number;
   maxSameOperation?: number;
   maxCodeSearchOperations?: number;
-  quickModel?: string;
 }
 
 /** Routes each workload to its task-specific provider and records the executed model. */
@@ -76,8 +79,6 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
   private readonly maxToolOperations: number;
   private readonly maxSameOperation: number;
   private readonly maxCodeSearchOperations: number;
-  private readonly quickModel: string;
-
   constructor(
     private readonly database: SupportDatabase,
     private readonly settings: AiProviderSettingsService,
@@ -105,7 +106,6 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       DEFAULT_MAX_CODE_SEARCH_OPERATIONS,
       "maxCodeSearchOperations",
     );
-    this.quickModel = options.quickModel?.trim() || "gpt-5.6-terra";
   }
 
   async analyse(input: SupportAnalysisInput, signal?: AbortSignal): Promise<SupportAnalysis> {
@@ -222,25 +222,29 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       executionPolicy.maxCodeSearchOperations,
     );
     const resolved = await this.settings.createAgentForTask(
-      "deep",
+      executionPolicy.workload,
       this.codex,
-      executionPolicy.workload === "quick"
-        ? { codexModelOverride: this.quickModel }
-        : {},
     );
     this.database
       .prepare(
         `UPDATE investigation_thread_jobs
-         SET ai_provider_id = ?, ai_connection_id = ?, ai_model = ?
+         SET ai_provider_id = ?, ai_connection_id = ?, ai_model = ?,
+             ai_workload = ?
          WHERE thread_id = ? AND state = 'running'`,
       )
       .run(
         resolved.connection.providerId,
         resolved.connection.id,
         resolved.profile.model,
+        executionPolicy.workload,
         input.threadId,
     );
-    const availableTools = this.deepTools?.descriptors() ?? [];
+    const registeredTools = this.deepTools?.descriptors() ?? [];
+    const availableTools = toolsForExecutionPolicy(
+      registeredTools,
+      executionPolicy,
+      input,
+    );
     const toolResults: InvestigationToolResult[] = [...(input.toolResults ?? [])];
     const pendingConfirmation = resolvePendingDraftConfirmation(
       this.database,
@@ -251,7 +255,7 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       pendingConfirmation &&
       this.deepTools &&
       !toolResults.some((result) => result.requestId === pendingConfirmation.requestId) &&
-      toolSupportsRequest(availableTools, pendingConfirmation)
+      toolSupportsRequest(registeredTools, pendingConfirmation)
     ) {
       const executions = await this.deepTools.executeMany([pendingConfirmation], signal);
       for (const execution of executions) {
@@ -302,6 +306,7 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         toolResults: boundedToolResultsForPrompt(toolResults),
         executionBudget: {
           workload: executionPolicy.workload,
+          promptMode: executionPolicy.promptMode,
           maxToolRounds,
           usedToolRounds,
           maxToolOperations,
@@ -311,12 +316,18 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           maxCycles: MAX_AUTONOMOUS_BUDGET_CYCLES,
           readonlyContinuationRequired,
         },
+        onModelUsage: (usage) => {
+          this.recordInvestigationUsage(input.threadId, usage);
+        },
       }, signal);
       signal?.throwIfAborted();
-      const result = enforceVerifiedTechnicalEvidence(
-        rawResult,
-        toolResults,
-        availableTools,
+      const result = suppressIrrelevantWhatsAppGuardrail(
+        enforceVerifiedTechnicalEvidence(
+          rawResult,
+          toolResults,
+          availableTools,
+        ),
+        input,
       );
       if (!result.toolRequests.length) {
         if (
@@ -485,6 +496,27 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
     }
   }
 
+  private recordInvestigationUsage(
+    threadId: string,
+    usage: ModelTokenUsage,
+  ): void {
+    this.database.prepare(
+      `UPDATE investigation_thread_jobs
+       SET ai_model_calls = ai_model_calls + 1,
+           ai_input_tokens = ai_input_tokens + ?,
+           ai_cached_input_tokens = ai_cached_input_tokens + ?,
+           ai_output_tokens = ai_output_tokens + ?,
+           ai_reasoning_output_tokens = ai_reasoning_output_tokens + ?
+       WHERE thread_id = ? AND state = 'running'`,
+    ).run(
+      usage.inputTokens,
+      usage.cachedInputTokens,
+      usage.outputTokens,
+      usage.reasoningOutputTokens,
+      threadId,
+    );
+  }
+
   private persistInvestigationCheckpoint(
     threadId: string,
     summary: string,
@@ -497,6 +529,40 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       )
       .run(summary, new Date().toISOString(), threadId);
   }
+}
+
+export function toolsForExecutionPolicy(
+  descriptors: InvestigationToolDescriptor[],
+  policy: InvestigationExecutionPolicy,
+  input: Pick<
+    InvestigationThreadInput,
+    "currentOperatorMessageId" | "recentMessages" | "activeTask" | "durableSummary"
+  >,
+): InvestigationToolDescriptor[] {
+  if (policy.workload === "deep") return descriptors;
+  if (policy.promptMode === "conversation") return [];
+
+  const currentBody = input.recentMessages.find(
+    (message) => message.id === input.currentOperatorMessageId,
+  )?.body ?? "";
+  const taskBody = input.activeTask?.operatorDirectives
+    .map((directive) => directive.body)
+    .join("\n") ?? "";
+  const context = `${currentBody}\n${taskBody}\n${input.durableSummary}`
+    .toLocaleLowerCase("pt-BR");
+  const automationRequested = /\bautoma(?:cao|ção|coes|ções)\b/iu.test(context);
+  const knowledgeRequested =
+    /\b(?:documento|documentacao|documentação|conhecimento|knowledge|artigo|faq|runbook)\b/iu
+      .test(context);
+
+  return descriptors.filter((descriptor) => {
+    if (descriptor.id === "threadmark-context") return true;
+    if (descriptor.id === "threadmark-automations") return automationRequested;
+    if (descriptor.type === "knowledge") return knowledgeRequested;
+    if (descriptor.type !== "connected_app") return false;
+    const appName = descriptor.name.trim().toLocaleLowerCase("pt-BR");
+    return appName.length > 1 && context.includes(appName);
+  });
 }
 
 function boundedPositiveInteger(
@@ -701,6 +767,51 @@ function toolSupportsRequest(
 ): boolean {
   const descriptor = descriptors.find((candidate) => candidate.id === request.toolId);
   return descriptor?.operations.some((operation) => operation.name === request.operation) ?? false;
+}
+
+function suppressIrrelevantWhatsAppGuardrail(
+  result: InvestigationTurnResult,
+  input: Pick<
+    InvestigationThreadInput,
+    "activeTask" | "currentOperatorMessageId" | "recentMessages"
+  >,
+): InvestigationTurnResult {
+  const currentMessage = input.recentMessages.find(
+    (message) => message.id === input.currentOperatorMessageId,
+  );
+  const operatorContext = [
+    currentMessage?.body ?? "",
+    ...(input.activeTask?.operatorDirectives.map((directive) => directive.body) ?? []),
+  ].join("\n");
+  if (/\bwhatsapp\b/iu.test(operatorContext)) return result;
+
+  const irrelevantGuardrail = (value: string): boolean =>
+    (
+      /\bwhatsapp\b/iu.test(value) &&
+      /\b(?:outbound|inbound|envio|enviar|mensage(?:m|ns)|restri(?:cao|ção)|proibid[oa]|sem)\b/iu.test(value)
+    ) ||
+    /\bnunca\s+(?:envie|enviar)\s+mensage(?:m|ns)\b/iu.test(value);
+  const clean = (value: string): string =>
+    value
+      .split(/(?<=[.!?])\s+|\n+/u)
+      .filter((part) => part.trim() && !irrelevantGuardrail(part))
+      .join("\n")
+      .trim();
+
+  const assistantMessage = clean(result.assistantMessage);
+  const threadSummary = clean(result.threadSummary);
+  const nextAction = result.nextAction ? clean(result.nextAction) : null;
+  const findings = (result.findings ?? []).filter(
+    (finding) => !irrelevantGuardrail(finding.statement),
+  );
+  return {
+    ...result,
+    assistantMessage: assistantMessage || "Tarefa processada com segurança.",
+    threadSummary:
+      threadSummary || "Tarefa processada com os resultados auditáveis disponíveis.",
+    findings,
+    nextAction,
+  };
 }
 
 function requiresCurrentOperatorConfirmation(

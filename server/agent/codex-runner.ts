@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { boundProviderDocumentationInput } from "./provider-input.js";
 import {
   buildInvestigationThreadPrompt,
+  buildQuickInvestigationThreadPrompt,
   buildDocumentationPrompt,
   DOCUMENTATION_PROMPT_INSTRUCTIONS,
   buildKnowledgeExtractionPrompt,
@@ -38,6 +39,7 @@ import type {
   KnowledgeExtractionResult,
   InvestigationThreadInput,
   InvestigationTurnResult,
+  ModelTokenUsage,
   SupportAnalysis,
   SupportAnalysisInput,
   TriageAnalysis,
@@ -77,6 +79,47 @@ export interface CodexRunnerOptions {
 export interface ProcessResult {
   exitCode: number;
   stderr: string;
+  stdout?: string;
+}
+
+const MAX_CODEX_EVENT_STDOUT_CHARS = 2_000_000;
+
+export function parseCodexTokenUsage(stdout: string): ModelTokenUsage | null {
+  let usage: ModelTokenUsage | null = null;
+  for (const line of stdout.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    const raw = record.usage && typeof record.usage === "object"
+      ? record.usage as Record<string, unknown>
+      : null;
+    if (!raw) continue;
+    const outputDetails = raw.output_tokens_details &&
+        typeof raw.output_tokens_details === "object"
+      ? raw.output_tokens_details as Record<string, unknown>
+      : null;
+    usage = {
+      inputTokens: nonNegativeInteger(raw.input_tokens),
+      cachedInputTokens: nonNegativeInteger(raw.cached_input_tokens),
+      outputTokens: nonNegativeInteger(raw.output_tokens),
+      reasoningOutputTokens: nonNegativeInteger(
+        raw.reasoning_output_tokens ?? outputDetails?.reasoning_tokens,
+      ),
+    };
+  }
+  return usage;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : 0;
 }
 
 type ProcessExecutor = (args: {
@@ -566,9 +609,10 @@ const defaultProcessExecutor: ProcessExecutor = ({
     const child = spawn(executable, argv, {
       cwd,
       env: env as NodeJS.ProcessEnv,
-      stdio: ["pipe", "ignore", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";
+    let stdout = "";
     let timer: NodeJS.Timeout | null = null;
     const finish = () => {
       if (timer) clearTimeout(timer);
@@ -595,13 +639,20 @@ const defaultProcessExecutor: ProcessExecutor = ({
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_000);
     });
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdout.length >= MAX_CODEX_EVENT_STDOUT_CHARS) return;
+      stdout = `${stdout}${chunk.toString("utf8")}`.slice(
+        0,
+        MAX_CODEX_EVENT_STDOUT_CHARS,
+      );
+    });
     child.once("error", (error) => {
       finish();
       reject(error);
     });
     child.once("close", (code) => {
       finish();
-      resolve({ exitCode: code ?? 1, stderr });
+      resolve({ exitCode: code ?? 1, stderr, stdout });
     });
     child.stdin.end(stdin);
   });
@@ -670,12 +721,15 @@ export class CodexSupportAgent {
     const raw = await this.executeStructuredRun({
       input: boundedInput.ticket,
       imageInput: approvedInvestigationImageInput(input),
-      prompt: buildInvestigationThreadPrompt(boundedInput),
+      prompt: input.executionBudget?.workload === "quick"
+        ? buildQuickInvestigationThreadPrompt(boundedInput)
+        : buildInvestigationThreadPrompt(boundedInput),
       schemaPath: this.options.turnSchemaPath,
       mode: "deep",
       model,
       reasoningEffort:
         input.executionBudget?.workload === "quick" ? "low" : undefined,
+      onUsage: input.onModelUsage,
       signal,
     });
     return parseInvestigationTurnResult(raw, boundedInput);
@@ -748,6 +802,7 @@ export class CodexSupportAgent {
     mode: RunnerMode;
     model?: string;
     reasoningEffort?: "low" | "medium" | "high";
+    onUsage?: (usage: ModelTokenUsage) => void | Promise<void>;
     signal?: AbortSignal;
   }): Promise<unknown> {
     const runDir = await mkdtemp(path.join(os.tmpdir(), "threadmark-codex-"));
@@ -789,6 +844,7 @@ export class CodexSupportAgent {
         argv: [
           "exec",
           "--ephemeral",
+          "--json",
           "--strict-config",
           "--ignore-user-config",
           "--ignore-rules",
@@ -822,6 +878,15 @@ export class CodexSupportAgent {
         env: childEnvironment,
         signal: input.signal,
       });
+
+      const usage = parseCodexTokenUsage(result.stdout ?? "");
+      if (usage && input.onUsage) {
+        try {
+          await input.onUsage(usage);
+        } catch {
+          // Telemetria nunca pode impedir a resposta do agente.
+        }
+      }
 
       if (result.exitCode !== 0) {
         throw new Error(

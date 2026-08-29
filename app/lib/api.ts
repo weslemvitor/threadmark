@@ -16,6 +16,7 @@ import type {
   DeleteTicketResponse,
   InvestigationThreadDto,
   ThreadmarkAiContextDto,
+  DeleteThreadmarkAiThreadResponse,
   ThreadmarkAiThreadDto,
   ThreadmarkAiThreadListResponse,
   TicketListResponse,
@@ -856,6 +857,24 @@ export async function getThreadmarkAiThread(
 ): Promise<ThreadmarkAiThreadDto> {
   return request<ThreadmarkAiThreadDto>(
     `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}`,
+  );
+}
+
+export async function markThreadmarkAiThreadRead(
+  threadId: string,
+): Promise<ThreadmarkAiThreadDto> {
+  return request<ThreadmarkAiThreadDto>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}/read`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteThreadmarkAiThread(
+  threadId: string,
+): Promise<DeleteThreadmarkAiThreadResponse> {
+  return request<DeleteThreadmarkAiThreadResponse>(
+    `/api/threadmark-ai/threads/${encodeURIComponent(threadId)}`,
+    { method: "DELETE" },
   );
 }
 

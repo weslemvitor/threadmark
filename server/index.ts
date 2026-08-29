@@ -98,6 +98,7 @@ import { LegacyLocalToolImportService } from "./tools/legacy-tool-import.js";
 import { AudioTranscriptionService } from "./transcription/index.js";
 import {
   cleanupStoredThreadmarkAiImages,
+  deleteThreadmarkAiImageFiles,
   storeThreadmarkAiImages,
 } from "./media/threadmark-ai-images.js";
 import { AutomationRuntime } from "./automation-runtime/index.js";
@@ -654,7 +655,13 @@ const aiTaskProfilesInputSchema = z
       .array(
         z
           .object({
-            taskKind: z.enum(["triage", "automatic", "deep", "documentation"]),
+            taskKind: z.enum([
+              "triage",
+              "automatic",
+              "quick",
+              "deep",
+              "documentation",
+            ]),
             connectionId: z.union([z.string().trim().min(1).max(200), z.null()]),
             model: z.string().trim().min(1).max(200),
             enabled: z.boolean(),
@@ -662,7 +669,7 @@ const aiTaskProfilesInputSchema = z
           .strict(),
       )
       .min(1)
-      .max(3),
+      .max(5),
   })
   .strict();
 
@@ -1120,6 +1127,31 @@ function investigationMessageActorFor(
     userId: identity.kind === "user" ? identity.user.id : null,
     role: identity.user.role,
   };
+}
+
+function threadmarkAiOwnerUserIdFor(
+  context: Context<ApiEnvironment>,
+): string | null {
+  const identity = context.get("identity");
+  if (!identity) {
+    throw new AuthError("authentication_required", "Entre para continuar.");
+  }
+  return identity.kind === "user" ? identity.user.id : null;
+}
+
+function requireTicketInvestigationThread(
+  store: SupportStore,
+  threadId: string,
+) {
+  const thread = store.getInvestigationThread(threadId);
+  if (thread.scope !== "ticket") {
+    throw new DomainError(
+      "Conversa de investigação não encontrada",
+      "not_found",
+      404,
+    );
+  }
+  return thread;
 }
 
 function localMachineIdentity(): Extract<RequestIdentity, { kind: "local" }> {
@@ -2693,14 +2725,20 @@ function createApiAppInternal(
   );
 
   app.get("/api/threadmark-ai/threads", (context) =>
-    context.json(store.listThreadmarkAiThreads()),
+    context.json(
+      store.listThreadmarkAiThreads(threadmarkAiOwnerUserIdFor(context)),
+    ),
   );
 
   app.post("/api/threadmark-ai/threads", async (context) => {
     const raw = await context.req.text();
     const input = threadmarkAiThreadInputSchema.parse(raw ? JSON.parse(raw) : {});
     return context.json(
-      store.createThreadmarkAiThread(input, actorFor(context)),
+      store.createThreadmarkAiThread(
+        input,
+        actorFor(context),
+        threadmarkAiOwnerUserIdFor(context),
+      ),
       201,
     );
   });
@@ -2712,25 +2750,53 @@ function createApiAppInternal(
       store.getOrCreateThreadmarkAiThread(
         actorFor(context),
         input.context ?? null,
+        threadmarkAiOwnerUserIdFor(context),
       ),
     );
   });
 
   app.get("/api/threadmark-ai/threads/:id", (context) =>
-    context.json(store.getThreadmarkAiThread(context.req.param("id"))),
+    context.json(
+      store.getThreadmarkAiThread(
+        context.req.param("id"),
+        threadmarkAiOwnerUserIdFor(context),
+      ),
+    ),
   );
+
+  app.post("/api/threadmark-ai/threads/:id/read", (context) =>
+    context.json(
+      store.markThreadmarkAiThreadRead(
+        context.req.param("id"),
+        threadmarkAiOwnerUserIdFor(context),
+      ),
+    ),
+  );
+
+  app.delete("/api/threadmark-ai/threads/:id", async (context) => {
+    const deleted = store.deleteThreadmarkAiThread(
+      context.req.param("id"),
+      threadmarkAiOwnerUserIdFor(context),
+    );
+    await deleteThreadmarkAiImageFiles(
+      services.attachmentsDirectory ?? config.attachmentsDir,
+      deleted.attachmentPaths,
+    );
+    return context.json({ id: deleted.id, deleted: deleted.deleted });
+  });
 
   app.post("/api/threadmark-ai/threads/:id/messages", async (context) => {
     const input = threadmarkAiMessageInputSchema.parse(
       await context.req.json(),
     );
     const threadId = context.req.param("id");
-    store.getThreadmarkAiThread(threadId);
+    const ownerUserId = threadmarkAiOwnerUserIdFor(context);
+    store.getThreadmarkAiThread(threadId, ownerUserId);
     if (
       input.clientMessageId &&
       store.hasInvestigationThreadClientMessage(threadId, input.clientMessageId)
     ) {
-      return context.json(store.getThreadmarkAiThread(threadId), 202);
+      return context.json(store.getThreadmarkAiThread(threadId, ownerUserId), 202);
     }
 
     const storedImages = input.attachments?.length
@@ -2759,6 +2825,8 @@ function createApiAppInternal(
   });
 
   app.post("/api/threadmark-ai/threads/:id/cancel", (context) => {
+    const ownerUserId = threadmarkAiOwnerUserIdFor(context);
+    store.getThreadmarkAiThread(context.req.param("id"), ownerUserId);
     const cancellation = store.cancelInvestigationThread(
       context.req.param("id"),
       actorFor(context),
@@ -2766,21 +2834,31 @@ function createApiAppInternal(
     if (cancellation.cancelledJobId) {
       services.investigationExecutions?.cancel(cancellation.cancelledJobId);
     }
-    return context.json(store.getThreadmarkAiThread(context.req.param("id")));
+    return context.json(
+      store.getThreadmarkAiThread(context.req.param("id"), ownerUserId),
+    );
   });
 
-  app.post("/api/threadmark-ai/threads/:id/retry", (context) =>
-    context.json(store.retryThreadmarkAiTurn(context.req.param("id")), 202),
-  );
+  app.post("/api/threadmark-ai/threads/:id/retry", (context) => {
+    const threadId = context.req.param("id");
+    store.getThreadmarkAiThread(
+      threadId,
+      threadmarkAiOwnerUserIdFor(context),
+    );
+    return context.json(store.retryThreadmarkAiTurn(threadId), 202);
+  });
 
   app.get("/api/investigation-threads/:id", (context) =>
-    context.json(store.getInvestigationThread(context.req.param("id"))),
+    context.json(
+      requireTicketInvestigationThread(store, context.req.param("id")),
+    ),
   );
 
   app.post("/api/investigation-threads/:id/messages", async (context) => {
     const input = investigationThreadMessageInputSchema.parse(
       await context.req.json(),
     );
+    requireTicketInvestigationThread(store, context.req.param("id"));
     return context.json(
       store.addInvestigationThreadMessage(context.req.param("id"), input),
       202,
@@ -2788,6 +2866,7 @@ function createApiAppInternal(
   });
 
   app.post("/api/investigation-threads/:id/cancel", (context) => {
+    requireTicketInvestigationThread(store, context.req.param("id"));
     const cancellation = store.cancelInvestigationThread(
       context.req.param("id"),
       actorFor(context),
@@ -2822,12 +2901,25 @@ function createApiAppInternal(
   });
 
   app.get("/api/threadmark-ai/attachments/:id", async (context) => {
+    const ownerUserId = threadmarkAiOwnerUserIdFor(context);
+    const ownerFilter = ownerUserId
+      ? "AND thread.created_by_user_id = ?"
+      : "";
     const attachment = store.database
       .prepare(
-        `SELECT local_path, mime_type, file_name
-         FROM investigation_thread_message_attachments WHERE id = ?`,
+        `SELECT attachment.local_path, attachment.mime_type, attachment.file_name
+         FROM investigation_thread_message_attachments attachment
+         JOIN investigation_thread_messages message
+           ON message.id = attachment.message_id
+         JOIN investigation_threads thread ON thread.id = message.thread_id
+         WHERE attachment.id = ?
+           AND thread.scope = 'workspace'
+           ${ownerFilter}`,
       )
-      .get(context.req.param("id")) as
+      .get(
+        context.req.param("id"),
+        ...(ownerUserId ? [ownerUserId] : []),
+      ) as
       | { local_path: string; mime_type: string; file_name: string }
       | undefined;
     if (!attachment) {

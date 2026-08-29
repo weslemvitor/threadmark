@@ -1,4 +1,5 @@
 import type {
+  AuthRole,
   KnowledgeAudience,
   KnowledgeCandidateDecision,
   KnowledgeCauseDto,
@@ -364,6 +365,11 @@ export interface InvestigationThreadInput {
   /** `workspace` powers the global Threadmark AI; legacy ticket rooms use `ticket`. */
   mode?: "ticket" | "workspace";
   currentOperatorMessageId: string;
+  /** Authenticated person who authored the current operator message. */
+  currentOperator?: {
+    displayName: string;
+    role: AuthRole;
+  } | null;
   durableSummary: string;
   activeTask?: InvestigationActiveTask | null;
   recentMessages: InvestigationThreadPromptMessage[];
@@ -390,6 +396,7 @@ export interface InvestigationThreadInput {
   /** Trusted coordinator budget. Prompt builders render it outside untrusted context. */
   executionBudget?: {
     workload?: "quick" | "deep";
+    promptMode?: "conversation" | "task" | "deep";
     maxToolRounds: number;
     usedToolRounds: number;
     maxToolOperations: number;
@@ -400,6 +407,10 @@ export interface InvestigationThreadInput {
     /** The model tried to stop even though an authorized readonly path remains. */
     readonlyContinuationRequired?: boolean;
   };
+  /** Exact provider usage reported for one model call, never serialized into prompts. */
+  onModelUsage?: (
+    usage: ModelTokenUsage,
+  ) => void | Promise<void>;
   /**
    * Trusted coordinator hook. It is never serialized into a provider prompt and
    * must be awaited immediately after each tool result is produced.
@@ -407,6 +418,13 @@ export interface InvestigationThreadInput {
   onToolExecution?: (
     result: InvestigationToolResult,
   ) => void | Promise<void>;
+}
+
+export interface ModelTokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
 }
 
 export interface InvestigationTurnResult {

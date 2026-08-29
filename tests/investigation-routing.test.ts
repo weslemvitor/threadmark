@@ -27,9 +27,25 @@ for (const body of [
   test(`conversa objetiva usa rota rápida: ${body}`, () => {
     const policy = investigationExecutionPolicy(input(body));
     assert.equal(policy.workload, "quick");
-    assert.equal(policy.maxToolRounds, 8);
-    assert.equal(policy.maxToolOperations, 24);
-    assert.equal(policy.maxCodeSearchOperations, 5);
+    assert.equal(policy.promptMode, "task");
+    assert.equal(policy.maxToolRounds, 4);
+    assert.equal(policy.maxToolOperations, 12);
+    assert.equal(policy.maxCodeSearchOperations, 0);
+  });
+}
+
+for (const body of [
+  "Qual é o meu nome?",
+  "Quem é você?",
+  "O que você consegue fazer?",
+  "Valeu!",
+]) {
+  test(`conversa simples não recebe ferramentas: ${body}`, () => {
+    const policy = investigationExecutionPolicy(input(body));
+    assert.equal(policy.workload, "quick");
+    assert.equal(policy.promptMode, "conversation");
+    assert.equal(policy.maxToolRounds, 0);
+    assert.equal(policy.maxToolOperations, 0);
   });
 }
 
@@ -38,6 +54,7 @@ test("criação de ticket que exige descobrir conversa usa rota profunda", () =>
     "Preciso criar um ticket do Renato; existe um contexto de conversa no Intercom.",
   ));
   assert.equal(policy.workload, "deep");
+  assert.equal(policy.promptMode, "deep");
   assert.equal(policy.maxToolRounds, 16);
   assert.equal(policy.maxToolOperations, 64);
 });
@@ -51,6 +68,39 @@ test("continuação curta herda a rota profunda do ticket pendente", () => {
   assert.equal(policy.workload, "deep");
   assert.equal(policy.maxToolRounds, 16);
   assert.equal(policy.maxToolOperations, 64);
+});
+
+test("edição de automações usa orçamento profundo inclusive após confirmação curta", () => {
+  const policy = investigationExecutionPolicy({
+    ...input("Pode aplicar as mudanças"),
+    durableSummary:
+      "Objetivo pendente: melhorar e editar as quatro automações ativas.",
+    activeTask: {
+      rootOperatorMessageId: "operator-root",
+      objective: "Melhorar as automações existentes.",
+      operatorDirectives: [{
+        id: "operator-root",
+        body: "Melhore as automações existentes e aplique os ajustes.",
+        createdAt: "2026-08-29T04:00:00.000Z",
+      }],
+      continuation: true,
+    },
+  });
+
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.promptMode, "deep");
+  assert.equal(policy.maxToolRounds, 16);
+  assert.equal(policy.maxToolOperations, 64);
+  assert.equal(policy.maxSameOperation, 16);
+});
+
+test("revisão rápida comporta a leitura de mais de três automações", () => {
+  const policy = investigationExecutionPolicy(input(
+    "Revise as automações existentes e me apresente sugestões.",
+  ));
+
+  assert.equal(policy.workload, "quick");
+  assert.equal(policy.maxSameOperation, 8);
 });
 
 for (const body of [

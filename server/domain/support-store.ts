@@ -166,6 +166,12 @@ interface InvestigationMessageActor {
   role: AuthRole;
 }
 
+interface DeletedThreadmarkAiThread {
+  id: string;
+  deleted: true;
+  attachmentPaths: string[];
+}
+
 const DEFAULT_TRIAGE_AI_MODEL = "gpt-5.4-mini";
 const DEFAULT_TRIAGE_SILENCE_WINDOW_SECONDS = 180;
 const MIN_VISIBLE_TICKET_SUGGESTION_CONFIDENCE = 0.9;
@@ -8465,7 +8471,7 @@ export class SupportStore {
     const row = this.database
       .prepare(
         `SELECT id, ticket_id, scope, title, context_json, status, summary,
-                created_at, updated_at
+                created_at, updated_at, last_viewed_at
          FROM investigation_threads WHERE id = ?`,
       )
       .get(threadId) as
@@ -8479,6 +8485,7 @@ export class SupportStore {
           summary: string;
           created_at: string;
           updated_at: string;
+          last_viewed_at: string | null;
         }
       | undefined;
     if (!row) {
@@ -8509,16 +8516,27 @@ export class SupportStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       lastAssistantMessageAt,
+      unread: Boolean(
+        row.scope === "workspace" &&
+        lastAssistantMessageAt &&
+        (!row.last_viewed_at || lastAssistantMessageAt > row.last_viewed_at)
+      ),
       activeTurnState: activeTurn?.state ?? null,
       messages,
       turns,
     };
   }
 
-  listThreadmarkAiThreads(): ThreadmarkAiThreadListResponse {
+  listThreadmarkAiThreads(
+    ownerUserId: string | null = null,
+  ): ThreadmarkAiThreadListResponse {
+    const ownerFilter = ownerUserId
+      ? "AND thread.created_by_user_id = ?"
+      : "";
     const rows = this.database
       .prepare(
         `SELECT thread.id, thread.title, thread.status, thread.updated_at,
+                thread.last_viewed_at,
                 (SELECT MAX(message.created_at)
                  FROM investigation_thread_messages message
                  WHERE message.thread_id = thread.id
@@ -8530,13 +8548,15 @@ export class SupportStore {
                  ORDER BY job.requested_at DESC, job.rowid DESC LIMIT 1) AS active_turn_state
          FROM investigation_threads thread
          WHERE thread.scope = 'workspace'
+         ${ownerFilter}
          ORDER BY thread.updated_at DESC, thread.id DESC`,
       )
-      .all() as Array<{
+      .all(...(ownerUserId ? [ownerUserId] : [])) as Array<{
       id: string;
       title: string;
       status: InvestigationThreadDto["status"];
       updated_at: string;
+      last_viewed_at: string | null;
       last_assistant_message_at: string | null;
       active_turn_state: InvestigationJobState | null;
     }>;
@@ -8547,6 +8567,10 @@ export class SupportStore {
         status: row.status,
         updatedAt: row.updated_at,
         lastAssistantMessageAt: row.last_assistant_message_at,
+        unread: Boolean(
+          row.last_assistant_message_at &&
+          (!row.last_viewed_at || row.last_assistant_message_at > row.last_viewed_at)
+        ),
         activeTurnState: row.active_turn_state,
       })),
     };
@@ -8555,6 +8579,7 @@ export class SupportStore {
   createThreadmarkAiThread(
     input: CreateThreadmarkAiThreadInput = {},
     actor = "Operador local",
+    ownerUserId: string | null = null,
   ): ThreadmarkAiThreadDto {
     const timestamp = nowUtc();
     const id = randomUUID();
@@ -8563,38 +8588,58 @@ export class SupportStore {
     this.database
       .prepare(
         `INSERT INTO investigation_threads
-          (id, ticket_id, scope, title, context_json, created_by, status,
-           summary, created_at, updated_at)
-         VALUES (?, NULL, 'workspace', ?, ?, ?, 'active', '', ?, ?)`,
+          (id, ticket_id, scope, title, context_json, created_by,
+           created_by_user_id, status, summary, created_at, updated_at,
+           last_viewed_at)
+         VALUES (?, NULL, 'workspace', ?, ?, ?, ?, 'active', '', ?, ?, ?)`,
       )
       .run(
         id,
         title,
         JSON.stringify(context ?? {}),
         normalizedText(actor, "Responsável").slice(0, 200),
+        ownerUserId,
+        timestamp,
         timestamp,
         timestamp,
       );
-    return this.getThreadmarkAiThread(id);
+    return this.getThreadmarkAiThread(id, ownerUserId);
   }
 
   getOrCreateThreadmarkAiThread(
     actor = "Operador local",
     context: ThreadmarkAiContextDto | null = null,
+    ownerUserId: string | null = null,
   ): ThreadmarkAiThreadDto {
+    const ownerFilter = ownerUserId ? "AND created_by_user_id = ?" : "";
     const active = this.database
       .prepare(
         `SELECT id FROM investigation_threads
          WHERE scope = 'workspace'
+         ${ownerFilter}
          ORDER BY updated_at DESC, id DESC LIMIT 1`,
       )
-      .get() as EntityRecord | undefined;
+      .get(...(ownerUserId ? [ownerUserId] : [])) as EntityRecord | undefined;
     return active
-      ? this.getThreadmarkAiThread(active.id)
-      : this.createThreadmarkAiThread({ context }, actor);
+      ? this.getThreadmarkAiThread(active.id, ownerUserId)
+      : this.createThreadmarkAiThread({ context }, actor, ownerUserId);
   }
 
-  getThreadmarkAiThread(threadId: string): ThreadmarkAiThreadDto {
+  getThreadmarkAiThread(
+    threadId: string,
+    ownerUserId: string | null = null,
+  ): ThreadmarkAiThreadDto {
+    if (ownerUserId) {
+      const owned = this.database
+        .prepare(
+          `SELECT id FROM investigation_threads
+           WHERE id = ? AND scope = 'workspace' AND created_by_user_id = ?`,
+        )
+        .get(threadId, ownerUserId);
+      if (!owned) {
+        throw new NotFoundError("Conversa do Threadmark AI", threadId);
+      }
+    }
     const thread = this.getInvestigationThread(threadId);
     if (thread.scope !== "workspace" || thread.ticketId !== null) {
       throw new NotFoundError("Conversa do Threadmark AI", threadId);
@@ -8604,8 +8649,67 @@ export class SupportStore {
       scope: "workspace",
       ticketId: null,
       title: thread.title || "Nova conversa",
+      unread: thread.unread === true,
       context: thread.context ?? null,
     };
+  }
+
+  markThreadmarkAiThreadRead(
+    threadId: string,
+    ownerUserId: string | null = null,
+  ): ThreadmarkAiThreadDto {
+    return this.database.transaction(() => {
+      this.getThreadmarkAiThread(threadId, ownerUserId);
+      this.database
+        .prepare(
+          `UPDATE investigation_threads
+           SET last_viewed_at = ?
+           WHERE id = ? AND scope = 'workspace'`,
+        )
+        .run(nowUtc(), threadId);
+      return this.getThreadmarkAiThread(threadId, ownerUserId);
+    })();
+  }
+
+  deleteThreadmarkAiThread(
+    threadId: string,
+    ownerUserId: string | null = null,
+  ): DeletedThreadmarkAiThread {
+    return this.database.transaction(() => {
+      const thread = this.getThreadmarkAiThread(threadId, ownerUserId);
+      if (
+        thread.activeTurnState === "queued" ||
+        thread.activeTurnState === "running"
+      ) {
+        throw new ConflictError(
+          "Interrompa a execução atual antes de excluir esta conversa.",
+          { threadId, activeTurnState: thread.activeTurnState },
+        );
+      }
+      const attachments = this.database
+        .prepare(
+          `SELECT attachment.local_path
+           FROM investigation_thread_message_attachments attachment
+           JOIN investigation_thread_messages message
+             ON message.id = attachment.message_id
+           WHERE message.thread_id = ?`,
+        )
+        .all(threadId) as Array<{ local_path: string }>;
+      const deleted = this.database
+        .prepare(
+          `DELETE FROM investigation_threads
+           WHERE id = ? AND scope = 'workspace'`,
+        )
+        .run(threadId);
+      if (deleted.changes !== 1) {
+        throw new NotFoundError("Conversa do Threadmark AI", threadId);
+      }
+      return {
+        id: threadId,
+        deleted: true as const,
+        attachmentPaths: attachments.map((attachment) => attachment.local_path),
+      };
+    })();
   }
 
   cancelInvestigationThread(
@@ -10186,12 +10290,21 @@ export class SupportStore {
     }));
     const operatorMessage = this.database
       .prepare(
-        `SELECT rowid AS message_order, body, context_json
-         FROM investigation_thread_messages
-         WHERE id = ? AND thread_id = ?`,
+        `SELECT message.rowid AS message_order, message.body,
+                message.context_json, message.actor_role,
+                actor.display_name AS actor_display_name
+         FROM investigation_thread_messages message
+         LEFT JOIN local_users actor ON actor.id = message.actor_user_id
+         WHERE message.id = ? AND message.thread_id = ?`,
       )
       .get(job.operator_message_id, job.thread_id) as
-      | { message_order: number; body: string; context_json: string }
+      | {
+          message_order: number;
+          body: string;
+          context_json: string;
+          actor_role: AuthRole | null;
+          actor_display_name: string | null;
+        }
       | undefined;
     const currentContinuesTask = isTaskContinuationInstruction(
       operatorMessage?.body ?? "",
@@ -10334,6 +10447,13 @@ export class SupportStore {
       threadId: job.thread_id,
       mode: job.scope,
       currentOperatorMessageId: job.operator_message_id,
+      currentOperator:
+        operatorMessage?.actor_display_name && operatorMessage.actor_role
+          ? {
+              displayName: operatorMessage.actor_display_name,
+              role: operatorMessage.actor_role,
+            }
+          : null,
       durableSummary: job.summary,
       activeTask: taskRoot && operatorMessage
         ? {
@@ -14072,10 +14192,28 @@ export class SupportStore {
     }
     const rows = this.database
       .prepare(
-        `SELECT message.id, message.role, message.body, message.phase,
+        `SELECT message.id, message.role, message.actor_user_id,
+                message_actor.display_name AS actor_display_name,
+                message.body, message.phase,
                 message.evidence_json, message.suggested_response,
                 message.next_action, message.context_json, message.created_at,
                 assistant_job.result_json,
+                COALESCE(assistant_job.ai_provider_id, unfinished_job.ai_provider_id)
+                  AS ai_provider_id,
+                COALESCE(assistant_job.ai_model, unfinished_job.ai_model)
+                  AS ai_model,
+                COALESCE(assistant_job.ai_workload, unfinished_job.ai_workload)
+                  AS ai_workload,
+                COALESCE(assistant_job.ai_model_calls, unfinished_job.ai_model_calls, 0)
+                  AS ai_model_calls,
+                COALESCE(assistant_job.ai_input_tokens, unfinished_job.ai_input_tokens, 0)
+                  AS ai_input_tokens,
+                COALESCE(assistant_job.ai_cached_input_tokens, unfinished_job.ai_cached_input_tokens, 0)
+                  AS ai_cached_input_tokens,
+                COALESCE(assistant_job.ai_output_tokens, unfinished_job.ai_output_tokens, 0)
+                  AS ai_output_tokens,
+                COALESCE(assistant_job.ai_reasoning_output_tokens, unfinished_job.ai_reasoning_output_tokens, 0)
+                  AS ai_reasoning_output_tokens,
                 COALESCE(assistant_job.id, unfinished_job.id) AS execution_job_id
          FROM investigation_thread_messages message
          LEFT JOIN investigation_thread_jobs assistant_job
@@ -14083,11 +14221,15 @@ export class SupportStore {
          LEFT JOIN investigation_thread_jobs unfinished_job
            ON unfinished_job.operator_message_id = message.id
           AND unfinished_job.assistant_message_id IS NULL
+         LEFT JOIN local_users message_actor
+           ON message_actor.id = message.actor_user_id
          WHERE message.thread_id = ? ORDER BY message.created_at, message.rowid`,
       )
       .all(threadId) as Array<{
       id: string;
       role: InvestigationThreadMessageDto["role"];
+      actor_user_id: string | null;
+      actor_display_name: string | null;
       body: string;
       phase: InvestigationThreadMessageDto["phase"];
       evidence_json: string;
@@ -14096,6 +14238,14 @@ export class SupportStore {
       context_json: string;
       created_at: string;
       result_json: string | null;
+      ai_provider_id: InvestigationThreadMessageDto["aiProviderId"];
+      ai_model: string | null;
+      ai_workload: InvestigationThreadMessageDto["aiWorkload"];
+      ai_model_calls: number;
+      ai_input_tokens: number;
+      ai_cached_input_tokens: number;
+      ai_output_tokens: number;
+      ai_reasoning_output_tokens: number;
       execution_job_id: string | null;
     }>;
     return rows.map((row) => {
@@ -14105,8 +14255,27 @@ export class SupportStore {
       return {
         id: row.id,
         role: row.role,
+        author:
+          row.actor_user_id && row.actor_display_name
+            ? {
+                userId: row.actor_user_id,
+                displayName: row.actor_display_name,
+              }
+            : null,
         body: row.body,
         phase: row.phase,
+        aiProviderId: row.ai_provider_id,
+        aiModel: row.ai_model,
+        aiWorkload: row.ai_workload,
+        aiTokenUsage: row.ai_model_calls > 0
+          ? {
+              modelCalls: row.ai_model_calls,
+              inputTokens: row.ai_input_tokens,
+              cachedInputTokens: row.ai_cached_input_tokens,
+              outputTokens: row.ai_output_tokens,
+              reasoningOutputTokens: row.ai_reasoning_output_tokens,
+            }
+          : null,
         evidence: this.parseInvestigationEvidence(row.evidence_json),
         suggestedResponse: row.suggested_response,
         nextAction: row.next_action,
@@ -14129,7 +14298,10 @@ export class SupportStore {
                 CASE WHEN cancelled_at IS NOT NULL THEN 'cancelled' ELSE state END AS state,
                 operator_message_id, assistant_message_id,
                 requested_at, started_at, finished_at, attempt_count,
-                error, result_json, cancelled_at, cancelled_by
+                error, result_json, ai_provider_id, ai_model, ai_workload,
+                ai_model_calls, ai_input_tokens, ai_cached_input_tokens,
+                ai_output_tokens, ai_reasoning_output_tokens,
+                cancelled_at, cancelled_by
          FROM investigation_thread_jobs
          WHERE thread_id = ? ORDER BY requested_at, rowid`,
       )
@@ -14144,6 +14316,14 @@ export class SupportStore {
       attempt_count: number;
       error: string | null;
       result_json: string | null;
+      ai_provider_id: InvestigationThreadTurnDto["aiProviderId"];
+      ai_model: string | null;
+      ai_workload: InvestigationThreadTurnDto["aiWorkload"];
+      ai_model_calls: number;
+      ai_input_tokens: number;
+      ai_cached_input_tokens: number;
+      ai_output_tokens: number;
+      ai_reasoning_output_tokens: number;
       cancelled_at: string | null;
       cancelled_by: string | null;
     }>;
@@ -14161,6 +14341,18 @@ export class SupportStore {
         finishedAt: row.finished_at,
         attemptCount: row.attempt_count,
         error: row.error,
+        aiProviderId: row.ai_provider_id,
+        aiModel: row.ai_model,
+        aiWorkload: row.ai_workload,
+        aiTokenUsage: row.ai_model_calls > 0
+          ? {
+              modelCalls: row.ai_model_calls,
+              inputTokens: row.ai_input_tokens,
+              cachedInputTokens: row.ai_cached_input_tokens,
+              outputTokens: row.ai_output_tokens,
+              reasoningOutputTokens: row.ai_reasoning_output_tokens,
+            }
+          : null,
         cancelledAt: row.cancelled_at,
         cancelledBy: row.cancelled_by,
         toolExecutions: audited.length

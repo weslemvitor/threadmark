@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowUp,
   Bot,
@@ -17,6 +18,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  Trash2,
   UserRound,
   Wrench,
   X,
@@ -24,6 +26,17 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { Badge } from "@/app/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/app/components/ui/alert-dialog";
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Checkbox } from "@/app/components/ui/checkbox";
@@ -35,8 +48,10 @@ import {
   addThreadmarkAiMessage,
   cancelThreadmarkAiTurn,
   createThreadmarkAiThread,
+  deleteThreadmarkAiThread,
   getThreadmarkAiThread,
   listThreadmarkAiThreads,
+  markThreadmarkAiThreadRead,
   openCurrentThreadmarkAiThread,
   retryThreadmarkAiTurn,
 } from "@/app/lib/api";
@@ -49,6 +64,11 @@ import type {
   ThreadmarkAiThreadListResponse,
 } from "@/shared/contracts";
 import {
+  collectThreadmarkAiCompletions,
+  unreadThreadmarkAiCount,
+} from "./thread-completions";
+import { createCompletionSoundController } from "./completion-sound";
+import {
   INVESTIGATION_THREAD_MESSAGE_MAX_LENGTH,
   THREADMARK_AI_IMAGE_MAX_BYTES,
   THREADMARK_AI_IMAGE_MAX_COUNT,
@@ -58,6 +78,30 @@ import {
 
 const ACTIVE_POLL_INTERVAL_MS = 1_500;
 const IDLE_POLL_INTERVAL_MS = 8_000;
+const THREAD_LIST_POLL_INTERVAL_MS = 4_000;
+
+let completionSoundController: ReturnType<typeof createCompletionSoundController> | null = null;
+
+function threadmarkAiCompletionSound() {
+  if (typeof window === "undefined") return null;
+  completionSoundController ??= createCompletionSoundController(
+    () => new window.AudioContext(),
+  );
+  return completionSoundController;
+}
+
+function primeCompletionSound(): void {
+  threadmarkAiCompletionSound()?.prime();
+}
+
+async function playCompletionSound(): Promise<void> {
+  await threadmarkAiCompletionSound()?.play();
+}
+
+function formatTokenCount(value: number): string {
+  if (value < 1_000) return String(value);
+  return `${new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 1 }).format(value / 1_000)} mil`;
+}
 
 interface PendingImage {
   id: string;
@@ -85,6 +129,19 @@ async function imageUploadInput(image: PendingImage): Promise<ThreadmarkAiImageU
 
 function isRunning(thread: ThreadmarkAiThreadDto | null): boolean {
   return thread?.activeTurnState === "queued" || thread?.activeTurnState === "running";
+}
+
+function aiProviderLabel(
+  providerId: ThreadmarkAiThreadDto["messages"][number]["aiProviderId"],
+): string | null {
+  if (!providerId) return null;
+  return {
+    codex: "Codex",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    openrouter: "OpenRouter",
+    ollama: "Ollama",
+  }[providerId];
 }
 
 function ThreadmarkAiMessage({
@@ -119,12 +176,36 @@ function ThreadmarkAiMessage({
         )}
       >
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <strong>{assistant ? "Threadmark AI" : "Você"}</strong>
+          <strong>
+            {assistant ? "Threadmark AI" : message.author?.displayName ?? "Você"}
+          </strong>
           {message.phase ? (
             <Badge className="h-4 px-1.5 text-[10px]" variant="secondary">
               {message.phase === "needs_information"
                 ? "Precisa de contexto"
                 : message.phase === "conclusion" ? "Concluído" : "Analisando"}
+            </Badge>
+          ) : null}
+          {assistant && message.aiModel ? (
+            <Badge className="h-4 max-w-full gap-1 px-1.5 text-[10px]" variant="outline">
+              <span>{message.aiWorkload === "deep" ? "Investigação" : "Rápida"}</span>
+              <span aria-hidden="true">·</span>
+              {aiProviderLabel(message.aiProviderId) ? (
+                <>
+                  <span>{aiProviderLabel(message.aiProviderId)}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              ) : null}
+              <span className="max-w-48 truncate" title={message.aiModel}>{message.aiModel}</span>
+            </Badge>
+          ) : null}
+          {assistant && message.aiTokenUsage ? (
+            <Badge
+              className="h-4 max-w-full px-1.5 text-[10px]"
+              title={`${message.aiTokenUsage.modelCalls} chamada(s) · ${message.aiTokenUsage.inputTokens} tokens de entrada · ${message.aiTokenUsage.cachedInputTokens} em cache · ${message.aiTokenUsage.outputTokens} de saída · ${message.aiTokenUsage.reasoningOutputTokens} de raciocínio`}
+              variant="outline"
+            >
+              {formatTokenCount(message.aiTokenUsage.inputTokens)} entrada · {formatTokenCount(message.aiTokenUsage.outputTokens)} saída
             </Badge>
           ) : null}
           <time className="ml-auto text-muted-foreground" dateTime={message.createdAt}>
@@ -226,8 +307,10 @@ function ThreadmarkAiMessage({
 
 export function ThreadmarkAi({
   context,
+  currentUserId,
 }: {
   context: ThreadmarkAiContextDto | null;
+  currentUserId: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -241,11 +324,17 @@ export function ThreadmarkAi({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<
+    ThreadmarkAiThreadListResponse["items"][number] | null
+  >(null);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const imagesRef = useRef<PendingImage[]>([]);
   const pendingMessageRef = useRef<{ body: string; id: string } | null>(null);
+  const completionBaselineReadyRef = useRef(false);
+  const completionFingerprintsRef = useRef<Map<string, string | null>>(new Map());
 
   useEffect(() => {
     imagesRef.current = images;
@@ -257,7 +346,52 @@ export function ThreadmarkAi({
 
   const refreshList = useCallback(async () => {
     const response = await listThreadmarkAiThreads();
+    const snapshot = collectThreadmarkAiCompletions(
+      response.items,
+      completionFingerprintsRef.current,
+      completionBaselineReadyRef.current,
+    );
+    completionFingerprintsRef.current = snapshot.fingerprints;
+    completionBaselineReadyRef.current = true;
     setThreads(response.items);
+    if (snapshot.completions.length) void playCompletionSound();
+    return response;
+  }, []);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    const poll = () => void refreshList().catch(() => undefined);
+    poll();
+    const interval = window.setInterval(poll, THREAD_LIST_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [currentUserId, refreshList]);
+
+  const markRead = useCallback(async (candidate: ThreadmarkAiThreadDto) => {
+    if (!candidate.unread) return candidate;
+    const updated = await markThreadmarkAiThreadRead(candidate.id);
+    setThreads((current) => current.map((item) =>
+      item.id === updated.id ? { ...item, unread: false } : item
+    ));
+    return updated;
+  }, []);
+
+  const announceCompletion = useCallback((candidate: ThreadmarkAiThreadDto) => {
+    const completedAt = candidate.lastAssistantMessageAt;
+    if (!completedAt || !completionBaselineReadyRef.current) return;
+    if (completionFingerprintsRef.current.get(candidate.id) === completedAt) return;
+    completionFingerprintsRef.current = new Map(completionFingerprintsRef.current)
+      .set(candidate.id, completedAt);
+    void playCompletionSound();
+  }, []);
+
+  useEffect(() => {
+    const prime = () => primeCompletionSound();
+    window.addEventListener("pointerdown", prime, { once: true });
+    window.addEventListener("keydown", prime, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", prime);
+      window.removeEventListener("keydown", prime);
+    };
   }, []);
 
   const openAssistant = useCallback(async () => {
@@ -265,26 +399,29 @@ export function ThreadmarkAi({
     setLoading(true);
     setError(null);
     try {
-      const current = thread ?? (await openCurrentThreadmarkAiThread(context));
-      setThread(current);
+      const current = thread
+        ? await getThreadmarkAiThread(thread.id)
+        : await openCurrentThreadmarkAiThread(context);
+      setThread(await markRead(current));
       await refreshList();
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "Não foi possível abrir o Threadmark AI.");
     } finally {
       setLoading(false);
     }
-  }, [context, refreshList, thread]);
+  }, [context, markRead, refreshList, thread]);
 
   const refreshThread = useCallback(async () => {
     if (!thread) return;
     try {
       const refreshed = await getThreadmarkAiThread(thread.id);
-      setThread(refreshed);
+      announceCompletion(refreshed);
+      setThread(open && !historyOpen ? await markRead(refreshed) : refreshed);
       setError(null);
     } catch (currentError) {
       setError(currentError instanceof Error ? currentError.message : "Não foi possível atualizar a conversa.");
     }
-  }, [thread]);
+  }, [announceCompletion, historyOpen, markRead, open, thread]);
 
   useEffect(() => {
     if (!thread) return;
@@ -370,6 +507,7 @@ export function ThreadmarkAi({
       isRunning(thread) ||
       (images.length > 0 && !imageAnalysisApproved)
     ) return;
+    primeCompletionSound();
     if (pendingMessageRef.current?.body !== normalized) {
       pendingMessageRef.current = { body: normalized, id: crypto.randomUUID() };
     }
@@ -412,6 +550,35 @@ export function ThreadmarkAi({
     }
   }
 
+  async function deleteConversation() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteThreadmarkAiThread(deleteTarget.id);
+      const response = await listThreadmarkAiThreads();
+      setThreads(response.items);
+      if (thread?.id === deleteTarget.id) {
+        const next = response.items[0];
+        const replacement = next
+          ? await getThreadmarkAiThread(next.id)
+          : await createThreadmarkAiThread(context);
+        setThread(replacement);
+        setHistoryOpen(false);
+        if (!next) await refreshList();
+      }
+      setDeleteTarget(null);
+    } catch (currentError) {
+      setError(
+        currentError instanceof Error
+          ? currentError.message
+          : "Não foi possível excluir a conversa.",
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function stop() {
     if (!thread || stopping) return;
     setStopping(true);
@@ -425,6 +592,11 @@ export function ThreadmarkAi({
   }
 
   const active = isRunning(thread);
+  const unreadCount = unreadThreadmarkAiCount(threads);
+  const hasUnreadResponse = unreadCount > 0;
+  const anyThreadRunning = active || threads.some((item) =>
+    item.activeTurnState === "queued" || item.activeTurnState === "running"
+  );
   const latestTurn = thread?.turns.at(-1) ?? null;
   const failedTurn = latestTurn?.state === "failed" && !latestTurn.cancelledAt
     ? latestTurn
@@ -441,8 +613,15 @@ export function ThreadmarkAi({
     <>
       {!open || !expanded ? (
         <Button
-          aria-label={open ? "Fechar Threadmark AI" : "Abrir Threadmark AI"}
-          className="fixed right-5 bottom-5 z-[60] size-12 rounded-full shadow-lg"
+          aria-label={open
+            ? "Fechar Threadmark AI"
+            : hasUnreadResponse
+              ? `Abrir Threadmark AI · ${unreadCount} resposta(s) nova(s)`
+              : "Abrir Threadmark AI"}
+          className={cn(
+            "fixed right-5 bottom-5 z-[60] size-12 rounded-full shadow-lg",
+            hasUnreadResponse && "ring-4 ring-primary/20",
+          )}
           onClick={() => {
             if (open) {
               setOpen(false);
@@ -454,7 +633,16 @@ export function ThreadmarkAi({
           title={open ? "Fechar Threadmark AI" : "Abrir Threadmark AI"}
         >
           {open ? <ChevronDown size={20} /> : <Sparkles size={19} />}
-          {active ? <span className="absolute -top-0.5 -right-0.5 size-3 animate-pulse rounded-full border-2 border-background bg-emerald-500" /> : null}
+          {hasUnreadResponse ? (
+            <>
+              <span className="absolute -top-1 -right-1 size-4 animate-ping rounded-full bg-primary/55 motion-reduce:animate-none" />
+              <span className="absolute -top-1.5 -right-1.5 grid min-h-5 min-w-5 place-items-center rounded-full border-2 border-background bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                {Math.min(unreadCount, 9)}{unreadCount > 9 ? "+" : ""}
+              </span>
+            </>
+          ) : anyThreadRunning ? (
+            <span className="absolute -top-0.5 -right-0.5 size-3 animate-pulse rounded-full border-2 border-background bg-emerald-500" />
+          ) : null}
         </Button>
       ) : null}
 
@@ -485,6 +673,7 @@ export function ThreadmarkAi({
               <h2 className="flex items-center gap-2 text-sm font-semibold" id="threadmark-ai-title">
                 Threadmark AI
                 {active ? <span className="size-2 animate-pulse rounded-full bg-emerald-500" title="Agente trabalhando" /> : null}
+                {!active && thread?.unread ? <Badge variant="secondary">Resposta pronta</Badge> : null}
               </h2>
               <p className="truncate text-xs text-muted-foreground" id="threadmark-ai-description">
                 {historyOpen ? "Histórico persistido no SQLite" : contextLabel}
@@ -513,35 +702,56 @@ export function ThreadmarkAi({
           {historyOpen ? (
             <ScrollArea className="min-h-0 flex-1">
               <div className="grid gap-2 p-4">
-                {threads.map((item) => (
-                  <Button
-                    className={cn(
-                      "h-auto min-w-0 max-w-full justify-start overflow-hidden whitespace-normal rounded-xl border p-3 text-left transition-colors hover:bg-muted/50",
-                      item.id === thread?.id && "border-primary/40 bg-primary/5",
-                    )}
-                    key={item.id}
-                    onClick={() => {
-                      setLoading(true);
-                      void getThreadmarkAiThread(item.id)
-                        .then((selected) => { setThread(selected); setHistoryOpen(false); })
-                        .catch((currentError: unknown) => setError(currentError instanceof Error ? currentError.message : "Não foi possível abrir a conversa."))
-                        .finally(() => setLoading(false));
-                    }}
-                    size="unstyled"
-                    type="button"
-                    variant="unstyled"
-                  >
-                    <div className="w-0 min-w-0 flex-1 overflow-hidden">
-                      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                        <strong className="block min-w-0 flex-1 truncate text-sm" title={item.title}>{item.title}</strong>
-                        {item.activeTurnState === "queued" || item.activeTurnState === "running" ? (
-                          <Badge variant="secondary">Em execução</Badge>
-                        ) : null}
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">Atualizada {formatMessageTime(item.updatedAt)}</p>
+                {threads.map((item) => {
+                  const itemRunning =
+                    item.activeTurnState === "queued" ||
+                    item.activeTurnState === "running";
+                  return (
+                    <div
+                      className={cn(
+                        "flex min-w-0 items-center gap-1 rounded-xl border p-1 transition-colors hover:bg-muted/50",
+                        item.id === thread?.id && "border-primary/40 bg-primary/5",
+                      )}
+                      key={item.id}
+                    >
+                      <Button
+                        className="h-auto min-w-0 max-w-full justify-start overflow-hidden flex-1 whitespace-normal p-2 text-left"
+                        onClick={() => {
+                          setLoading(true);
+                          void getThreadmarkAiThread(item.id)
+                            .then(markRead)
+                            .then((selected) => { setThread(selected); setHistoryOpen(false); })
+                            .catch((currentError: unknown) => setError(currentError instanceof Error ? currentError.message : "Não foi possível abrir a conversa."))
+                            .finally(() => setLoading(false));
+                        }}
+                        size="unstyled"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <div className="w-0 min-w-0 flex-1 overflow-hidden">
+                          <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+                            <strong className="block min-w-0 flex-1 truncate text-sm" title={item.title}>{item.title}</strong>
+                            {itemRunning ? <Badge variant="secondary">Em execução</Badge> : null}
+                            {item.unread ? <Badge>Nova resposta</Badge> : null}
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">Atualizada {formatMessageTime(item.updatedAt)}</p>
+                        </div>
+                      </Button>
+                      <Button
+                        aria-label={`Excluir conversa ${item.title}`}
+                        className="shrink-0 text-muted-foreground hover:text-destructive"
+                        disabled={itemRunning || deleting}
+                        onClick={() => setDeleteTarget(item)}
+                        size="icon-sm"
+                        title={itemRunning ? "Interrompa a execução antes de excluir" : "Excluir conversa"}
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Trash2 size={14} />
+                      </Button>
                     </div>
-                  </Button>
-                ))}
+                  );
+                })}
                 {!threads.length && !loading ? (
                   <p className="py-12 text-center text-sm text-muted-foreground">Nenhuma conversa criada.</p>
                 ) : null}
@@ -730,6 +940,44 @@ export function ThreadmarkAi({
           )}
         </Card>
       ) : null}
+      <AlertDialog
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && !deleting) setDeleteTarget(null);
+        }}
+        open={deleteTarget !== null}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia className="bg-destructive/10 text-destructive">
+              <AlertTriangle />
+            </AlertDialogMedia>
+            <AlertDialogTitle>Excluir esta conversa permanentemente?</AlertDialogTitle>
+            <AlertDialogDescription className="break-words">
+              A conversa “{deleteTarget?.title}”, suas mensagens, execuções,
+              rascunhos e imagens serão removidos definitivamente. Tickets e
+              mensagens originais do WhatsApp não serão alterados.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting || !deleteTarget}
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteConversation();
+              }}
+              variant="destructive"
+            >
+              {deleting ? (
+                <LoaderCircle className="animate-spin" size={16} />
+              ) : (
+                <Trash2 size={16} />
+              )}
+              {deleting ? "Excluindo…" : "Excluir permanentemente"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

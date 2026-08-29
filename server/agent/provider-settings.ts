@@ -34,7 +34,12 @@ export class AiProviderSettingsError extends Error {
   }
 }
 
-export type AiTaskKind = "triage" | "automatic" | "deep" | "documentation";
+export type AiTaskKind =
+  | "triage"
+  | "automatic"
+  | "quick"
+  | "deep"
+  | "documentation";
 
 export interface AiConnectionDto {
   id: string;
@@ -244,7 +249,13 @@ export class AiProviderSettingsService {
       .prepare(
         `SELECT task_kind, connection_id, model, enabled, updated_at
          FROM ai_task_profiles
-         ORDER BY CASE task_kind WHEN 'triage' THEN 0 WHEN 'automatic' THEN 1 WHEN 'deep' THEN 2 ELSE 3 END`,
+         ORDER BY CASE task_kind
+           WHEN 'triage' THEN 0
+           WHEN 'automatic' THEN 1
+           WHEN 'quick' THEN 2
+           WHEN 'deep' THEN 3
+           ELSE 4
+         END`,
       )
       .all() as ProfileRow[]).map(profileDto);
   }
@@ -274,7 +285,13 @@ export class AiProviderSettingsService {
     const byTask = new Map(profiles.map((profile) => [profile.taskKind, profile]));
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      for (const taskKind of ["triage", "automatic", "deep", "documentation"] as const) {
+      for (const taskKind of [
+        "triage",
+        "automatic",
+        "quick",
+        "deep",
+        "documentation",
+      ] as const) {
         const profile = byTask.get(taskKind);
         if (!profile) continue;
         const model = requiredText(profile.model, "Modelo", 200);
@@ -340,9 +357,10 @@ export class AiProviderSettingsService {
       );
     }
     assertProviderSupportsTask(taskKind, row.provider_id);
-    const selectedModel = row.provider_id === "codex" && options.codexModelOverride?.trim()
-      ? options.codexModelOverride.trim()
-      : profile.model;
+    const selectedModel =
+      row.provider_id === "codex" && options.codexModelOverride?.trim()
+        ? options.codexModelOverride.trim()
+        : profile.model;
     const config = await this.providerConfig(row, selectedModel, codexAgent);
     return {
       agent: createSupportAgent(config),
@@ -547,13 +565,14 @@ function requiredText(value: string, label: string, max: number): string {
 }
 
 function taskLabel(task: AiTaskKind): string {
-  return task === "triage"
-    ? "A triagem"
-    : task === "automatic"
-      ? "A investigação automática"
-      : task === "deep"
-        ? "O Threadmark AI"
-        : "A geração de documentação";
+  const labels: Record<AiTaskKind, string> = {
+    triage: "A triagem",
+    automatic: "A investigação automática",
+    quick: "As respostas rápidas do Threadmark AI",
+    deep: "O Threadmark AI",
+    documentation: "A geração de documentação",
+  };
+  return labels[task];
 }
 
 function assertProviderSupportsTask(
@@ -561,7 +580,7 @@ function assertProviderSupportsTask(
   providerId: AiProviderId,
 ): void {
   const capabilities = AI_PROVIDER_CAPABILITIES[providerId];
-  const supported = taskKind === "deep"
+  const supported = taskKind === "deep" || taskKind === "quick"
     ? capabilities.deepInvestigation
     : taskKind === "triage"
       ? capabilities.triage

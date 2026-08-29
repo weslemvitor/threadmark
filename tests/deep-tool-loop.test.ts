@@ -7,12 +7,14 @@ import {
   availableToolsWithinBudget,
   boundedToolResultsForPrompt,
   ConfiguredSupportAgent,
+  toolsForExecutionPolicy,
   type DeepInvestigationToolBroker,
 } from "../server/agent/provider-router.js";
 import type { SupportAgent } from "../server/agent/provider.js";
 import { investigationExecutionPolicy } from "../server/agent/investigation-routing.js";
 import type {
   InvestigationThreadInput,
+  InvestigationToolDescriptor,
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../server/agent/types.js";
@@ -88,13 +90,34 @@ function settingsForDeepAgent(agent: SupportAgent): AiProviderSettingsService {
   } as unknown as AiProviderSettingsService;
 }
 
-test("conversa objetiva usa Terra e orçamento curto sem alterar a configuração profunda", async () => {
+test("conversa objetiva usa o perfil rápido do provedor e orçamento curto", async () => {
   const database = createDatabase(":memory:");
-  let modelOverride: string | undefined;
+  database.prepare(`
+    INSERT INTO investigation_threads (
+      id, scope, title, created_by, created_at, updated_at
+    ) VALUES ('thread-tools', 'workspace', 'Conversa rápida', 'operator-local', ?, ?)
+  `).run("2026-08-27T12:00:00.000Z", "2026-08-27T12:00:00.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_messages (
+      id, thread_id, role, body, created_at
+    ) VALUES ('operator-1', 'thread-tools', 'operator', 'Pode criar o ticket.', ?)
+  `).run("2026-08-27T12:00:01.000Z");
+  database.prepare(`
+    INSERT INTO investigation_thread_jobs (
+      id, thread_id, operator_message_id, state, requested_at, started_at
+    ) VALUES ('job-quick', 'thread-tools', 'operator-1', 'running', ?, ?)
+  `).run("2026-08-27T12:00:01.000Z", "2026-08-27T12:00:02.000Z");
+  let selectedTask: string | undefined;
   let observedBudget: InvestigationThreadInput["executionBudget"];
   const modelAgent = {
     async investigateThread(current: InvestigationThreadInput) {
       observedBudget = current.executionBudget;
+      await current.onModelUsage?.({
+        inputTokens: 2_400,
+        cachedInputTokens: 1_800,
+        outputTokens: 120,
+        reasoningOutputTokens: 30,
+      });
       return {
         assistantMessage: "Ação objetiva concluída.",
         phase: "conclusion" as const,
@@ -109,28 +132,26 @@ test("conversa objetiva usa Terra e orçamento curto sem alterar a configuraçã
   } as unknown as SupportAgent;
   const settings = {
     async createAgentForTask(
-      _task: string,
-      _codex: CodexSupportAgent,
-      options: { codexModelOverride?: string },
+      task: string,
     ) {
-      modelOverride = options.codexModelOverride;
+      selectedTask = task;
       return {
         agent: modelAgent,
         profile: {
-          taskKind: "deep" as const,
-          connectionId: "codex",
-          model: modelOverride ?? "gpt-5.6-sol",
+          taskKind: "quick" as const,
+          connectionId: "openrouter",
+          model: "modelo-rapido-do-provedor",
           enabled: true,
           updatedAt: "2026-08-27T12:00:00.000Z",
         },
         connection: {
-          id: "codex",
-          label: "Codex",
-          providerId: "codex" as const,
-          baseUrl: null,
+          id: "openrouter",
+          label: "OpenRouter",
+          providerId: "openrouter" as const,
+          baseUrl: "https://openrouter.ai/api/v1",
           enabled: true,
-          hasSecret: false,
-          secretLastFour: null,
+          hasSecret: true,
+          secretLastFour: "1234",
           capabilities: {
             automaticAnalysis: true,
             triage: true,
@@ -152,19 +173,103 @@ test("conversa objetiva usa Terra e orçamento curto sem alterar a configuraçã
     database,
     settings,
     {} as CodexSupportAgent,
-    undefined,
-    { quickModel: "gpt-5.6-terra" },
   );
 
   try {
     await configured.investigateThread(quickInput);
-    assert.equal(modelOverride, "gpt-5.6-terra");
+    assert.equal(selectedTask, "quick");
     assert.equal(observedBudget?.workload, "quick");
-    assert.equal(observedBudget?.maxToolRounds, 8);
-    assert.equal(observedBudget?.maxToolOperations, 24);
+    assert.equal(observedBudget?.promptMode, "task");
+    assert.equal(observedBudget?.maxToolRounds, 4);
+    assert.equal(observedBudget?.maxToolOperations, 12);
+    assert.deepEqual(
+      database.prepare(`
+        SELECT ai_provider_id, ai_connection_id, ai_model, ai_workload,
+               ai_model_calls, ai_input_tokens, ai_cached_input_tokens,
+               ai_output_tokens, ai_reasoning_output_tokens
+        FROM investigation_thread_jobs
+        WHERE id = 'job-quick'
+      `).get(),
+      {
+        ai_provider_id: "openrouter",
+        ai_connection_id: "openrouter",
+        ai_model: "modelo-rapido-do-provedor",
+        ai_workload: "quick",
+        ai_model_calls: 1,
+        ai_input_tokens: 2_400,
+        ai_cached_input_tokens: 1_800,
+        ai_output_tokens: 120,
+        ai_reasoning_output_tokens: 30,
+      },
+    );
   } finally {
     database.close();
   }
+});
+
+test("resposta omite guardrail de WhatsApp quando a tarefa não trata do canal", async () => {
+  const database = createDatabase(":memory:");
+  const modelAgent = {
+    async investigateThread() {
+      return {
+        assistantMessage:
+          "Revisão das automações concluída. WhatsApp outbound permanece proibido.",
+        phase: "conclusion" as const,
+        threadSummary:
+          "Automações revisadas. A restrição de WhatsApp outbound foi preservada.",
+        findings: [{
+          statement: "WhatsApp outbound permanece proibido.",
+          kind: "fact" as const,
+          evidenceReferences: [],
+        }],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Aplicar os ajustes sem WhatsApp outbound.",
+        confidence: 0.9,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const current = input();
+  current.recentMessages[0]!.body = "Revise as automações existentes.";
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+  );
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(result.assistantMessage, "Revisão das automações concluída.");
+    assert.doesNotMatch(result.threadSummary, /whatsapp/iu);
+    assert.doesNotMatch(result.nextAction ?? "", /whatsapp/iu);
+    assert.deepEqual(result.findings, []);
+  } finally {
+    database.close();
+  }
+});
+
+test("rota rápida expõe somente ferramentas relacionadas à tarefa", () => {
+  const descriptors = [
+    { id: "threadmark-context", name: "Contexto", type: "knowledge", description: "", scope: "", operations: [] },
+    { id: "threadmark-automations", name: "Automações", type: "knowledge", description: "", scope: "", operations: [] },
+    { id: "connected-app:intercom", name: "Intercom", type: "connected_app", description: "", scope: "", operations: [] },
+    { id: "local-tool:codebase:app", name: "Codebase", type: "codebase", description: "", scope: "", operations: [] },
+  ] as InvestigationToolDescriptor[];
+  const current = input();
+  current.recentMessages[0]!.body = "Analise as automações criadas.";
+  const policy = investigationExecutionPolicy(current);
+  assert.deepEqual(
+    toolsForExecutionPolicy(descriptors, policy, current).map((tool) => tool.id),
+    ["threadmark-context", "threadmark-automations"],
+  );
+
+  current.recentMessages[0]!.body = "Liste a conversa no Intercom.";
+  const appPolicy = investigationExecutionPolicy(current);
+  assert.deepEqual(
+    toolsForExecutionPolicy(descriptors, appPolicy, current).map((tool) => tool.id),
+    ["threadmark-context", "connected-app:intercom"],
+  );
 });
 
 test("app conectado exige confirmação explícita da mensagem atual antes da execução", async () => {

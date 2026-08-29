@@ -26,10 +26,12 @@ test("dirty state de IA ignora metadados, ordem e espaços externos", () => {
   const persisted = [
     profile("triage", "default"),
     profile("automatic", "gpt-5.6-luna"),
+    profile("quick", "gpt-5.6-terra"),
     profile("deep", "default"),
   ];
   const drafts = [
     profile("deep", "  default  ", { updatedAt: "" }),
+    profile("quick", " gpt-5.6-terra ", { updatedAt: "" }),
     profile("triage", " default ", { updatedAt: "" }),
     profile("automatic", "gpt-5.6-luna", { updatedAt: "tomorrow" }),
   ];
@@ -41,10 +43,12 @@ test("dirty state ignora perfil legado que não é administrado pela tela", () =
   const persisted = [
     profile("triage", "default"),
     profile("automatic", "modelo-legado"),
+    profile("quick", "gpt-5.6-terra"),
     profile("deep", "default"),
   ];
   const visibleDrafts = [
     profile("triage", "default"),
+    profile("quick", "gpt-5.6-terra"),
     profile("deep", "default"),
   ];
 
@@ -55,6 +59,7 @@ test("dirty state de IA detecta mudanças de conexão, modelo e ativação", () 
   const persisted = [
     profile("triage", "default"),
     profile("automatic", "gpt-5.6-luna"),
+    profile("quick", "gpt-5.6-terra"),
     profile("deep", "default"),
   ];
 

@@ -5,6 +5,7 @@ export type InvestigationWorkload = "quick" | "deep";
 
 export interface InvestigationExecutionPolicy {
   workload: InvestigationWorkload;
+  promptMode: "conversation" | "task" | "deep";
   maxToolRounds: number;
   maxToolOperations: number;
   maxSameOperation: number;
@@ -31,6 +32,15 @@ const ticketMutationSignal =
 
 const ticketContextSignal =
   /\b(?:contexto|conversa|mensage(?:m|ns)|intercom|whatsapp|grupo|cliente|pessoa|hist[oó]rico)\b/iu;
+
+const automationSignal =
+  /\b(?:automacao|automação|automacoes|automações|fluxo|fluxos)\b/iu;
+
+const automationMutationSignal =
+  /\b(?:cri(?:a|ar|e)|edit(?:a|ar|e)|atualiz(?:a|ar|e)|alter(?:a|ar|e)|ajust(?:a|ar|e)|melhor(?:a|ar|e)|aplic(?:a|ar|e)|salv(?:a|ar|e))\b/iu;
+
+const simpleConversationSignal =
+  /^(?:\s*(?:oi|ol[aá]|opa|e a[ií]|bom dia|boa tarde|boa noite|obrigad[oa]|valeu|beleza|show|tudo bem)[!.?\s]*)$|(?:qual (?:e|é) o meu nome|qual (?:e|é) meu nome|quem sou eu|quem (?:e|é) voc[eê]|o que voc[eê] (?:consegue|pode) (?:fazer(?: e executar)?|executar)|como voc[eê] pode me ajudar)(?:\?|$|\s)/iu;
 
 export function investigationExecutionPolicy(
   input: Pick<
@@ -59,6 +69,10 @@ export function investigationExecutionPolicy(
     deepInvestigationSignal.test(effectiveBody) ||
     investigativeQuestionSignal.test(effectiveBody) ||
     (
+      automationSignal.test(effectiveBody) &&
+      automationMutationSignal.test(effectiveBody)
+    ) ||
+    (
       ticketSourceDiscoverySignal.test(effectiveBody) &&
       ticketMutationSignal.test(effectiveBody) &&
       ticketContextSignal.test(effectiveBody)
@@ -74,6 +88,7 @@ export function investigationExecutionPolicy(
   if (asksForDeepInvestigation || requiresImageReasoning) {
     return {
       workload: "deep",
+      promptMode: "deep",
       maxToolRounds: 16,
       maxToolOperations: 64,
       maxSameOperation: 16,
@@ -81,11 +96,27 @@ export function investigationExecutionPolicy(
     };
   }
 
+  const simpleConversation =
+    !continuesTask &&
+    simpleConversationSignal.test(currentBody.trim());
+
+  if (simpleConversation) {
+    return {
+      workload: "quick",
+      promptMode: "conversation",
+      maxToolRounds: 0,
+      maxToolOperations: 0,
+      maxSameOperation: 0,
+      maxCodeSearchOperations: 0,
+    };
+  }
+
   return {
     workload: "quick",
-    maxToolRounds: 8,
-    maxToolOperations: 24,
+    promptMode: "task",
+    maxToolRounds: 4,
+    maxToolOperations: 12,
     maxSameOperation: 8,
-    maxCodeSearchOperations: 5,
+    maxCodeSearchOperations: 0,
   };
 }

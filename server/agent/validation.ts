@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type {
   InvestigationThreadInput,
+  InvestigationToolDescriptor,
   InvestigationTurnResult,
   DocumentationDraftInput,
   DocumentationDraftResult,
@@ -428,7 +429,7 @@ function timestampValue(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export const investigationTurnResultSchema = z
+const investigationTurnResultShapeSchema = z
   .object({
     assistantMessage: z.string().trim().min(1).max(40_000),
     phase: z.enum(["analysis", "needs_information", "conclusion"]),
@@ -439,7 +440,7 @@ export const investigationTurnResultSchema = z
         kind: z.enum(["fact", "hypothesis", "missing_information"]),
         evidenceReferences: z.array(z.string().trim().min(1).max(4_000)).max(10),
       }).strict(),
-    ).min(1).max(30),
+    ).max(30),
     evidence: z.array(
       z.object({
         source: z.enum([
@@ -471,8 +472,16 @@ export const investigationTurnResultSchema = z
         }),
       )
       .max(5),
-  })
-  .superRefine((result, context) => {
+  });
+
+type InvestigationTurnResultShape = z.infer<
+  typeof investigationTurnResultShapeSchema
+>;
+
+function validateInvestigationTurnGrounding(
+  result: InvestigationTurnResultShape,
+  context: z.RefinementCtx,
+): void {
     const evidenceReferences = new Set(
       result.evidence.flatMap((item) => item.reference ? [item.reference] : []),
     );
@@ -561,7 +570,135 @@ export const investigationTurnResultSchema = z
         message: "requestId deve ser único dentro do turno",
       });
     }
+}
+
+export const investigationTurnResultSchema = investigationTurnResultShapeSchema
+  .superRefine(validateInvestigationTurnGrounding);
+
+const investigationEvidenceSourceByToolType: Record<
+  InvestigationToolDescriptor["type"],
+  InvestigationTurnResult["evidence"][number]["source"] | null
+> = {
+  codebase: "code",
+  knowledge: "knowledge",
+  debugger_skill: null,
+  postgres_readonly: "database",
+  clickhouse_readonly: "clickhouse",
+  aws_cloudwatch: "aws",
+  vercel: "deployment",
+  connected_app: "external_app",
+};
+
+function restoreTrustedFindingEvidence(
+  parsed: InvestigationTurnResultShape,
+  input: Pick<
+    InvestigationThreadInput,
+    "availableTools" | "ticket" | "relatedTickets" | "recentMessages" | "toolResults"
+  >,
+): InvestigationTurnResultShape {
+  const tickets = [input.ticket, ...(input.relatedTickets ?? [])];
+  const allowedMessages = new Set([
+    ...tickets.flatMap((ticket) => ticket.messages.map((message) => message.id)),
+    ...input.recentMessages.map((message) => message.id),
+  ]);
+  const allowedPrecedents = new Set(
+    tickets.flatMap((ticket) =>
+      ticket.resolvedPrecedents.map((precedent) => precedent.ticketId)
+    ),
+  );
+  const descriptorsById = new Map(
+    (input.availableTools ?? []).map((tool) => [tool.id, tool] as const),
+  );
+  const successfulExecutionsByReference = new Map(
+    (input.toolResults ?? []).flatMap((result) =>
+      result.status === "success" && result.reference
+        ? [[result.reference, result] as const]
+        : []
+    ),
+  );
+  const evidence = [...parsed.evidence];
+  const retainedReferences = new Set(
+    evidence.flatMap((item) => item.reference ? [item.reference] : []),
+  );
+
+  for (const reference of parsed.findings.flatMap((finding) =>
+    finding.evidenceReferences
+  )) {
+    if (retainedReferences.has(reference)) continue;
+
+    if (allowedMessages.has(reference)) {
+      evidence.push({
+        source: "conversation",
+        summary: "Mensagem presente no contexto auditável desta conversa.",
+        reference,
+      });
+      retainedReferences.add(reference);
+      continue;
+    }
+
+    if (allowedPrecedents.has(reference)) {
+      evidence.push({
+        source: "resolved_ticket",
+        summary: "Ticket resolvido presente nos precedentes auditáveis do contexto.",
+        reference,
+      });
+      retainedReferences.add(reference);
+      continue;
+    }
+
+    const execution = successfulExecutionsByReference.get(reference);
+    const descriptor = execution
+      ? descriptorsById.get(execution.toolId)
+      : null;
+    const source = descriptor
+      ? investigationEvidenceSourceByToolType[descriptor.type]
+      : null;
+    if (!execution || !source) continue;
+    evidence.push({
+      source,
+      summary: execution.summary.slice(0, 4_000),
+      reference,
+    });
+    retainedReferences.add(reference);
+  }
+
+  let lostRequiredGrounding = false;
+  const findings = parsed.findings.flatMap((finding) => {
+    const evidenceReferences = finding.evidenceReferences.filter((reference) =>
+      retainedReferences.has(reference)
+    );
+    if (finding.kind === "fact" && evidenceReferences.length === 0) {
+      lostRequiredGrounding = true;
+      return [];
+    }
+    return [{ ...finding, evidenceReferences }];
   });
+
+  if (!lostRequiredGrounding) {
+    return { ...parsed, evidence, findings };
+  }
+
+  return {
+    ...parsed,
+    assistantMessage:
+      "A tarefa continua em análise porque uma afirmação retornada não possui evidência auditável no contexto atual.",
+    phase: "analysis",
+    findings: [
+      ...findings,
+      {
+        statement:
+          "Uma afirmação da análise não pôde ser vinculada a uma evidência auditável.",
+        kind: "missing_information",
+        evidenceReferences: [],
+      },
+    ],
+    evidence,
+    suggestedResponse: null,
+    nextAction:
+      "Continue a investigação usando apenas referências retornadas pelo Threadmark.",
+    confidence: Math.min(parsed.confidence, 0.5),
+  };
+}
 
 export function parseInvestigationTurnResult(
   value: unknown,
@@ -603,7 +740,10 @@ export function parseInvestigationTurnResult(
   );
 
   const parsed = investigationTurnResultSchema.parse(
-    value,
+    restoreTrustedFindingEvidence(
+      investigationTurnResultShapeSchema.parse(value),
+      input,
+    ),
   ) as InvestigationTurnResult;
   const evidence = parsed.evidence.filter(
     (item) =>

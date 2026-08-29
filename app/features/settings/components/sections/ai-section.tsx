@@ -280,6 +280,14 @@ export function AiSection({
 
       <SectionLayout description="Escolha uma conexão e um modelo para cada parte do fluxo." icon={Settings2} title="Modelos por tarefa">
         {!canManage ? <PermissionNotice /> : null}
+        <Card className="mb-4 gap-0 rounded-xl border-primary/20 bg-primary/5 p-4 shadow-none">
+          <strong className="text-sm text-foreground">Como o Threadmark AI escolhe o modelo</strong>
+          <div className="mt-2 grid gap-2 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
+            <p><strong className="text-foreground">Resposta rápida:</strong> dúvidas diretas, confirmações e ações simples.</p>
+            <p><strong className="text-foreground">Investigação:</strong> buscas em conversas, banco, logs, código, ferramentas ou imagens.</p>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">Cada modo usa exatamente a conexão e o modelo configurados abaixo. O modelo efetivo também aparece em cada resposta do chat.</p>
+        </Card>
         <div className="space-y-4">
           {TASKS.map((task) => {
             const profile = profileDrafts.find((item) => item.taskKind === task.id) ?? emptyProfile(task.id);
