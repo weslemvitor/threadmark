@@ -20,6 +20,12 @@ import {
 } from "./navigation-policy.js";
 import { hasUsableLocalWorkspace } from "./local-workspace.js";
 import {
+  findThreadmarkProjectEnvironment,
+  readDesktopDataDirectoryPreference,
+  resolveDesktopDataDirectory as resolveDesktopDataDirectoryPath,
+  writeDesktopDataDirectoryPreference,
+} from "./project-environment.js";
+import {
   LOCAL_WORKSPACE_PROFILE,
   readDesktopWorkspaceProfile,
   workspaceApiUrl,
@@ -30,11 +36,13 @@ import {
 
 const APPLICATION_NAME = "Threadmark";
 const WORKSPACE_PROFILE_FILE = "desktop-workspace.json";
+const DATA_DIRECTORY_PREFERENCE_FILE = "desktop-data-directory.json";
 const MAX_COMMAND_OUTPUT_BYTES = 512 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let activeProfile: DesktopWorkspaceProfile = LOCAL_WORKSPACE_PROFILE;
 let localStart: Promise<void> | null = null;
+let projectEnvironmentPath: string | null = null;
 
 app.setName(APPLICATION_NAME);
 app.setAppUserModelId("com.threadmark.desktop");
@@ -66,7 +74,7 @@ app.on("activate", () => {
 });
 
 async function startDesktopApplication(): Promise<void> {
-  loadProjectEnvironment();
+  await loadProjectEnvironment();
   activeProfile = await readDesktopWorkspaceProfile(workspaceProfilePath());
   configurePermissions();
   registerIpcHandlers();
@@ -91,6 +99,7 @@ async function createMainWindow(): Promise<void> {
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
+      backgroundThrottling: false,
       spellcheck: true,
       additionalArguments: desktopArguments(profile),
     },
@@ -157,6 +166,7 @@ function runThreadmarkCli(argumentsList: string[]): Promise<void> {
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: "1",
+        THREADMARK_DESKTOP_START: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -365,17 +375,43 @@ function desktopArguments(profile: DesktopWorkspaceProfile): string[] {
 }
 
 function resolveDesktopDataDirectory(): string {
-  const configured = process.env.SUPPORT_DATA_DIR?.trim();
-  return configured ? path.resolve(app.getAppPath(), configured) : app.getPath("userData");
+  return resolveDesktopDataDirectoryPath({
+    applicationPath: app.getAppPath(),
+    userDataDirectory: app.getPath("userData"),
+    configuredDataDirectory: process.env.SUPPORT_DATA_DIR,
+    environmentPath: projectEnvironmentPath,
+  });
 }
 
-function loadProjectEnvironment(): void {
-  if (typeof process.loadEnvFile !== "function") return;
-  try {
-    process.loadEnvFile(path.join(app.getAppPath(), ".env"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+async function loadProjectEnvironment(): Promise<void> {
+  projectEnvironmentPath = findThreadmarkProjectEnvironment(app.getAppPath());
+  if (projectEnvironmentPath && typeof process.loadEnvFile === "function") {
+    try {
+      process.loadEnvFile(projectEnvironmentPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
+
+  const preferencePath = path.join(
+    app.getPath("userData"),
+    DATA_DIRECTORY_PREFERENCE_FILE,
+  );
+  const configured = process.env.SUPPORT_DATA_DIR?.trim();
+  if (configured) {
+    const resolved = resolveDesktopDataDirectoryPath({
+      applicationPath: app.getAppPath(),
+      userDataDirectory: app.getPath("userData"),
+      configuredDataDirectory: configured,
+      environmentPath: projectEnvironmentPath,
+    });
+    process.env.SUPPORT_DATA_DIR = resolved;
+    await writeDesktopDataDirectoryPreference(preferencePath, resolved);
+    return;
+  }
+
+  const persisted = await readDesktopDataDirectoryPreference(preferencePath);
+  if (persisted) process.env.SUPPORT_DATA_DIR = persisted;
 }
 
 function workspaceProfilePath(): string {

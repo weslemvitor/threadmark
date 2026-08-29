@@ -226,6 +226,17 @@ async function start(): Promise<void> {
       : `Threadmark iniciando. Log: ${logPath}`,
   );
 
+  if (process.env.THREADMARK_DESKTOP_START === "1") {
+    await waitForDaemonReady({
+      apiUrl: config.apiUrl,
+      webOrigin: config.webOrigin,
+      webEnabled: config.startWeb,
+      timeoutMs: 20_000,
+    });
+    console.log(`Workspace local pronto em ${config.webOrigin}.`);
+    return;
+  }
+
   const runtime = new RuntimeStateFile(config.runtimeStatePath);
   const deadline = Date.now() + (config.whatsappEnabled ? 120_000 : 20_000);
   let lastQr: string | null = null;

@@ -47,10 +47,11 @@ test("release desktop publica somente o DMG arm64 validado e seu checksum", asyn
 });
 
 test("instalação unsigned exige origem oficial e checksum antes do xattr", async () => {
-  const [readme, upgrade, desktopMain] = await Promise.all([
+  const [readme, upgrade, desktopMain, cli] = await Promise.all([
     readFile("README.md", "utf8"),
     readFile("UPGRADE.md", "utf8"),
     readFile("desktop/main.ts", "utf8"),
+    readFile("server/cli.ts", "utf8"),
   ]);
 
   for (const documentation of [readme, upgrade]) {
@@ -64,4 +65,12 @@ test("instalação unsigned exige origem oficial e checksum antes do xattr", asy
 
   assert.match(desktopMain, /Encerrar aplicativo e serviço local/);
   assert.match(desktopMain, /runThreadmarkCli\(\["off"\]\)/);
+  assert.match(desktopMain, /THREADMARK_DESKTOP_START: "1"/);
+  assert.match(desktopMain, /const resolved = resolveDesktopDataDirectoryPath/);
+  assert.match(desktopMain, /process\.env\.SUPPORT_DATA_DIR = resolved/);
+  assert.match(desktopMain, /writeDesktopDataDirectoryPreference/);
+  assert.match(desktopMain, /readDesktopDataDirectoryPreference/);
+  assert.match(desktopMain, /backgroundThrottling: false/);
+  assert.match(cli, /process\.env\.THREADMARK_DESKTOP_START === "1"/);
+  assert.match(cli, /Workspace local pronto/);
 });

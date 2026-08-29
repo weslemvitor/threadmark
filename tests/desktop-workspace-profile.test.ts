@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,11 +16,76 @@ import {
   isSafeExternalUrl,
 } from "../desktop/navigation-policy.js";
 import { hasUsableLocalWorkspace } from "../desktop/local-workspace.js";
+import {
+  findThreadmarkProjectEnvironment,
+  readDesktopDataDirectoryPreference,
+  resolveDesktopDataDirectory,
+  writeDesktopDataDirectoryPreference,
+} from "../desktop/project-environment.js";
 
 test("desktop inicia em modo local sem exigir configuração ou servidor", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-desktop-"));
   const profile = await readDesktopWorkspaceProfile(path.join(root, "missing.json"));
   assert.deepEqual(profile, LOCAL_WORKSPACE_PROFILE);
+});
+
+test("build desktop dentro do clone reutiliza o workspace configurado no projeto", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-desktop-project-"));
+  const applicationPath = path.join(
+    root,
+    "release",
+    "mac-arm64",
+    "Threadmark.app",
+    "Contents",
+    "Resources",
+    "app",
+  );
+  await Promise.all([
+    mkdir(applicationPath, { recursive: true }),
+    writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "threadmark", productName: "Threadmark" }),
+    ),
+    writeFile(path.join(root, ".env"), "SUPPORT_DATA_DIR=.data/live\n"),
+  ]);
+
+  const environmentPath = findThreadmarkProjectEnvironment(applicationPath);
+  assert.equal(environmentPath, path.join(root, ".env"));
+  assert.equal(
+    resolveDesktopDataDirectory({
+      applicationPath,
+      userDataDirectory: path.join(root, "empty-user-data"),
+      configuredDataDirectory: ".data/live",
+      environmentPath,
+    }),
+    path.join(root, ".data", "live"),
+  );
+});
+
+test("release instalada sem projeto próximo mantém dados isolados no userData", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-desktop-installed-"));
+  const applicationPath = path.join(root, "Applications", "Threadmark.app", "app");
+  const userDataDirectory = path.join(root, "Library", "Threadmark");
+
+  assert.equal(findThreadmarkProjectEnvironment(applicationPath), null);
+  assert.equal(
+    resolveDesktopDataDirectory({ applicationPath, userDataDirectory }),
+    userDataDirectory,
+  );
+});
+
+test("desktop persiste o workspace detectado com permissão privada", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-desktop-data-"));
+  const preferencePath = path.join(root, "private", "desktop-data-directory.json");
+  const dataDirectory = path.join(root, "workspace", ".data", "live");
+
+  await writeDesktopDataDirectoryPreference(preferencePath, dataDirectory);
+
+  assert.equal(
+    await readDesktopDataDirectoryPreference(preferencePath),
+    dataDirectory,
+  );
+  assert.equal((await stat(preferencePath)).mode & 0o777, 0o600);
 });
 
 test("perfil remoto aceita somente uma origem HTTPS sem credenciais", () => {
