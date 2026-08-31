@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
+import { redactInvestigationThreadInput } from "./ai-redaction.js";
 import {
   buildInvestigationThreadPrompt,
   buildDocumentationPrompt,
@@ -119,13 +120,13 @@ export class StructuredSupportAgent implements SupportAgent {
     input: InvestigationThreadInput,
     signal?: AbortSignal,
   ): Promise<InvestigationTurnResult> {
-    const boundedInput: InvestigationThreadInput = {
+    const boundedInput = redactInvestigationThreadInput({
       ...input,
       ticket: boundProviderSupportInput(input.ticket),
       relatedTickets: (input.relatedTickets ?? [])
         .slice(0, 4)
         .map((ticket) => boundProviderSupportInput(ticket)),
-    };
+    });
     const raw = await this.client.generateJson({
       prompt: buildInvestigationThreadPrompt(boundedInput),
       schemaName: "investigation_turn",

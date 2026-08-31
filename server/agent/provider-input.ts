@@ -4,12 +4,16 @@ import type {
   SupportAnalysisInput,
   TriageAnalysisInput,
 } from "./types.js";
+import {
+  redactSensitiveAiInput,
+  redactSensitiveAiText,
+} from "./ai-redaction.js";
 
 export function boundProviderDocumentationInput<T extends DocumentationDraftInput>(
   input: T,
 ): T {
   const budget = { remaining: 220_000 };
-  return {
+  return redactSensitiveAiInput({
     ...input,
     title: truncate(input.title, 500),
     summary: truncate(input.summary, 4_000),
@@ -47,7 +51,7 @@ export function boundProviderDocumentationInput<T extends DocumentationDraftInpu
           })),
         }
       : {}),
-  } as T;
+  } as T);
 }
 
 const SUPPORT_MESSAGE_LIMIT = 50;
@@ -74,7 +78,7 @@ export function boundProviderSupportInput(
     remaining: RESOLVED_PRECEDENT_CHARACTER_BUDGET,
   };
 
-  return {
+  return redactSensitiveAiInput({
     ...input,
     operatorInstructions: input.operatorInstructions
       ? truncate(input.operatorInstructions, 4_000)
@@ -108,7 +112,7 @@ export function boundProviderSupportInput(
     resolvedPrecedents: input.resolvedPrecedents
       .slice(0, RESOLVED_PRECEDENT_LIMIT)
       .map((precedent) => boundResolvedPrecedent(precedent, precedentBudget)),
-  };
+  });
 }
 
 export function boundProviderTriageInput(
@@ -141,7 +145,7 @@ export function boundProviderTriageInput(
     return bounded ? [bounded] : [];
   });
 
-  return {
+  return redactSensitiveAiInput({
     ...input,
     accountName: truncate(input.accountName, 500),
     groupName: truncate(input.groupName, 500),
@@ -166,7 +170,7 @@ export function boundProviderTriageInput(
         : null,
       lastMessageAt: truncate(suggestion.lastMessageAt, 100),
     })),
-  };
+  });
 }
 
 function boundCategoryCatalog(
@@ -267,9 +271,10 @@ function consumeBudget(
   budget: { remaining: number },
 ): string | null {
   if (value === null) return null;
+  const safeValue = redactSensitiveAiText(value);
   const allowed = Math.min(itemLimit, budget.remaining);
   if (allowed <= 0) return null;
-  const bounded = truncate(value, allowed);
+  const bounded = truncate(safeValue, allowed);
   budget.remaining -= bounded.length;
   return bounded;
 }

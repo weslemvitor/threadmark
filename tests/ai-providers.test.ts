@@ -412,6 +412,7 @@ test("agente estruturado valida a resposta final com o schema Zod existente", as
 });
 
 test("agente remoto limita respostas enviadas e precedentes antes do prompt", async () => {
+  const secret = "sk-provider-metadata-secret";
   let receivedInput: SupportAnalysisInput | null = null;
   const client: StructuredJsonClient = {
     async generateJson(request) {
@@ -429,6 +430,22 @@ test("agente remoto limita respostas enviadas e precedentes antes do prompt", as
     client,
   });
   const input = supportInput();
+  input.operatorInstructions = `Use TOKEN=${secret}`;
+  input.accountName = `Conta ${secret}`;
+  input.groupName = `Grupo ${secret}`;
+  input.messages[0]!.attachments.push({
+    kind: "document",
+    fileName: `diagnostico-${secret}.txt`,
+    mimeType: "text/plain",
+    localPath: null,
+    extractedText: null,
+  });
+  input.openTickets = [{
+    id: "ticket-1",
+    title: `Incidente ${secret}`,
+    summary: "Credencial exposta",
+    status: "open",
+  }];
   input.conversationState.unansweredExternalMessageIds = Array.from(
     { length: 60 },
     (_, index) => `message-${index}-${"i".repeat(600)}`,
@@ -470,6 +487,10 @@ test("agente remoto limita respostas enviadas e precedentes antes do prompt", as
   assert.equal(bounded.resolvedPrecedents[0]?.affectedStore?.name.length, 500);
   assert.equal(bounded.resolvedPrecedents[0]?.categories.length, 30);
   assert.equal(bounded.conversationState.unansweredExternalMessageIds.length, 50);
+  assert.doesNotMatch(JSON.stringify(bounded), new RegExp(secret));
+  assert.match(bounded.operatorInstructions ?? "", /TOKEN=\[REDACTED\]/);
+  assert.match(bounded.accountName, /\[REDACTED\]/);
+  assert.match(bounded.messages[0]!.attachments[0]!.fileName ?? "", /\[REDACTED\]/);
   assert.equal(input.sentResponses.length, 40);
   assert.equal(input.resolvedPrecedents.length, 25);
 });
@@ -513,6 +534,7 @@ test("agente remoto rejeita precedente resolvido fora do contexto fornecido", as
 });
 
 test("agente remoto oferece investigação profunda contextual sem ferramentas locais", async () => {
+  const secret = "sk-investigation-metadata-secret";
   const requests: StructuredJsonRequest[] = [];
   const client: StructuredJsonClient = {
     async generateJson(request) {
@@ -526,10 +548,43 @@ test("agente remoto oferece investigação profunda contextual sem ferramentas l
     client,
   });
 
-  assert.deepEqual(await agent.investigateThread(threadInput()), validTurn);
+  const input = threadInput();
+  input.currentOperator = {
+    displayName: `Operador ${secret}`,
+    role: "owner",
+  };
+  input.images = [{
+    id: "image-1",
+    messageId: "operator-1",
+    fileName: `captura-${secret}.png`,
+    mimeType: "image/png",
+    localPath: "/trusted/image.png",
+    sizeBytes: 42,
+  }];
+  input.availableTools = [{
+    id: "tool-1",
+    type: "knowledge",
+    name: "Conhecimento",
+    description: `client_secret=${secret}`,
+    scope: "Base local",
+    operations: [{
+      name: "search",
+      description: "Busca readonly",
+      argumentsExample: "{}",
+      effect: "read",
+      authorization: "none",
+    }],
+  }];
+
+  assert.deepEqual(await agent.investigateThread(input), validTurn);
   assert.equal(requests[0]?.schemaName, "investigation_turn");
   assert.equal(requests[0]?.model, "model");
   assert.match(requests[0]?.prompt ?? "", /Investigue o caso/);
+  assert.doesNotMatch(requests[0]?.prompt ?? "", new RegExp(secret));
+  assert.match(requests[0]?.prompt ?? "", /Operador \[REDACTED\]/);
+  assert.match(requests[0]?.prompt ?? "", /captura-\[REDACTED\]\.png/);
+  assert.match(requests[0]?.prompt ?? "", /client_secret=\[REDACTED\]/);
+  assert.doesNotMatch(requests[0]?.prompt ?? "", /\/trusted\/image\.png/);
 });
 
 test("investigação profunda remota só cita precedentes recebidos no ticket", async () => {

@@ -503,6 +503,7 @@ test("runner Codex rejeita precedente resolvido que não veio no contexto", asyn
 });
 
 test("runner limita textos e PDFs no prompt sem alterar a entrada original", async () => {
+  const secret = "sk-codex-metadata-secret";
   const temporary = await mkdtemp(path.join(os.tmpdir(), "support-agent-limit-"));
   let promptReceived = "";
   const runner = new CodexSupportAgent(
@@ -521,7 +522,8 @@ test("runner limita textos e PDFs no prompt sem alterar a entrada original", asy
   );
   const hugeText = "inicio-" + "x".repeat(20_000) + "-fim";
   const input: SupportAnalysisInput = {
-    accountName: "Cliente",
+    operatorInstructions: `Use TOKEN=${secret}`,
+    accountName: `Cliente ${secret}`,
     accountType: "ecommerce",
     groupName: "Grupo",
     knownEcommerces: [],
@@ -544,7 +546,7 @@ test("runner limita textos e PDFs no prompt sem alterar a entrada original", asy
       attachments: [
         {
           kind: "document" as const,
-          fileName: `arquivo-${index}.pdf`,
+          fileName: index === 10 ? `arquivo-${secret}.pdf` : `arquivo-${index}.pdf`,
           mimeType: "application/pdf",
           localPath: `/tmp/arquivo-${index}.pdf`,
           extractedText: hugeText,
@@ -611,6 +613,10 @@ test("runner limita textos e PDFs no prompt sem alterar a entrada original", asy
     );
     assert.ok(contentCharacters <= 160_000);
     assert.match(promptReceived, /conteúdo truncado pelo limite do runner/);
+    assert.doesNotMatch(promptReceived, new RegExp(secret));
+    assert.match(bounded.operatorInstructions ?? "", /TOKEN=\[REDACTED\]/);
+    assert.match(bounded.accountName, /\[REDACTED\]/);
+    assert.match(bounded.messages[0]!.attachments[0]!.fileName ?? "", /\[REDACTED\]/);
     assert.equal(input.messages.length, 60);
     assert.equal(input.messages[0]?.text, hugeText);
     assert.equal(input.sentResponses.length, 40);

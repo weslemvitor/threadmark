@@ -13,6 +13,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  redactInvestigationThreadInput,
+  redactSensitiveAiInput,
+  redactSensitiveAiText,
+} from "./ai-redaction.js";
 import { boundProviderDocumentationInput } from "./provider-input.js";
 import {
   buildInvestigationThreadPrompt,
@@ -401,9 +406,10 @@ function consumeTextBudget(
   budget: { remaining: number },
 ): string | null {
   if (value === null) return null;
+  const safeValue = redactSensitiveAiText(value);
   const allowed = Math.min(perItemLimit, budget.remaining);
   if (allowed <= 0) return null;
-  const bounded = truncateText(value, allowed);
+  const bounded = truncateText(safeValue, allowed);
   budget.remaining -= bounded.length;
   return bounded;
 }
@@ -423,7 +429,9 @@ function boundSupportInput(
       text: consumeTextBudget(message.text, 8_000, conversationBudget),
       attachments: message.attachments.slice(0, 10).map((attachment) => ({
         ...attachment,
-        localPath: mode === "deep" ? attachment.localPath : null,
+        // The original input is used separately to resolve trusted images.
+        // Filesystem paths never need to enter the model prompt.
+        localPath: null,
         fileName: attachment.fileName
           ? truncateText(attachment.fileName, 500)
           : null,
@@ -454,7 +462,7 @@ function boundSupportInput(
     .slice(0, limits.maxResolvedPrecedents)
     .map((precedent) => boundResolvedPrecedent(precedent, precedentBudget));
 
-  return {
+  return redactSensitiveAiInput({
     ...input,
     operatorInstructions: input.operatorInstructions
       ? truncateText(input.operatorInstructions, 4_000)
@@ -474,7 +482,7 @@ function boundSupportInput(
       status: truncateText(ticket.status, 100),
     })),
     resolvedPrecedents,
-  };
+  });
 }
 
 function boundTriageInput(input: TriageAnalysisInput): TriageAnalysisInput {
@@ -568,7 +576,7 @@ function boundTriageInput(input: TriageAnalysisInput): TriageAnalysisInput {
     appended.add(message.id);
   }
 
-  return {
+  return redactSensitiveAiInput({
     ...input,
     accountName: truncateText(input.accountName, 500),
     groupName: truncateText(input.groupName, 500),
@@ -593,7 +601,7 @@ function boundTriageInput(input: TriageAnalysisInput): TriageAnalysisInput {
         : null,
       lastMessageAt: truncateText(suggestion.lastMessageAt, 100),
     })),
-  };
+  });
 }
 
 const defaultProcessExecutor: ProcessExecutor = ({
@@ -711,13 +719,13 @@ export class CodexSupportAgent {
     model = "default",
     signal?: AbortSignal,
   ): Promise<InvestigationTurnResult> {
-    const boundedInput: InvestigationThreadInput = {
+    const boundedInput = redactInvestigationThreadInput({
       ...input,
       ticket: boundSupportInput(input.ticket, "deep"),
       relatedTickets: (input.relatedTickets ?? [])
         .slice(0, 4)
         .map((ticket) => boundSupportInput(ticket, "deep")),
-    };
+    });
     const raw = await this.executeStructuredRun({
       input: boundedInput.ticket,
       imageInput: approvedInvestigationImageInput(input),
