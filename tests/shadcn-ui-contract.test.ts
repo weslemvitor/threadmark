@@ -217,7 +217,10 @@ test("dashboard usa donut para status e barras para categorias com Shadcn Charts
   assert.match(source, /innerRadius=\{48\}/);
   assert.match(source, /DashboardStatusDonut/);
   assert.match(source, /Distribuição por status/);
-  assert.match(viewSource, /lg:grid-cols-2 2xl:grid-cols-3/);
+  assert.match(viewSource, /grid-flow-row-dense/);
+  assert.match(viewSource, /lg:grid-cols-12/);
+  assert.match(source, /<AreaChart/);
+  assert.match(source, /<Area/);
   assert.match(source, /<BarChart/);
   assert.match(source, /<CartesianGrid/);
   assert.match(source, /<XAxis/);
@@ -268,7 +271,7 @@ test("contexto do ticket ocupa a página sem recriar uma listagem lateral", asyn
   assert.match(categories, /from "@\/app\/components\/ui\/combobox"/);
   assert.match(categories, /<Combobox/);
   assert.match(categories, /<SelectTrigger[^>]*className="w-full text-xs"/);
-  assert.match(categories, /categoryFacetOrder/);
+  assert.match(categories, /categoryDisplayOrder/);
   assert.match(categories, /grid-cols-\[68px_minmax\(0,1fr\)\]/);
 });
 

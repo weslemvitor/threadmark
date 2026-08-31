@@ -17,29 +17,16 @@ import {
   SelectValue,
 } from "@/app/components/ui/select";
 import { getCategoryName } from "@/app/lib/format";
+import {
+  categoryCreationFacets,
+  categoryDisplayOrder,
+  categoryFacetLabels,
+} from "@/app/lib/category-facets";
 import type {
   CategoryFacetType,
   TicketCategoryCatalog,
   TicketDetail as TicketDetailType,
 } from "@/app/lib/types";
-
-const categoryFacetLabels: Record<CategoryFacetType, string> = {
-  reason: "Motivo",
-  product: "Produto",
-  platform: "Plataforma",
-  symptom: "Sintoma",
-  root_cause: "Causa raiz",
-  resolution: "Resolução",
-};
-
-const categoryFacetOrder: CategoryFacetType[] = [
-  "reason",
-  "symptom",
-  "product",
-  "platform",
-  "root_cause",
-  "resolution",
-];
 
 export function CategoryPanel({
   ticket,
@@ -84,7 +71,7 @@ export function CategoryPanel({
     [assignedIds, categoryCatalog],
   );
   const categoryOptions = useMemo<ComboboxOption[]>(
-    () => categoryFacetOrder.flatMap((facet) =>
+    () => categoryDisplayOrder.flatMap((facet) =>
       availableCategories
         .filter((category) => category.facet === facet)
         .map((category) => ({
@@ -173,7 +160,7 @@ export function CategoryPanel({
         ) : null}
       </div>
       <div className="mt-3 grid gap-2">
-        {categoryFacetOrder.map((facet) => {
+        {categoryDisplayOrder.map((facet) => {
           const categories = assignedByFacet[facet];
           if (!categories.length) return null;
           return (
@@ -279,7 +266,7 @@ export function CategoryPanel({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                  {(Object.keys(categoryFacetLabels) as CategoryFacetType[]).map(
+                  {categoryCreationFacets.map(
                     (facet) => (
                       <SelectItem key={facet} value={facet}>
                         {categoryFacetLabels[facet]}

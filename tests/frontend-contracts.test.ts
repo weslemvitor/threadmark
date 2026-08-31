@@ -28,6 +28,22 @@ test("mensagens e evidências do Threadmark AI quebram linha sem overflow", asyn
   assert.match(message, /title=\{message\.aiModel\}/);
 });
 
+test("janela aberta recarrega quando o servidor publica um novo build", async () => {
+  const [app, api, server] = await Promise.all([
+    readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/api.ts", import.meta.url), "utf8"),
+    readFile(new URL("../server/index.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(server, /"\/api\/runtime\/web-build"/);
+  assert.match(server, /readWebBuildReloadRequest/);
+  assert.match(api, /getWebBuildRevision/);
+  assert.match(app, /WEB_BUILD_POLL_INTERVAL_MS/);
+  assert.match(app, /webBuildRevisionRef\.current === undefined/);
+  assert.match(app, /revision === webBuildRevisionRef\.current/);
+  assert.match(app, /window\.location\.reload\(\)/);
+});
+
 test("ticket mostra resumo após resolução e delega a IA ao assistente global", async () => {
   const [app, detail, assistant, resolution] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
@@ -323,7 +339,8 @@ test("visão de conversas mantém triagem supervisionada, global e responsiva", 
   assert.match(directory, /Manter todas as pendências como contexto/);
   assert.match(directory, /Mensagens, anexos e tickets serão preservados/);
   assert.match(directory, /from "@\/app\/components\/ui\/alert-dialog"/);
-  assert.match(triage, /Manter pendências como contexto/);
+  assert.match(triage, /Manter tudo como contexto/);
+  assert.match(triage, /sugestões abertas serão recusadas/);
   assert.match(triage, /somente nesta conversa/);
   assert.match(triage, /onKeepPendingAsContext/);
   assert.doesNotMatch(view, /const normalized = query\.trim/);

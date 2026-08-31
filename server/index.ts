@@ -69,6 +69,10 @@ import {
 } from "./domain/index.js";
 import { loadConfig } from "./runtime/config.js";
 import {
+  readWebBuildReloadRequest,
+  webBuildReloadPath,
+} from "./runtime/web-build-reload.js";
+import {
   createLocalBackup,
   DEFAULT_LOCAL_BACKUP_RETENTION,
 } from "./runtime/backup.js";
@@ -1541,6 +1545,15 @@ function createApiAppInternal(
       ? runtimeFromFile(await runtimeState.read(), fallback)
       : fallback;
     return context.json(runtime);
+  });
+
+  app.get("/api/runtime/web-build", async (context) => {
+    context.header("Cache-Control", "no-store, max-age=0");
+    return context.json({
+      revision: await readWebBuildReloadRequest(
+        webBuildReloadPath(config.dataDir),
+      ),
+    });
   });
 
   app.get("/api/runtime/qr", async (context) => {

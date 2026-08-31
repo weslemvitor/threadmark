@@ -117,6 +117,10 @@ export async function getNotifications(options: {
   return request(`/api/notifications?${params.toString()}`);
 }
 
+export async function getWebBuildRevision(): Promise<{ revision: string | null }> {
+  return request("/api/runtime/web-build");
+}
+
 export async function getUnreadNotificationCount(): Promise<{ unread: number }> {
   return request("/api/notifications/unread-count");
 }
@@ -442,7 +446,7 @@ export async function getBugTickets(): Promise<TicketSummary[]> {
 }
 
 export async function getArchivedTickets(
-  options: { offset?: number; limit?: number } = {},
+  options: { offset?: number; limit?: number; query?: string } = {},
 ): Promise<TicketListResponse> {
   const params = new URLSearchParams({
     status: "archived",
@@ -451,6 +455,8 @@ export async function getArchivedTickets(
     limit: String(options.limit ?? 200),
     offset: String(options.offset ?? 0),
   });
+  const query = options.query?.trim();
+  if (query) params.set("q", query);
   return request<TicketListResponse>(`/api/tickets?${params}`);
 }
 

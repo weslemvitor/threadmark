@@ -1041,6 +1041,8 @@ export interface DashboardResponse {
   statusCounts: StatusCountDto[];
   priorityCounts: Array<{ priority: TicketPriority; count: number }>;
   ticketsByDay: Array<{ date: string; created: number; resolved: number }>;
+  /** Daily series for the equally sized period immediately before the selected one. */
+  previousTicketsByDay: Array<{ date: string; created: number; resolved: number }> | null;
   topCategories: Array<{ category: CategoryDto; count: number }>;
   topGroups: Array<{ groupId: string; groupSubject: string; count: number }>;
   /** @deprecated Use topGroups. */

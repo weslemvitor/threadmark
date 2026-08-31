@@ -22,6 +22,7 @@ import {
   getDirectory,
   getNotifications,
   getRuntime,
+  getWebBuildRevision,
   getTicket,
   getTicketAssignees,
   getTickets,
@@ -202,6 +203,7 @@ const IDLE_TICKET_POLL_INTERVAL_MS = 5_000;
 const MAX_TICKET_POLL_INTERVAL_MS = 30_000;
 const TICKET_LIST_SNAPSHOT_KEY = "ticket-list";
 const NOTIFICATION_POLL_INTERVAL_MS = 5_000;
+const WEB_BUILD_POLL_INTERVAL_MS = 2_000;
 
 export function SupportApp({
   initialPath = "/conversations",
@@ -209,6 +211,8 @@ export function SupportApp({
   initialPath?: string;
 }) {
   const access = useAppAccess();
+  const webBuildRevisionRef = useRef<string | null | undefined>(undefined);
+  const webBuildReloadRequestedRef = useRef(false);
   const initialNavigation = parseThreadmarkLocation(initialPath);
   const [activeView, setActiveView] = useState<ViewId>(initialNavigation.view);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>(
@@ -582,6 +586,33 @@ export function SupportApp({
     const timer = window.setTimeout(() => void loadData(), 0);
     return () => window.clearTimeout(timer);
   }, [loadData]);
+
+  useEffect(() => {
+    let active = true;
+    const checkWebBuild = () => {
+      void getWebBuildRevision()
+        .then(({ revision }) => {
+          if (!active || webBuildReloadRequestedRef.current) return;
+          if (webBuildRevisionRef.current === undefined) {
+            webBuildRevisionRef.current = revision;
+            return;
+          }
+          if (!revision || revision === webBuildRevisionRef.current) return;
+          webBuildReloadRequestedRef.current = true;
+          window.location.reload();
+        })
+        .catch(() => undefined);
+    };
+    checkWebBuild();
+    const timer = window.setInterval(
+      checkWebBuild,
+      WEB_BUILD_POLL_INTERVAL_MS,
+    );
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const accessUserId = access?.user.id ?? null;
 

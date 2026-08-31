@@ -2987,6 +2987,82 @@ export class SupportStore {
       const conversationId = normalizedNullableText(input.conversationId);
       if (conversationId) this.getConversationSummary(conversationId);
       const timestamp = nowUtc();
+      const pendingBlocks = this.database
+        .prepare(
+          `SELECT block.id, block.group_id
+           FROM triage_blocks block
+           JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+           JOIN clients client ON client.id = conversation.client_id
+           WHERE block.state = 'pending'
+             AND client.ignored_at IS NULL
+             ${conversationId ? "AND block.group_id = ?" : ""}
+           ORDER BY block.first_message_at, block.id`,
+        )
+        .all(...(conversationId ? [conversationId] : [])) as Array<{
+          id: string;
+          group_id: string;
+        }>;
+      const pendingBlockMessages = new Map<string, string[]>();
+      if (pendingBlocks.length) {
+        const rows = this.database
+          .prepare(
+            `SELECT block_message.block_id, block_message.message_id
+             FROM triage_block_messages block_message
+             JOIN triage_blocks block ON block.id = block_message.block_id
+             WHERE block.state = 'pending' AND block_message.active = 1
+               ${conversationId ? "AND block.group_id = ?" : ""}
+             ORDER BY block.first_message_at, block.id,
+                      block_message.added_at, block_message.message_id`,
+          )
+          .all(...(conversationId ? [conversationId] : [])) as Array<{
+            block_id: string;
+            message_id: string;
+          }>;
+        for (const row of rows) {
+          const messageIds = pendingBlockMessages.get(row.block_id) ?? [];
+          messageIds.push(row.message_id);
+          pendingBlockMessages.set(row.block_id, messageIds);
+        }
+        this.database
+          .prepare(
+            `UPDATE triage_block_messages
+             SET active = 0, updated_at = ?
+             WHERE active = 1
+               AND block_id IN (
+                 SELECT block.id FROM triage_blocks block
+                 JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+                 JOIN clients client ON client.id = conversation.client_id
+                 WHERE block.state = 'pending'
+                   AND client.ignored_at IS NULL
+                   ${conversationId ? "AND block.group_id = ?" : ""}
+               )`,
+          )
+          .run(timestamp, ...(conversationId ? [conversationId] : []));
+        this.database
+          .prepare(
+            `UPDATE triage_blocks
+             SET state = 'context', resolved_at = ?, updated_at = ?
+             WHERE state = 'pending'
+               AND id IN (
+                 SELECT block.id FROM triage_blocks block
+                 JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+                 JOIN clients client ON client.id = conversation.client_id
+                 WHERE client.ignored_at IS NULL
+                   ${conversationId ? "AND block.group_id = ?" : ""}
+               )`,
+          )
+          .run(timestamp, timestamp, ...(conversationId ? [conversationId] : []));
+        for (const block of pendingBlocks) {
+          this.insertTriageBlockEvent({
+            blockId: block.id,
+            eventType: "suggestion_rejected_as_context",
+            actor,
+            messageIds: pendingBlockMessages.get(block.id) ?? [],
+            data: { conversationId: block.group_id },
+            occurredAt: timestamp,
+          });
+        }
+      }
       const messages = this.database
         .prepare(
           `SELECT message.id, message.group_id, message.sender_id,
@@ -3017,19 +3093,6 @@ export class SupportStore {
            ORDER BY message.group_id, message.occurred_at, message.id`,
         )
         .all(...(conversationId ? [conversationId] : [])) as ConversationActionMessageRow[];
-      if (!messages.length) {
-        return {
-          contextualizedMessageCount: 0,
-          conversationCount: 0,
-          resolvedBlockCount: 0,
-        };
-      }
-
-      const pendingBlocksBefore = (
-        this.database
-          .prepare("SELECT COUNT(*) AS count FROM triage_blocks WHERE state = 'pending'")
-          .get() as { count: number }
-      ).count;
       const grouped = new Map<string, ConversationActionMessageRow[]>();
       for (const message of messages) {
         const current = grouped.get(message.group_id) ?? [];
@@ -3061,7 +3124,14 @@ export class SupportStore {
           });
         }
 
-        if (this.hasTriageAiJobSchema()) {
+      }
+
+      if (this.hasTriageAiJobSchema()) {
+        const affectedGroupIds = new Set([
+          ...grouped.keys(),
+          ...pendingBlocks.map((block) => block.group_id),
+        ]);
+        for (const groupId of affectedGroupIds) {
           this.database
             .prepare(
               `UPDATE triage_ai_jobs
@@ -3084,16 +3154,10 @@ export class SupportStore {
             .run(timestamp, groupId);
         }
       }
-
-      const pendingBlocksAfter = (
-        this.database
-          .prepare("SELECT COUNT(*) AS count FROM triage_blocks WHERE state = 'pending'")
-          .get() as { count: number }
-      ).count;
       return {
         contextualizedMessageCount: messages.length,
         conversationCount: grouped.size,
-        resolvedBlockCount: Math.max(0, pendingBlocksBefore - pendingBlocksAfter),
+        resolvedBlockCount: pendingBlocks.length,
       };
     }).immediate();
   }
@@ -10171,7 +10235,7 @@ export class SupportStore {
     }>;
     const messageRows = messageRowsDescending.reverse();
     const attachmentStatement = this.database.prepare(
-      `SELECT kind, file_name, mime_type, local_path, extracted_text
+      `SELECT id, kind, file_name, mime_type, local_path, extracted_text
        FROM attachments WHERE message_id = ? ORDER BY created_at`,
     );
     const openTickets = this.database
@@ -12008,11 +12072,29 @@ export class SupportStore {
 
     const rawStatusCounts = this.database
       .prepare(
-        `SELECT t.status, COUNT(*) AS count
+        `SELECT CASE
+           WHEN t.status = 'archived' THEN COALESCE(
+             (
+               SELECT archived_event.from_status
+               FROM ticket_events archived_event
+               WHERE archived_event.ticket_id = t.id
+                 AND archived_event.event_type = 'status_changed'
+                 AND archived_event.to_status = 'archived'
+                 AND archived_event.from_status IN ('resolved', 'cancelled')
+               ORDER BY COALESCE(archived_event.ingestion_sequence, 0) DESC,
+                        archived_event.occurred_at DESC,
+                        archived_event.id DESC
+               LIMIT 1
+             ),
+             CASE WHEN t.resolved_at IS NOT NULL THEN 'resolved' ELSE 'cancelled' END
+           )
+           ELSE t.status
+         END AS status,
+         COUNT(*) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL${createdScopeSql}
-         GROUP BY t.status`,
+         GROUP BY 1`,
       )
       .all(...createdScopeParameters) as Array<{ status: TicketStatus; count: number }>;
     const statusMap = new Map(rawStatusCounts.map((item) => [item.status, item.count]));
@@ -12033,45 +12115,21 @@ export class SupportStore {
     );
 
     const chartPeriod = period ?? recentDashboardPeriod(14, new Date(), timeZone);
-    const dailyCounts = new Map(
-      dashboardCalendarDates(chartPeriod).map((date) => [
-        date,
-        { date, created: 0, resolved: 0 },
-      ]),
+    const previousPeriod = period ? previousDashboardPeriod(period) : null;
+    const ticketsByDay = this.getDashboardTicketsByDay(
+      chartPeriod,
+      assigneeSql,
+      assigneeParameters,
+      timeZone,
     );
-    const ticketActivity = this.database
-      .prepare(
-        `SELECT t.created_at AS occurred_at, 'created' AS activity
-         FROM tickets t
-         JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL
-           AND t.created_at >= ? AND t.created_at < ?${assigneeSql}
-         UNION ALL
-         SELECT event.occurred_at, 'resolved' AS activity
-         FROM ticket_events event
-         JOIN tickets t ON t.id = event.ticket_id
-         JOIN clients c ON c.id = t.client_id
-         WHERE c.ignored_at IS NULL
-           AND event.event_type IN ('ticket_created', 'status_changed')
-           AND event.to_status = 'resolved'
-           AND (event.from_status IS NULL OR event.from_status != 'archived')
-           AND event.occurred_at >= ? AND event.occurred_at < ?${assigneeSql}`,
-      )
-      .all(
-        chartPeriod.fromUtc,
-        chartPeriod.toUtcExclusive,
-        ...assigneeParameters,
-        chartPeriod.fromUtc,
-        chartPeriod.toUtcExclusive,
-        ...assigneeParameters,
-      ) as Array<{ occurred_at: string; activity: "created" | "resolved" }>;
-    for (const activity of ticketActivity) {
-      const bucket = dailyCounts.get(
-        dashboardDateInTimeZone(activity.occurred_at, timeZone),
-      );
-      if (bucket) bucket[activity.activity] += 1;
-    }
-    const ticketsByDay = [...dailyCounts.values()];
+    const previousTicketsByDay = previousPeriod
+      ? this.getDashboardTicketsByDay(
+          previousPeriod,
+          assigneeSql,
+          assigneeParameters,
+          timeZone,
+        )
+      : null;
 
     const topCategoryRows = this.database
       .prepare(
@@ -12125,7 +12183,6 @@ export class SupportStore {
       ticketTotal.count,
       resolvedTotal.count,
     );
-    const previousPeriod = period ? previousDashboardPeriod(period) : null;
     const previousOperational = previousPeriod
       ? this.getDashboardOperationalSnapshot(previousPeriod, assigneeId)
       : null;
@@ -12149,6 +12206,7 @@ export class SupportStore {
         count: priorityMap.get(priority) ?? 0,
       })),
       ticketsByDay,
+      previousTicketsByDay,
       topCategories: topCategoryRows.map((row) => ({
         category: this.mapCategory(row),
         count: row.count,
@@ -12208,6 +12266,53 @@ export class SupportStore {
         limit: 6,
       }).items,
     };
+  }
+
+  private getDashboardTicketsByDay(
+    period: DashboardPeriodDto,
+    assigneeSql: string,
+    assigneeParameters: string[],
+    timeZone: string,
+  ): DashboardResponse["ticketsByDay"] {
+    const dailyCounts = new Map(
+      dashboardCalendarDates(period).map((date) => [
+        date,
+        { date, created: 0, resolved: 0 },
+      ]),
+    );
+    const ticketActivity = this.database
+      .prepare(
+        `SELECT t.created_at AS occurred_at, 'created' AS activity
+         FROM tickets t
+         JOIN clients c ON c.id = t.client_id
+         WHERE c.ignored_at IS NULL
+           AND t.created_at >= ? AND t.created_at < ?${assigneeSql}
+         UNION ALL
+         SELECT event.occurred_at, 'resolved' AS activity
+         FROM ticket_events event
+         JOIN tickets t ON t.id = event.ticket_id
+         JOIN clients c ON c.id = t.client_id
+         WHERE c.ignored_at IS NULL
+           AND event.event_type IN ('ticket_created', 'status_changed')
+           AND event.to_status = 'resolved'
+           AND (event.from_status IS NULL OR event.from_status != 'archived')
+           AND event.occurred_at >= ? AND event.occurred_at < ?${assigneeSql}`,
+      )
+      .all(
+        period.fromUtc,
+        period.toUtcExclusive,
+        ...assigneeParameters,
+        period.fromUtc,
+        period.toUtcExclusive,
+        ...assigneeParameters,
+      ) as Array<{ occurred_at: string; activity: "created" | "resolved" }>;
+    for (const activity of ticketActivity) {
+      const bucket = dailyCounts.get(
+        dashboardDateInTimeZone(activity.occurred_at, timeZone),
+      );
+      if (bucket) bucket[activity.activity] += 1;
+    }
+    return [...dailyCounts.values()];
   }
 
   private getDashboardOperationalSnapshot(

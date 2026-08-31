@@ -141,7 +141,7 @@ export function ConversationDirectory({
                   Manter todas as pendências como contexto?
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  {pendingTotal} {pendingTotal === 1 ? "mensagem sairá" : "mensagens sairão"} da fila de triagem em todas as conversas. Mensagens, anexos e tickets serão preservados, e novas mensagens continuarão entrando normalmente.
+                  {pendingTotal} {pendingTotal === 1 ? "mensagem sairá" : "mensagens sairão"} da fila de triagem em todas as conversas. Todas as sugestões pendentes também serão recusadas. Mensagens, anexos e tickets serão preservados, e novas mensagens continuarão entrando normalmente.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

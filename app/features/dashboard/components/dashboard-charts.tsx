@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from "react";
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
@@ -36,6 +38,11 @@ const dailyChartConfig = {
 
 const horizontalChartConfig = {
   value: { label: "Tickets", color: "var(--chart-1)" },
+} satisfies ChartConfig;
+
+const comparisonAreaChartConfig = {
+  current: { label: "Período atual", color: "var(--chart-1)" },
+  previous: { label: "Período anterior", color: "var(--muted-foreground)" },
 } satisfies ChartConfig;
 
 type DashboardChartItem = {
@@ -96,6 +103,117 @@ export function DashboardMetricCard({
           </small>
         ) : null}
         <small className="mt-1.5 line-clamp-2 text-xs text-muted-foreground/80">{note}</small>
+      </div>
+    </Card>
+  );
+}
+
+export function DashboardMetricComparisonChart({
+  comparisonLabel,
+  currentRangeLabel,
+  data,
+  previousData,
+  previousRangeLabel,
+  previousTotal,
+  total,
+}: {
+  comparisonLabel: string | null;
+  currentRangeLabel: string;
+  data: DashboardData["ticketsByDay"];
+  previousData: DashboardData["previousTicketsByDay"];
+  previousRangeLabel: string | null;
+  previousTotal: number | null;
+  total: number;
+}) {
+  const chartData = data.map((item, index) => ({
+    date: item.date,
+    current: item.created,
+    previous: previousData?.[index]?.created ?? null,
+    previousDate: previousData?.[index]?.date ?? null,
+  }));
+  const compactDates = chartData.length > 14;
+  return (
+    <Card className="min-w-0 gap-3 overflow-hidden p-4 pb-2 shadow-sm">
+      <header className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <span className="text-sm font-medium text-foreground">Tickets criados</span>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <strong className="text-3xl leading-none font-semibold tracking-tight text-foreground">
+              {total.toLocaleString("pt-BR")}
+            </strong>
+            {previousTotal !== null ? (
+              <span className="text-sm text-muted-foreground">
+                / {previousTotal.toLocaleString("pt-BR")}
+              </span>
+            ) : null}
+          </div>
+          {comparisonLabel ? (
+            <span className="mt-2 inline-flex rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700">
+              {comparisonLabel}
+            </span>
+          ) : null}
+        </div>
+        <div className="grid gap-1 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <i className="size-2 rounded-full bg-[var(--chart-1)]" /> {currentRangeLabel}
+          </span>
+          {previousRangeLabel ? (
+            <span className="flex items-center gap-1.5">
+              <i className="size-2 rounded-full bg-muted-foreground" /> {previousRangeLabel}
+            </span>
+          ) : null}
+        </div>
+      </header>
+      <div className="w-full overflow-x-auto">
+        <ChartContainer
+          aria-label="Evolução de tickets criados no período atual e anterior"
+          className="h-52 w-full aspect-auto"
+          config={comparisonAreaChartConfig}
+          initialDimension={{ width: 760, height: 208 }}
+          style={compactDates ? { minWidth: `${chartData.length * 38}px` } : undefined}
+        >
+          <AreaChart accessibilityLayer data={chartData} margin={{ left: 0, right: 8 }}>
+            <defs>
+              <linearGradient id="dashboard-current-area" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-current)" stopOpacity={0.38} />
+                <stop offset="95%" stopColor="var(--color-current)" stopOpacity={0.03} />
+              </linearGradient>
+              <linearGradient id="dashboard-previous-area" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-previous)" stopOpacity={0.24} />
+                <stop offset="95%" stopColor="var(--color-previous)" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid vertical={false} strokeDasharray="3 3" />
+            <XAxis
+              axisLine={false}
+              dataKey="date"
+              tickFormatter={(value: string) =>
+                new Intl.DateTimeFormat("pt-BR", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  timeZone: "UTC",
+                }).format(new Date(`${value}T12:00:00Z`))
+              }
+              tickLine={false}
+              tickMargin={8}
+            />
+            <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
+            <Area
+              dataKey="previous"
+              fill="url(#dashboard-previous-area)"
+              stroke="var(--color-previous)"
+              strokeWidth={2}
+              type="monotone"
+            />
+            <Area
+              dataKey="current"
+              fill="url(#dashboard-current-area)"
+              stroke="var(--color-current)"
+              strokeWidth={2}
+              type="monotone"
+            />
+          </AreaChart>
+        </ChartContainer>
       </div>
     </Card>
   );

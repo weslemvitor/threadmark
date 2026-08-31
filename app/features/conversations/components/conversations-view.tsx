@@ -73,6 +73,29 @@ type ConversationViewportAnchor = {
 };
 type ToastTone = "success" | "warning";
 
+function keptAsContextMessage(
+  messageCount: number,
+  suggestionCount: number,
+  scope: "global" | "conversation",
+): string {
+  const parts: string[] = [];
+  if (messageCount > 0) {
+    parts.push(
+      messageCount === 1
+        ? `1 mensagem ${scope === "global" ? "saiu das pendências" : "desta conversa"} e foi mantida como contexto.`
+        : `${messageCount} mensagens ${scope === "global" ? "saíram das pendências" : "desta conversa"} foram mantidas como contexto.`,
+    );
+  }
+  if (suggestionCount > 0) {
+    parts.push(
+      suggestionCount === 1
+        ? "1 sugestão pendente foi recusada."
+        : `${suggestionCount} sugestões pendentes foram recusadas.`,
+    );
+  }
+  return parts.join(" ") || "O contexto já estava atualizado.";
+}
+
 type ConversationsViewProps = {
   clients: ClientSummary[];
   tickets: TicketSummary[];
@@ -906,9 +929,11 @@ export function ConversationsView({
       selectionAnchorRef.current = null;
       onToast({
         tone: "success",
-        message: result.contextualizedMessageCount === 1
-          ? "1 mensagem saiu das pendências e foi mantida como contexto."
-          : `${result.contextualizedMessageCount} mensagens saíram das pendências e foram mantidas como contexto.`,
+        message: keptAsContextMessage(
+          result.contextualizedMessageCount,
+          result.resolvedBlockCount,
+          "global",
+        ),
       });
     } catch (nextError) {
       onToast({
@@ -926,7 +951,7 @@ export function ConversationsView({
   const keepCurrentConversationPendingAsContext = useCallback(async () => {
     if (
       !selectedConversationId ||
-      !detail?.conversation.pendingCount ||
+      (!detail?.conversation.pendingCount && !detail?.blocks.length) ||
       actionBusy ||
       loadingBlockId
     ) return;
@@ -943,9 +968,11 @@ export function ConversationsView({
       selectionAnchorRef.current = null;
       onToast({
         tone: "success",
-        message: result.contextualizedMessageCount === 1
-          ? "1 mensagem desta conversa foi mantida como contexto."
-          : `${result.contextualizedMessageCount} mensagens desta conversa foram mantidas como contexto.`,
+        message: keptAsContextMessage(
+          result.contextualizedMessageCount,
+          result.resolvedBlockCount,
+          "conversation",
+        ),
       });
     } catch (nextError) {
       onToast({
@@ -957,7 +984,7 @@ export function ConversationsView({
     } finally {
       setActionBusy(false);
     }
-  }, [actionBusy, detail?.conversation.pendingCount, loadConversationList, loadingBlockId, onToast, refreshOpenConversation, selectedConversationId]);
+  }, [actionBusy, detail, loadConversationList, loadingBlockId, onToast, refreshOpenConversation, selectedConversationId]);
 
   const ignoreSuggestedBlock = useCallback(async (
     block: ConversationTriageBlock,
@@ -1138,6 +1165,7 @@ export function ConversationsView({
         onClose={() => setMobilePanelOpen(false)}
         onOpenTicket={onOpenTicket}
         onKeepPendingAsContext={() => void keepCurrentConversationPendingAsContext()}
+        pendingSuggestionCount={detail?.blocks.length ?? 0}
         onToggleSuggestions={() => void toggleConversationSuggestions()}
         ticketRefreshVersion={refreshVersion}
       >

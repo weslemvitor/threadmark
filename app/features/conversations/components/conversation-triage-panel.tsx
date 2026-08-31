@@ -29,6 +29,7 @@ export function ConversationTriagePanel({
   error,
   conversation,
   busy,
+  pendingSuggestionCount,
   ticketRefreshVersion,
   children,
   onClose,
@@ -40,6 +41,7 @@ export function ConversationTriagePanel({
   error: string | null;
   conversation: ConversationSummary | null;
   busy: boolean;
+  pendingSuggestionCount: number;
   ticketRefreshVersion: number;
   children: ReactNode;
   onClose: () => void;
@@ -142,7 +144,7 @@ export function ConversationTriagePanel({
               ? "Reativar sugestões"
               : "Ignorar sugestões"}
           </Button>
-          {conversation.pendingCount > 0 ? (
+          {conversation.pendingCount > 0 || pendingSuggestionCount > 0 ? (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -153,7 +155,7 @@ export function ConversationTriagePanel({
                   variant="outline"
                 >
                   <MessageCircleMore className="shrink-0" size={14} />
-                  Manter pendências como contexto ({conversation.pendingCount})
+                  Manter tudo como contexto
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
@@ -162,12 +164,18 @@ export function ConversationTriagePanel({
                     Manter as pendências desta conversa como contexto?
                   </AlertDialogTitle>
                   <AlertDialogDescription>
-                    {conversation.pendingCount}{" "}
-                    {conversation.pendingCount === 1
-                      ? "mensagem sairá"
-                      : "mensagens sairão"}{" "}
-                    da triagem somente nesta conversa. O histórico, os anexos e
-                    os tickets serão preservados.
+                    {conversation.pendingCount > 0
+                      ? `${conversation.pendingCount} ${conversation.pendingCount === 1
+                        ? "mensagem pendente será mantida"
+                        : "mensagens pendentes serão mantidas"} como contexto. `
+                      : ""}
+                    {pendingSuggestionCount > 0
+                      ? `${pendingSuggestionCount} ${pendingSuggestionCount === 1
+                        ? "sugestão aberta será recusada"
+                        : "sugestões abertas serão recusadas"}. `
+                      : ""}
+                    A ação vale somente nesta conversa. O histórico, os anexos
+                    e os tickets serão preservados.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>

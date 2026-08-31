@@ -51,6 +51,7 @@ test("Kanban separa tickets ativos dos arquivados sem contaminar a carga global"
   assert.match(api, /status:\s*"archived"/);
   assert.match(api, /includeArchived:\s*"true"/);
   assert.match(api, /order:\s*"archived_desc"/);
+  assert.match(api, /if \(query\) params\.set\("q", query\)/);
   assert.match(api, /offset:\s*String\(options\.offset \?\? 0\)/);
   assert.match(api, /status:\s*"resolved"/);
   assert.match(api, /order:\s*"resolved_desc"/);
@@ -59,9 +60,16 @@ test("Kanban separa tickets ativos dos arquivados sem contaminar a carga global"
   assert.match(view, /resolvedTickets\.length < resolvedTotal/);
   assert.match(view, /visibleColumnTickets/);
   assert.match(view, /Carregar mais \(\$\{visibleColumnTickets\.length\} de \$\{columnTotal\}\)/);
-  assert.match(view, /if \(nextMode === "archived" && !archivedLoaded\) void loadArchived\(true\)/);
+  assert.match(
+    view,
+    /nextMode === "archived"[\s\S]*!archivedLoaded \|\| archivedQueryRef\.current !== query\.trim\(\)[\s\S]*void loadArchived\(true, query\)/,
+  );
   assert.match(view, /archivedTickets\.length < archivedTotal/);
   assert.match(view, /Carregar mais \(\$\{visibleArchivedTickets\.length\} de \$\{archivedTotal\}\)/);
+  assert.match(view, /limit: normalizedQuery \? 200 : KANBAN_PAGE_SIZE/);
+  assert.match(view, /void loadArchived\(true, nextQuery\)/);
+  assert.match(view, /Pesquisando em todos os arquivados/);
+  assert.match(view, /em todos os tickets arquivados/);
   assert.match(view, /label: "Cancelados"/);
   assert.match(view, /statuses: \["cancelled"\]/);
   assert.match(view, /visibleCancelledTickets/);

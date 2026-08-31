@@ -1,6 +1,7 @@
 import { DASHBOARD_TIME_ZONE } from "../../shared/contracts.js";
 
 export type DashboardPeriodId =
+  | "today"
   | "last_7_days"
   | "last_30_days"
   | "last_90_days"
@@ -16,6 +17,7 @@ export const dashboardPeriodOptions: Array<{
   id: DashboardPeriodId;
   label: string;
 }> = [
+  { id: "today", label: "Hoje" },
   { id: "last_7_days", label: "Últimos 7 dias" },
   { id: "last_30_days", label: "Últimos 30 dias" },
   { id: "last_90_days", label: "Últimos 90 dias" },
@@ -30,7 +32,13 @@ export function getDashboardPresetRange(
 ): DashboardDateRange {
   if (period === "all_time") return {};
 
-  const days = period === "last_7_days" ? 7 : period === "last_30_days" ? 30 : 90;
+  const days = period === "today"
+    ? 1
+    : period === "last_7_days"
+      ? 7
+      : period === "last_30_days"
+        ? 30
+        : 90;
   const currentDate = dateInSupportTimeZone(today, timeZone);
   const to = new Date(Date.UTC(
     currentDate.year,

@@ -37,14 +37,13 @@ function bulkFixture() {
     externalJid: "bulk-status@g.us",
     subject: "Acme + Cliente do Kanban",
   });
-  const participant = store.upsertParticipant({
-    id: "bulk-participant",
-    externalJid: "5547999999999@s.whatsapp.net",
-    displayName: "Cliente",
-  });
-  store.addGroupParticipant(group.id, participant.id);
-
   function createTicket(id: string, status: "new" | "resolved", createdAt: string) {
+    const participant = store.upsertParticipant({
+      id: `${id}-participant`,
+      externalJid: `${id}@s.whatsapp.net`,
+      displayName: `Solicitante ${id}`,
+    });
+    store.addGroupParticipant(group.id, participant.id);
     const message = store.upsertMessage({
       id: `${id}-message`,
       externalId: `${id}-external`,
@@ -309,6 +308,17 @@ test("API arquiva, restaura e lista arquivados pela data real", async () => {
     })),
     [{ id: resolvedB.id, archivedAt: "2026-07-18T10:00:00.000Z" }],
   );
+
+  const searchResponse = await app.request(
+    "/api/tickets?status=archived&order=archived_desc&q=Solicitante%20bulk-resolved-a&limit=5&offset=0",
+  );
+  assert.equal(searchResponse.status, 200);
+  const search = (await searchResponse.json()) as {
+    total: number;
+    items: Array<{ id: string }>;
+  };
+  assert.equal(search.total, 1);
+  assert.deepEqual(search.items.map((ticket) => ticket.id), [resolvedA.id]);
 
   const restoreResponse = await app.request("/api/tickets/bulk-status", {
     method: "POST",

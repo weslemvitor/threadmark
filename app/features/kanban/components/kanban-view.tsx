@@ -194,6 +194,8 @@ export function KanbanView({
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [archivedError, setArchivedError] = useState<string | null>(null);
   const archivedRequestRef = useRef(0);
+  const archivedQueryRef = useRef("");
+  const archivedSearchTimerRef = useRef<number | null>(null);
   const activeTabRef = useRef<HTMLButtonElement>(null);
   const archivedTabRef = useRef<HTMLButtonElement>(null);
 
@@ -347,23 +349,29 @@ export function KanbanView({
     return () => window.clearTimeout(timer);
   }, [loadResolved, tickets]);
 
-  async function loadArchived(reset: boolean) {
+  async function loadArchived(reset: boolean, requestedQuery = archivedQueryRef.current) {
     if (archivedLoading && !reset) return;
     const requestId = archivedRequestRef.current + 1;
     archivedRequestRef.current = requestId;
+    const normalizedQuery = requestedQuery.trim();
+    if (reset) archivedQueryRef.current = normalizedQuery;
     setArchivedLoading(true);
     setArchivedError(null);
     try {
       const offset = reset ? 0 : archivedTickets.length;
       const response = await getArchivedTickets({
         offset,
-        limit: KANBAN_PAGE_SIZE,
+        limit: normalizedQuery ? 200 : KANBAN_PAGE_SIZE,
+        query: normalizedQuery,
       });
       if (archivedRequestRef.current !== requestId) return;
       setArchivedTickets((current) => reset
         ? response.items
         : mergeTickets(current, response.items));
       setArchivedTotal(response.total);
+      if (reset && normalizedQuery) {
+        setArchivedVisibleCount(response.items.length);
+      }
       setArchivedLoaded(true);
     } catch (error) {
       if (archivedRequestRef.current !== requestId) return;
@@ -386,6 +394,16 @@ export function KanbanView({
     setSelectedIds(new Set());
     setBulkError(null);
     setSelectionNotice(null);
+    if (mode === "archived") {
+      setArchivedLoading(true);
+      if (archivedSearchTimerRef.current !== null) {
+        window.clearTimeout(archivedSearchTimerRef.current);
+      }
+      archivedSearchTimerRef.current = window.setTimeout(() => {
+        archivedSearchTimerRef.current = null;
+        void loadArchived(true, nextQuery);
+      }, 250);
+    }
   }
 
   function updateAssigneeFilter(value: string) {
@@ -396,6 +414,10 @@ export function KanbanView({
   }
 
   function switchMode(nextMode: KanbanMode) {
+    if (archivedSearchTimerRef.current !== null) {
+      window.clearTimeout(archivedSearchTimerRef.current);
+      archivedSearchTimerRef.current = null;
+    }
     setMode(nextMode);
     setColumnLimits(initialColumnLimits);
     setArchivedVisibleCount(KANBAN_PAGE_SIZE);
@@ -404,8 +426,19 @@ export function KanbanView({
     setBulkError(null);
     setSelectionNotice(null);
     if (nextMode === "archived") setAssigneeFilter("all");
-    if (nextMode === "archived" && !archivedLoaded) void loadArchived(true);
+    if (
+      nextMode === "archived" &&
+      (!archivedLoaded || archivedQueryRef.current !== query.trim())
+    ) {
+      void loadArchived(true, query);
+    }
   }
+
+  useEffect(() => () => {
+    if (archivedSearchTimerRef.current !== null) {
+      window.clearTimeout(archivedSearchTimerRef.current);
+    }
+  }, []);
 
   function handleTabKeyDown(
     event: React.KeyboardEvent<HTMLButtonElement>,
@@ -875,11 +908,16 @@ export function KanbanView({
             </div>
           ) : null}
           {archivedLoading && !archivedLoaded ? <LoadingState label="Carregando arquivados…" /> : null}
-          {archivedLoaded && !filteredArchivedTickets.length ? (
+          {archivedLoading && archivedLoaded && query.trim() ? (
+            <p className="mb-3 flex items-center gap-2 text-xs text-muted-foreground" role="status">
+              <LoaderCircle className="animate-spin" size={14} /> Pesquisando em todos os arquivados…
+            </p>
+          ) : null}
+          {archivedLoaded && !archivedLoading && !filteredArchivedTickets.length ? (
             <EmptyState
               title={query.trim() ? "Nenhum card encontrado" : "Nenhum ticket arquivado"}
               description={query.trim()
-                ? `Nenhum título, grupo ou solicitante corresponde a “${query.trim()}” entre os arquivados carregados.`
+                ? `Nenhum título, grupo ou solicitante corresponde a “${query.trim()}” em todos os tickets arquivados.`
                 : "Arquive tickets resolvidos ou cancelados para organizar o histórico sem apagar dados."}
             />
           ) : null}

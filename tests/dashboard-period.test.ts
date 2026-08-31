@@ -152,9 +152,14 @@ function dashboardFixture() {
     .prepare(
       `INSERT INTO ticket_events
         (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
-       VALUES (?, ?, 'status_changed', 'Operador', 'new', 'archived', '{}', ?)`,
+       VALUES
+        (?, ?, 'status_changed', 'Operador', 'new', 'cancelled', '{}', ?),
+        (?, ?, 'status_changed', 'Operador', 'cancelled', 'archived', '{}', ?)`,
     )
     .run(
+      "inside-ticket-cancelled-in-period",
+      "ticket-inside-archived",
+      "2026-07-01T10:30:00.000Z",
       "inside-ticket-archived-in-period",
       "ticket-inside-archived",
       "2026-07-01T11:00:00.000Z",
@@ -304,12 +309,20 @@ test("dashboard interpreta o intervalo inclusivo em America/Sao_Paulo", () => {
     { date: "2026-07-01", created: 2, resolved: 2 },
     { date: "2026-07-02", created: 1, resolved: 0 },
   ]);
+  assert.deepEqual(dashboard.previousTicketsByDay, [
+    { date: "2026-06-29", created: 0, resolved: 0 },
+    { date: "2026-06-30", created: 1, resolved: 0 },
+  ]);
   assert.deepEqual(dashboard.priorityCounts, [
     { priority: "low", count: 0 },
     { priority: "normal", count: 3 },
     { priority: "high", count: 0 },
     { priority: "urgent", count: 0 },
   ]);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "new")?.count, 1);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "resolved")?.count, 1);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "cancelled")?.count, 1);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "archived")?.count, 0);
   assert.equal(dashboard.operations.backlog, 3);
   assert.equal(dashboard.operations.resolutionRatePercent, 66.7);
   assert.equal(dashboard.operations.reopened, 1);
@@ -413,7 +426,8 @@ test("dashboard filtra indicadores por responsável e preserva a visão da equip
   );
   assert.equal(unassigned.totals.tickets, 1);
   assert.equal(unassigned.operations.backlog, 1);
-  assert.equal(unassigned.statusCounts.find((item) => item.status === "archived")?.count, 1);
+  assert.equal(unassigned.statusCounts.find((item) => item.status === "cancelled")?.count, 1);
+  assert.equal(unassigned.statusCounts.find((item) => item.status === "archived")?.count, 0);
   assert.deepEqual(
     unassigned.recentTickets.map((ticket) => ticket.id),
     ["ticket-inside-archived"],
@@ -448,12 +462,41 @@ test("dashboard filtra indicadores por responsável e preserva a visão da equip
   assert.equal(unknownResponse.status, 400);
 });
 
+test("dashboard contabiliza arquivado pelo status terminal anterior", () => {
+  const { database, store } = dashboardFixture();
+  database
+    .prepare("UPDATE tickets SET status = 'archived', archived_at = ? WHERE id = ?")
+    .run("2026-07-02T12:00:00.000Z", "ticket-inside-resolved");
+  database
+    .prepare(
+      `INSERT INTO ticket_events
+        (id, ticket_id, event_type, actor, from_status, to_status, data_json, occurred_at)
+       VALUES (?, ?, 'status_changed', 'Operador', 'resolved', 'archived', '{}', ?)`,
+    )
+    .run(
+      "inside-resolved-ticket-archived-in-period",
+      "ticket-inside-resolved",
+      "2026-07-02T12:00:00.000Z",
+    );
+
+  const dashboard = store.getDashboard({ from: "2026-07-01", to: "2026-07-02" });
+
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "resolved")?.count, 1);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "cancelled")?.count, 1);
+  assert.equal(dashboard.statusCounts.find((item) => item.status === "archived")?.count, 0);
+  assert.equal(
+    dashboard.statusCounts.reduce((total, item) => total + item.count, 0),
+    dashboard.totals.tickets,
+  );
+});
+
 test("dashboard de todo o histórico não inventa um período anterior", () => {
   const { store } = dashboardFixture();
   const dashboard = store.getDashboard();
 
   assert.equal(dashboard.period, null);
   assert.equal(dashboard.comparison, null);
+  assert.equal(dashboard.previousTicketsByDay, null);
   assert.ok(dashboard.operations.backlog >= 1);
   assert.equal(
     dashboard.aging.reduce((total, bucket) => total + bucket.count, 0),

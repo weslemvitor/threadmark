@@ -22,15 +22,12 @@ import {
   SelectValue,
 } from "@/app/components/ui/select";
 import { EmptyState, LoadingState } from "@/app/components/shared/ui-states";
-
-const facetLabels: Record<CategoryFacetType, string> = {
-  reason: "Motivo",
-  product: "Produto",
-  platform: "Plataforma",
-  symptom: "Sintoma",
-  root_cause: "Causa raiz",
-  resolution: "Resolução",
-};
+import {
+  categoryCreationFacets,
+  categoryDisplayOrder,
+  categoryFacetLabels,
+  isCategoryFacetVisible,
+} from "@/app/lib/category-facets";
 
 function createFacetBuckets() {
   return {
@@ -180,9 +177,9 @@ export function CategoriesView({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {(Object.keys(facetLabels) as CategoryFacetType[]).map((facetType) => (
+                {categoryCreationFacets.map((facetType) => (
                   <SelectItem key={facetType} value={facetType}>
-                    {facetLabels[facetType]}
+                    {categoryFacetLabels[facetType]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -235,7 +232,11 @@ export function CategoriesView({
         />
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {(Object.keys(categoriesByFacet) as CategoryFacetType[]).map((facetType) => {
+          {categoryDisplayOrder
+            .filter((facetType) =>
+              isCategoryFacetVisible(facetType, categoriesByFacet[facetType].length),
+            )
+            .map((facetType) => {
             const items = categoriesByFacet[facetType].sort((left, right) => {
               const delta = right.ticketCount - left.ticketCount;
               return delta !== 0 ? delta : left.label.localeCompare(right.label);
@@ -245,7 +246,7 @@ export function CategoriesView({
                 <header className="flex items-center gap-2.5 border-b border-border p-3">
                   <span className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary">{facetType === "product" ? <Boxes size={17} /> : <Tags size={17} />}</span>
                   <div className="flex flex-col">
-                    <h3 className="text-sm font-semibold text-foreground">{facetLabels[facetType]}</h3>
+                    <h3 className="text-sm font-semibold text-foreground">{categoryFacetLabels[facetType]}</h3>
                     <small className="mt-0.5 text-xs text-muted-foreground">{items.length} categoria{items.length === 1 ? "" : "s"}</small>
                   </div>
                 </header>
@@ -314,7 +315,7 @@ export function CategoriesView({
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">Migrar tickets para</p>
                   <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-                    Somente categorias da mesma faceta ({facetLabels[categoryToDelete.facet]}) podem substituir esta classificação.
+                    Somente categorias da mesma faceta ({categoryFacetLabels[categoryToDelete.facet]}) podem substituir esta classificação.
                   </p>
                 </div>
               </div>

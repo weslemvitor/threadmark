@@ -7,6 +7,9 @@ import test from "node:test";
 
 import packageJson from "../package.json" with { type: "json" };
 import viteConfig from "../vite.config.js";
+import { createDatabase } from "../server/db/index.js";
+import { SupportStore } from "../server/domain/index.js";
+import { createTestApiApp } from "../server/index.js";
 import {
   WebBuildReloadMonitor,
   requestWebBuildReload,
@@ -122,6 +125,20 @@ test("monitor ignora o build atual e processa uma nova solicitação uma única 
     assert.equal(reloads, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("API expõe a revisão atual sem permitir cache", async () => {
+  const database = createDatabase(":memory:");
+  try {
+    const app = createTestApiApp(new SupportStore(database));
+    const response = await app.request("/api/runtime/web-build");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    const payload = (await response.json()) as { revision: string | null };
+    assert.ok(payload.revision === null || typeof payload.revision === "string");
+  } finally {
+    database.close();
   }
 });
 

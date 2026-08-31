@@ -12,6 +12,10 @@ import {
 const referenceDay = new Date("2026-07-18T15:00:00.000Z");
 
 test("presets do dashboard usam datas locais inclusivas", () => {
+  assert.deepEqual(getDashboardPresetRange("today", referenceDay), {
+    from: "2026-07-18",
+    to: "2026-07-18",
+  });
   assert.deepEqual(getDashboardPresetRange("last_7_days", referenceDay), {
     from: "2026-07-12",
     to: "2026-07-18",
@@ -25,6 +29,13 @@ test("presets do dashboard usam datas locais inclusivas", () => {
     to: "2026-07-18",
   });
   assert.deepEqual(getDashboardPresetRange("all_time", referenceDay), {});
+  assert.deepEqual(
+    getDashboardPresetRange(
+      "today",
+      new Date("2026-07-18T01:30:00.000Z"),
+    ),
+    { from: "2026-07-17", to: "2026-07-17" },
+  );
   assert.deepEqual(
     getDashboardPresetRange(
       "last_7_days",
@@ -61,10 +72,11 @@ test("período personalizado valida ordem e gera rótulo e nome de exportação"
 });
 
 test("UI consulta e exporta exatamente o período e responsável selecionados", async () => {
-  const [api, period, view, css] = await Promise.all([
+  const [api, period, view, supportApp, css] = await Promise.all([
     readFile(new URL("../app/lib/api.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/dashboard-period.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/features/dashboard/components/dashboard-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
@@ -73,23 +85,33 @@ test("UI consulta e exporta exatamente o período e responsável selecionados", 
   assert.match(api, /params\.set\("assigneeId", assigneeId\)/);
   assert.match(api, /\/api\/dashboard\/export/);
   assert.match(api, /await response\.blob\(\)/);
+  assert.match(period, /today/);
   assert.match(period, /last_7_days/);
   assert.match(period, /last_30_days/);
   assert.match(period, /last_90_days/);
   assert.match(period, /all_time/);
   assert.match(view, /type="date"/);
   assert.match(view, /Exportar CSV/);
+  assert.match(view, /grid-flow-row-dense/);
+  assert.doesNotMatch(view, /DashboardEditActions|DashboardWidgetEditor|dashboardLayoutStorageKey/);
+  assert.doesNotMatch(view, /Personalizar|Arraste para mover|Ocultar bloco|Restaurar padrão/);
+  assert.doesNotMatch(supportApp, /currentUserId=\{access\?\.user\.id \?\? "local"\}/);
   assert.match(view, /getDashboardExport\(range, selectedAssignee\)/);
   assert.match(view, /Filtrar dashboard por responsável/);
   assert.match(view, /Atendimento por responsável/);
-  assert.match(view, /Eficiência operacional/);
-  assert.match(view, /Envelhecimento do backlog/);
+  assert.match(view, /Taxa de resolução/);
+  assert.match(view, /Tempo mediano de resolução/);
+  assert.match(view, /Saúde da operação/);
+  assert.match(view, /Ainda abertos/);
+  assert.match(view, /Em revisão/);
+  assert.doesNotMatch(view, /Backlog no fim do período/);
+  assert.doesNotMatch(view, /Envelhecimento do backlog/);
   assert.match(view, /Tickets por prioridade/);
   assert.match(view, /vs\. anterior/);
   assert.match(view, /Sem responsável/);
   assert.match(view, /currentDashboard\.period/);
   assert.match(view, /Tickets criados e resoluções de/);
-  assert.match(view, /Snapshot atual da fila de auditoria/);
+  assert.match(view, /Este número representa a fila atual/);
   assert.match(view, /Todo o período · gráfico dos últimos 14 dias/);
   assert.match(view, /aria-live="polite"/);
   assert.match(view, /lg:grid-cols-\[minmax\(210px,1fr\)_auto\]/);

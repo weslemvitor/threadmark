@@ -455,6 +455,23 @@ test("ação por conversa mantém somente suas pendências como contexto", () =>
     "2026-07-17T14:40:00.000Z",
     "Pendência da conversa selecionada",
   );
+  current.store.recordTriageSuggestion(selectedMessage, {
+    kind: "demand",
+    suggestedAction: "create",
+    suggestedTicketId: null,
+    title: "Sugestão antiga da conversa",
+    summary: "A sugestão deve ser recusada mesmo após a mensagem virar contexto.",
+    confidence: 0.96,
+    reason: "Regressão de manter todo o contexto",
+    affectedStoreId: null,
+  });
+  current.database
+    .prepare(
+      `UPDATE messages
+       SET triage_kind = 'context', triage_state = 'context'
+       WHERE id = ?`,
+    )
+    .run(selectedMessage);
   const otherGroup = current.store.upsertGroup({
     id: "conversation-other",
     accountId: "account",
@@ -475,6 +492,16 @@ test("ação por conversa mantém somente suas pendências como contexto", () =>
     triageState: "unreviewed",
     ingestionSource: "realtime_notify",
   }).id;
+  current.store.recordTriageSuggestion(otherMessage, {
+    kind: "demand",
+    suggestedAction: "create",
+    suggestedTicketId: null,
+    title: "Sugestão de outra conversa",
+    summary: "Esta sugestão deve continuar pendente.",
+    confidence: 0.96,
+    reason: "Validação do escopo por conversa",
+    affectedStoreId: null,
+  });
 
   const contextualized = current.store.contextualizePendingMessages({
     actor: "Operador",
@@ -482,9 +509,9 @@ test("ação por conversa mantém somente suas pendências como contexto", () =>
   });
 
   assert.deepEqual(contextualized, {
-    contextualizedMessageCount: 1,
-    conversationCount: 1,
-    resolvedBlockCount: 0,
+    contextualizedMessageCount: 0,
+    conversationCount: 0,
+    resolvedBlockCount: 1,
   });
   assert.deepEqual(
     current.database
@@ -496,6 +523,14 @@ test("ação por conversa mantém somente suas pendências como contexto", () =>
     ],
   );
   assert.equal(current.store.listConversations().pendingTotal, 1);
+  assert.equal(
+    current.store.listConversationTriageBlocks(current.groupId).items.length,
+    0,
+  );
+  assert.equal(
+    current.store.listConversationTriageBlocks(otherGroup.id).items.length,
+    1,
+  );
 });
 
 test("API lista conversa completa paginada e cria ticket em lote", async () => {
