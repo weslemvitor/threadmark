@@ -559,6 +559,28 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     title: "Dúvida sobre ROAS Global",
     summary: "Cliente pediu a definição da métrica.",
   });
+  database.prepare("UPDATE tickets SET number = 305 WHERE id = ?").run(ticket.id);
+  store.upsertAttachment({
+    id: "context-image",
+    messageId: message.id,
+    kind: "image",
+    mimeType: "image/jpeg",
+    fileName: "metricas.jpg",
+    localPath: path.join(temporary, "metricas.jpg"),
+    sizeBytes: 100,
+    sha256: "context-image-sha",
+    available: true,
+  });
+  store.upsertMessage({
+    id: "unrelated-sensitive-message",
+    externalId: "unrelated-sensitive-message-external",
+    groupId: group.id,
+    senderId: participant.id,
+    occurredAt: "2026-08-20T13:00:00.000Z",
+    text: "Referência 305 em outro assunto. OPENAI_API_KEY=sk-should-never-reach-the-model",
+    messageType: "text",
+    triageKind: "context",
+  });
   store.recordResolution({
     ticketId: ticket.id,
     summary: "Explicamos que a métrica consolida o retorno dos canais configurados.",
@@ -622,6 +644,38 @@ test("contexto interno pesquisa tickets, resoluções e conversas sem SQL livre"
     assert.match(result.content, /consolida o retorno/);
     assert.match(result.content, /Como funciona o ROAS Global/);
     assert.match(result.reference ?? "", /threadmark-search-1$/);
+
+    const exactTicket = await executor.execute({
+      requestId: "threadmark-ticket-305",
+      toolId: "threadmark-context",
+      operation: "search_support_context",
+      argumentsJson: JSON.stringify({ query: "305", scope: "all", limit: 10 }),
+      purpose: "Carregar apenas o ticket e suas mensagens de origem.",
+    });
+    assert.equal(exactTicket.status, "success");
+    const exactContext = JSON.parse(exactTicket.content) as {
+      tickets: Array<{ number: number }>;
+      messages: Array<{
+        id: string;
+        attachments: Array<{ id: string; kind: string }>;
+      }>;
+    };
+    assert.deepEqual(exactContext.tickets.map((item) => item.number), [305]);
+    assert.deepEqual(exactContext.messages.map((item) => item.id), [message.id]);
+    assert.equal(exactContext.messages[0]?.attachments[0]?.id, "context-image");
+    assert.equal(exactContext.messages[0]?.attachments[0]?.kind, "image");
+    assert.doesNotMatch(exactTicket.content, /should-never-reach-the-model/);
+
+    const redactedSearch = await executor.execute({
+      requestId: "threadmark-sensitive-search",
+      toolId: "threadmark-context",
+      operation: "search_support_context",
+      argumentsJson: JSON.stringify({ query: "Referência", scope: "conversations", limit: 10 }),
+      purpose: "Garantir que resultados locais não exponham credenciais ao modelo.",
+    });
+    assert.equal(redactedSearch.status, "success");
+    assert.match(redactedSearch.content, /OPENAI_API_KEY=\[REDACTED\]/);
+    assert.doesNotMatch(redactedSearch.content, /should-never-reach-the-model/);
 
     const aliasResult = await executor.execute({
       requestId: "threadmark-search-alias-1",
@@ -1584,6 +1638,22 @@ test("executor profundo lê somente dentro da raiz explicitamente autorizada", a
     assert.equal(boundedSearch.status, "success");
     assert.equal(boundedSearch.content.split("\n").length, 5);
     assert.match(boundedSearch.summary, /5 ocorrência/);
+
+    const recoveredSearch = await executor.execute({
+      requestId: "search-missing-path-fallback",
+      toolId: tool.id,
+      operation: "search_files",
+      argumentsJson: JSON.stringify({
+        query: "recurring",
+        path: "caminho-inexistente",
+        glob: "*.ts",
+        maxResults: 10,
+      }),
+      purpose: "Recuperar uma suposição incorreta sobre a estrutura do repositório.",
+    });
+    assert.equal(recoveredSearch.status, "success");
+    assert.match(recoveredSearch.summary, /busca foi recuperada na raiz autorizada/i);
+    assert.match(recoveredSearch.content, /server\/metric\.ts/);
   } finally {
     database.close();
     await rm(temporary, { recursive: true, force: true });
@@ -1683,6 +1753,19 @@ test("PostgreSQL usa o driver interno, rejeita mutações e aplica limites reado
     assert.equal(select.content, "id,status\n42,paid");
     assert.match(select.reference ?? "", /:request:sql-2$/);
     assert.doesNotMatch(JSON.stringify(select), /database-password/);
+
+    const groupedSelect = await executor.execute({
+      requestId: "sql-group-by",
+      toolId: tool.id,
+      operation: "query_readonly",
+      argumentsJson: JSON.stringify({
+        query: "SELECT status, COUNT(*) AS total FROM orders GROUP BY status ORDER BY (COUNT(*) - 1) DESC",
+        maxRows: 20,
+      }),
+      purpose: "Reconciliar os resultados por status sem alterar dados.",
+    });
+    assert.equal(groupedSelect.status, "success");
+    assert.match(postgresRequests.at(-1)?.query ?? "", /GROUP BY status ORDER BY \(COUNT\(\*\) - 1\) DESC/);
 
     const secondSelect = await executor.execute({
       requestId: "sql-3",

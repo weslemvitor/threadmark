@@ -24,6 +24,9 @@ const liveDataLookupSignal =
 const investigativeQuestionSignal =
   /\b(?:o que (?:esta|está) acontecendo|qual (?:e|é) o problema|por que .+ (?:nao|não) (?:funciona|responde|carrega|aparece))\b/iu;
 
+const rootCauseQuestionSignal =
+  /\b(?:qual (?:foi|e|é|seria) (?:a )?(?:causa|motivo)|por que|porque|o que causou|o que provocou|causa dos?|motivo dos?)\b/iu;
+
 const ticketSourceDiscoverySignal =
   /\b(?:ticket|chamado)\b/iu;
 
@@ -68,6 +71,10 @@ export function investigationExecutionPolicy(
   const asksForDeepInvestigation =
     deepInvestigationSignal.test(effectiveBody) ||
     investigativeQuestionSignal.test(effectiveBody) ||
+    (
+      ticketSourceDiscoverySignal.test(effectiveBody) &&
+      rootCauseQuestionSignal.test(effectiveBody)
+    ) ||
     (
       automationSignal.test(effectiveBody) &&
       automationMutationSignal.test(effectiveBody)

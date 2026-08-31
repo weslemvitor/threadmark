@@ -23,7 +23,7 @@ export function isAffirmativePreviewConfirmation(message: string): boolean {
   if (!normalized || normalized.length > 160) return false;
   if (BLOCKING_CONFIRMATION_PATTERN.test(normalized)) return false;
 
-  if (/^(?:eu\s+)?(?:confirmo|autorizo|aprovo)\b/.test(normalized)) return true;
+  if (/^(?:eu\s+)?(?:confirmo+|autorizo|aprovo)\b/.test(normalized)) return true;
   if (ACTION_CONFIRMATION_PREFIX_PATTERN.test(normalized)) return true;
   return [
     DIRECT_CONFIRMATION_PATTERN,
@@ -42,16 +42,21 @@ export function isRetryInstruction(message: string): boolean {
 }
 
 const CONTINUE_INSTRUCTION_PATTERN =
-  /^(?:continue|continuar|continua|prossiga|prosseguir|segue|siga|vai\s+em\s+frente|pode\s+seguir|faca\s+isso|faz\s+isso|execute\s+isso)(?:\s+(?:agora|entao|ai|por\s+favor|pf|pls))*$/;
+  /^(?:continue|continuar|continua|prossiga|prosseguir|segue|siga|vai\s+em\s+frente|pode\s+seguir|faca\s+isso|faz\s+isso|execute\s+isso)(?:\s+(?:com\s+)?(?:os\s+)?(?:ajustes?|as\s+mudancas?|as\s+alteracoes?|isso))?(?:\s+(?:agora|entao|ai|por\s+favor|pf|pls))*$/;
+
+const ACTION_CONTINUATION_QUESTION_PATTERN =
+  /^(?:(?:voce\s+)?consegue|pode)\s+(?:aplicar|fazer|executar|salvar|efetivar)\s+(?:(?:as|os|essas|esses)\s+)?(?:mudancas?|ajustes?|alteracoes?|isso)(?:\s+(?:agora|entao|ai|por\s+favor|pf|pls))*$/;
 
 /** A short directive that keeps the unfinished task instead of starting another one. */
 export function isTaskContinuationInstruction(message: string): boolean {
   const normalized = normalizeConfirmation(message);
   if (!normalized || normalized.length > 160) return false;
   return isRetryInstruction(message) ||
+    /^(?:eu\s+)?(?:confirmo+|autorizo|aprovo)\b/.test(normalized) ||
     DIRECT_CONFIRMATION_PATTERN.test(normalized) ||
     COLLOQUIAL_CONFIRMATION_PATTERN.test(normalized) ||
-    CONTINUE_INSTRUCTION_PATTERN.test(normalized);
+    CONTINUE_INSTRUCTION_PATTERN.test(normalized) ||
+    ACTION_CONTINUATION_QUESTION_PATTERN.test(normalized);
 }
 
 export function normalizeConfirmation(message: string): string {

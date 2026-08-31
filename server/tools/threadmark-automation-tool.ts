@@ -366,12 +366,20 @@ export class ThreadmarkAutomationTool {
           isRetryInstruction(operator.body) ||
           isAffirmativePreviewConfirmation(operator.body)
         ) &&
-        hasPriorAutomationInstruction(
-          this.database,
-          operator.threadId,
-          operator.messageId,
-          intent,
-          { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+        (
+          hasPriorAutomationInstruction(
+            this.database,
+            operator.threadId,
+            operator.messageId,
+            intent,
+            { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+          ) ||
+          hasPriorAutomationProposalContext(
+            this.database,
+            operator.threadId,
+            operator.messageId,
+            { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+          )
         )
       );
     const fingerprint = JSON.stringify({
@@ -442,12 +450,20 @@ export class ThreadmarkAutomationTool {
             isRetryInstruction(operator.body) ||
             isAffirmativePreviewConfirmation(operator.body)
           ) &&
-          hasPriorAutomationInstruction(
-            this.database,
-            operator.threadId,
-            operator.messageId,
-            draft.intent,
-            { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+          (
+            hasPriorAutomationInstruction(
+              this.database,
+              operator.threadId,
+              operator.messageId,
+              draft.intent,
+              { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+            ) ||
+            hasPriorAutomationProposalContext(
+              this.database,
+              operator.threadId,
+              operator.messageId,
+              { toolId: THREADMARK_AUTOMATIONS_TOOL_ID, operation: "apply_automation_draft" },
+            )
           )
         )
       );
@@ -790,6 +806,37 @@ function hasPriorAutomationInstruction(
     (body) => explicitAutomationDraftRequest(body, intent),
     successfulAction,
   );
+}
+
+function hasPriorAutomationProposalContext(
+  database: SupportDatabase,
+  threadId: string,
+  currentMessageId: string,
+  successfulAction: { toolId: string; operation: string },
+): boolean {
+  const hasOperatorContext = hasPriorAutomationOperatorInstruction(
+    database,
+    threadId,
+    currentMessageId,
+    (body) => /\b(automacao|automacoes|fluxo|fluxos)\b/.test(normalize(body)),
+    successfulAction,
+  );
+  if (!hasOperatorContext) return false;
+
+  const current = database.prepare(
+    `SELECT rowid AS message_order FROM investigation_thread_messages
+     WHERE id = ? AND thread_id = ? AND role = 'operator'`,
+  ).get(currentMessageId, threadId) as { message_order: number } | undefined;
+  if (!current) return false;
+  const latestAssistant = database.prepare(
+    `SELECT body FROM investigation_thread_messages
+     WHERE thread_id = ? AND role = 'assistant' AND rowid < ?
+     ORDER BY rowid DESC LIMIT 1`,
+  ).get(threadId, current.message_order) as { body: string } | undefined;
+  if (!latestAssistant) return false;
+
+  const proposal = normalize(latestAssistant.body);
+  return /\b(sugeri|sugestao|recomendo|recomendacao|proponho|proposta|ajuste|ajustes|mudanca|mudancas|melhoria|melhorias|aplicar|aplicacao|confirme|confirmacao)\b/.test(proposal);
 }
 
 function hasPriorAutomationOperatorInstruction(

@@ -94,6 +94,32 @@ test("edição de automações usa orçamento profundo inclusive após confirma�
   assert.equal(policy.maxSameOperation, 16);
 });
 
+test("confirmação natural herda a análise de automações e mantém orçamento profundo", () => {
+  const policy = investigationExecutionPolicy({
+    ...input("Pode seguir com os ajustes"),
+    durableSummary:
+      "Foram sugeridas melhorias nas automações atuais e a aplicação está pendente.",
+    activeTask: {
+      rootOperatorMessageId: "operator-root",
+      objective: "Analisar as automações atuais e sugerir melhorias.",
+      operatorDirectives: [{
+        id: "operator-root",
+        body: "Consegues dar uma olhada nas automações atual e sugerir melhorias?",
+        createdAt: "2026-08-29T17:44:00.000Z",
+      }, {
+        id: "operator-current",
+        body: "Pode seguir com os ajustes",
+        createdAt: "2026-08-29T17:46:00.000Z",
+      }],
+      continuation: true,
+    },
+  });
+
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.promptMode, "deep");
+  assert.equal(policy.maxToolOperations, 64);
+});
+
 test("revisão rápida comporta a leitura de mais de três automações", () => {
   const policy = investigationExecutionPolicy(input(
     "Revise as automações existentes e me apresente sugestões.",
@@ -105,6 +131,7 @@ test("revisão rápida comporta a leitura de mais de três automações", () => 
 
 for (const body of [
   "Investigue a causa raiz do ticket #240.",
+  "Referente ao ticket #305, qual foi a causa de tão poucos envios?",
   "Analise profundamente os logs do CloudWatch e o banco de dados.",
   "Diagnostique esse incidente em produção.",
 ]) {

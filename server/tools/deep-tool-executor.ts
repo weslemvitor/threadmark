@@ -28,6 +28,7 @@ import type {
   InvestigationToolRequest,
   InvestigationToolResult,
 } from "../agent/types.js";
+import { redactSensitiveAiText } from "../agent/ai-redaction.js";
 import {
   isAffirmativePreviewConfirmation,
   isRetryInstruction,
@@ -474,7 +475,7 @@ export class DeepToolExecutor {
         operations: [{
           name: "search_support_context",
           description:
-            "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução. Tickets encontrados incluem suas categorias atuais.",
+            "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução. Um número isolado, como 305 ou #305, retorna somente o ticket exato, suas mensagens de origem e os metadados dos anexos; buscas textuais continuam limitadas e têm credenciais redigidas.",
           argumentsExample:
             '{"query":"ROAS Global","scope":"all","limit":10}',
           effect: "read",
@@ -2223,7 +2224,17 @@ async function searchFiles(
   signal?.throwIfAborted();
   const root = await realpath(configuredRoot);
   assertPathIsSafe(root);
-  const target = await resolveInsideRoot(root, args.path ?? ".");
+  const requestedPath = args.path ?? ".";
+  let target: string;
+  let usedRootFallback = false;
+  try {
+    target = await resolveInsideRoot(root, requestedPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ENOENT" || requestedPath === ".") throw error;
+    target = root;
+    usedRootFallback = true;
+  }
   const commandArgs = [
     "--line-number",
     "--column",
@@ -2249,7 +2260,9 @@ async function searchFiles(
   const lines = content.split("\n").filter(Boolean).slice(0, args.maxResults);
   content = lines.map((line) => line.startsWith(root) ? line.slice(root.length + 1) : line).join("\n");
   return {
-    summary: `${lines.length} ocorrência(s) localizada(s) dentro da raiz autorizada.`,
+    summary: usedRootFallback
+      ? `O caminho ${requestedPath} não existe; a busca foi recuperada na raiz autorizada e encontrou ${lines.length} ocorrência(s).`
+      : `${lines.length} ocorrência(s) localizada(s) dentro da raiz autorizada.`,
     content: content || "Nenhuma ocorrência encontrada.",
     reference: `tool:${toolId}:search:${args.path ?? "."}`,
   };
@@ -2438,7 +2451,7 @@ const SAFE_POSTGRES_FUNCTIONS = new Set([
 ]);
 
 const SQL_PAREN_KEYWORDS = new Set([
-  "all", "and", "any", "array", "as", "case", "distinct", "else", "end", "exists",
+  "all", "and", "any", "array", "as", "by", "case", "distinct", "else", "end", "exists",
   "filter", "from", "group", "having", "in", "limit", "not", "nulls", "offset", "on",
   "or", "order", "over", "partition", "select", "then", "union", "values", "when", "where",
   "window", "with", "within",
@@ -2578,9 +2591,19 @@ function awsEnvironment(tool: LocalToolResolvedConfig): NodeJS.ProcessEnv {
 function minimalCommandEnvironment(
   extra: Record<string, string | undefined> = {},
 ): NodeJS.ProcessEnv {
+  const commandPath = [
+    process.env.PATH,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ]
+    .flatMap((value) => value?.split(path.delimiter) ?? [])
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(path.delimiter);
   return {
     NODE_ENV: process.env.NODE_ENV ?? "production",
-    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    PATH: commandPath,
     HOME: process.env.HOME,
     LANG: process.env.LANG ?? "C.UTF-8",
     LC_ALL: process.env.LC_ALL,
@@ -3607,20 +3630,25 @@ function searchThreadmarkContext(
            LEFT JOIN resolutions resolution ON resolution.ticket_id = ticket.id
            WHERE (? = 0 OR resolution.id IS NOT NULL)
              AND (
-               ticket.number = ?
-               OR lower(ticket.title) LIKE ? ESCAPE '\\'
-               OR lower(ticket.summary) LIKE ? ESCAPE '\\'
-               OR lower(client.name) LIKE ? ESCAPE '\\'
-               OR lower(support_group.subject) LIKE ? ESCAPE '\\'
-               OR lower(COALESCE(resolution.summary, '')) LIKE ? ESCAPE '\\'
-               OR lower(COALESCE(resolution.root_cause, '')) LIKE ? ESCAPE '\\'
-               OR lower(COALESCE(resolution.outcome, '')) LIKE ? ESCAPE '\\'
-               OR EXISTS (
-                 SELECT 1
-                 FROM ticket_messages membership
-                 JOIN messages message ON message.id = membership.message_id
-                 WHERE membership.ticket_id = ticket.id
-                   AND lower(COALESCE(message.text, '')) LIKE ? ESCAPE '\\'
+               (? IS NOT NULL AND ticket.number = ?)
+               OR (
+                 ? IS NULL
+                 AND (
+                   lower(ticket.title) LIKE ? ESCAPE '\\'
+                   OR lower(ticket.summary) LIKE ? ESCAPE '\\'
+                   OR lower(client.name) LIKE ? ESCAPE '\\'
+                   OR lower(support_group.subject) LIKE ? ESCAPE '\\'
+                   OR lower(COALESCE(resolution.summary, '')) LIKE ? ESCAPE '\\'
+                   OR lower(COALESCE(resolution.root_cause, '')) LIKE ? ESCAPE '\\'
+                   OR lower(COALESCE(resolution.outcome, '')) LIKE ? ESCAPE '\\'
+                   OR EXISTS (
+                     SELECT 1
+                     FROM ticket_messages membership
+                     JOIN messages message ON message.id = membership.message_id
+                     WHERE membership.ticket_id = ticket.id
+                       AND lower(COALESCE(message.text, '')) LIKE ? ESCAPE '\\'
+                   )
+                 )
                )
              )
            ORDER BY CASE WHEN ticket.number = ? THEN 0 ELSE 1 END,
@@ -3629,6 +3657,8 @@ function searchThreadmarkContext(
         )
         .all(
           resolutionOnly,
+          ticketNumber,
+          ticketNumber,
           ticketNumber,
           pattern,
           pattern,
@@ -3659,15 +3689,82 @@ function searchThreadmarkContext(
       }>
     : [];
 
+  const exactTicketId = ticketNumber === null
+    ? null
+    : ticketRows.find((row) => row.number === ticketNumber)?.id ?? null;
+
   const messageRows = includeMessages
-    ? database
+    ? ticketNumber !== null
+      ? exactTicketId
+        ? database
+            .prepare(
+              `SELECT context_message.*
+               FROM (
+                 SELECT message.id, message.occurred_at, message.text,
+                        message.message_type, participant.display_name AS author,
+                        support_group.id AS group_id,
+                        support_group.subject AS group_name,
+                        client.name AS client_name,
+                        CAST(ticket.number AS TEXT) AS ticket_numbers,
+                        (SELECT json_group_array(json_object(
+                                  'id', attachment.id,
+                                  'kind', attachment.kind,
+                                  'mimeType', attachment.mime_type,
+                                  'fileName', attachment.file_name,
+                                  'available', attachment.available
+                                ))
+                         FROM attachments attachment
+                         WHERE attachment.message_id = message.id) AS attachments_json
+                 FROM ticket_messages membership
+                 JOIN tickets ticket ON ticket.id = membership.ticket_id
+                 JOIN messages message ON message.id = membership.message_id
+                 JOIN participants participant ON participant.id = message.sender_id
+                 JOIN whatsapp_groups support_group ON support_group.id = message.group_id
+                 JOIN clients client ON client.id = support_group.client_id
+                 WHERE membership.ticket_id = ?
+
+                 UNION ALL
+
+                 SELECT external_message.id, external_message.occurred_at,
+                        external_message.body AS text,
+                        'external' AS message_type,
+                        external_message.author_name AS author,
+                        support_group.id AS group_id,
+                        support_group.subject AS group_name,
+                        client.name AS client_name,
+                        CAST(ticket.number AS TEXT) AS ticket_numbers,
+                        '[]' AS attachments_json
+                 FROM ticket_external_messages external_message
+                 JOIN tickets ticket ON ticket.id = external_message.ticket_id
+                 JOIN whatsapp_groups support_group ON support_group.id = ticket.group_id
+                 JOIN clients client ON client.id = support_group.client_id
+                 WHERE external_message.ticket_id = ?
+               ) context_message
+               ORDER BY context_message.occurred_at ASC, context_message.id ASC
+               LIMIT ?`,
+            )
+            .all(exactTicketId, exactTicketId, args.limit) as Array<{
+              id: string;
+              occurred_at: string;
+              text: string | null;
+              message_type: string;
+              author: string;
+              group_id: string;
+              group_name: string;
+              client_name: string;
+              ticket_numbers: string | null;
+              attachments_json: string;
+            }>
+        : []
+      : database
         .prepare(
           `SELECT message.id, message.occurred_at, message.text,
                   message.message_type, participant.display_name AS author,
                   support_group.id AS group_id,
                   support_group.subject AS group_name,
                   client.name AS client_name,
-                  GROUP_CONCAT(DISTINCT ticket.number) AS ticket_numbers
+                  GROUP_CONCAT(DISTINCT ticket.number) AS ticket_numbers,
+                  '[]' AS attachments_json
            FROM messages message
            JOIN participants participant ON participant.id = message.sender_id
            JOIN whatsapp_groups support_group ON support_group.id = message.group_id
@@ -3691,8 +3788,9 @@ function searchThreadmarkContext(
         group_id: string;
         group_name: string;
         client_name: string;
-        ticket_numbers: string | null;
-      }>
+          ticket_numbers: string | null;
+          attachments_json: string;
+        }>
     : [];
 
   return {
@@ -3702,8 +3800,8 @@ function searchThreadmarkContext(
       id: row.id,
       number: row.number,
       groupId: row.group_id,
-      title: row.title,
-      summary: truncatePlainText(row.summary, 2_000),
+      title: redactSensitiveAiText(row.title),
+      summary: truncatePlainText(redactSensitiveAiText(row.summary), 2_000),
       status: row.status,
       priority: row.priority,
       clientName: row.client_name,
@@ -3711,20 +3809,20 @@ function searchThreadmarkContext(
       categories: parseTicketSearchCategories(row.categories_json),
       resolution: row.resolution_summary
         ? {
-            summary: truncatePlainText(row.resolution_summary, 2_000),
-            rootCause: row.root_cause ? truncatePlainText(row.root_cause, 1_000) : null,
-            outcome: row.outcome ? truncatePlainText(row.outcome, 1_000) : null,
+            summary: truncatePlainText(redactSensitiveAiText(row.resolution_summary), 2_000),
+            rootCause: row.root_cause ? truncatePlainText(redactSensitiveAiText(row.root_cause), 1_000) : null,
+            outcome: row.outcome ? truncatePlainText(redactSensitiveAiText(row.outcome), 1_000) : null,
           }
         : null,
       lastSentResponse: row.last_sent_response
-        ? truncatePlainText(row.last_sent_response, 2_000)
+        ? truncatePlainText(redactSensitiveAiText(row.last_sent_response), 2_000)
         : null,
       updatedAt: row.updated_at,
     })),
     messages: messageRows.map((row) => ({
       id: row.id,
       occurredAt: row.occurred_at,
-      text: row.text ? truncatePlainText(row.text, 2_000) : null,
+      text: row.text ? truncatePlainText(redactSensitiveAiText(row.text), 2_000) : null,
       messageType: row.message_type,
       author: row.author,
       groupId: row.group_id,
@@ -3733,6 +3831,7 @@ function searchThreadmarkContext(
       ticketNumbers: row.ticket_numbers
         ? row.ticket_numbers.split(",").map(Number).filter(Number.isFinite)
         : [],
+      attachments: parseTicketSearchAttachments(row.attachments_json),
     })),
   };
 }
@@ -3748,6 +3847,34 @@ function parseTicketSearchCategories(value: string): Array<Record<string, string
       typeof (category as Record<string, unknown>).facet === "string" &&
       typeof (category as Record<string, unknown>).label === "string"
     );
+  } catch {
+    return [];
+  }
+}
+
+function parseTicketSearchAttachments(value: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((attachment) => {
+      if (
+        typeof attachment !== "object" ||
+        attachment === null ||
+        typeof (attachment as Record<string, unknown>).id !== "string" ||
+        typeof (attachment as Record<string, unknown>).kind !== "string" ||
+        typeof (attachment as Record<string, unknown>).mimeType !== "string"
+      ) {
+        return [];
+      }
+      const record = attachment as Record<string, unknown>;
+      return [{
+        id: record.id,
+        kind: record.kind,
+        mimeType: record.mimeType,
+        fileName: typeof record.fileName === "string" ? record.fileName : null,
+        available: record.available === 1 || record.available === true,
+      }];
+    });
   } catch {
     return [];
   }

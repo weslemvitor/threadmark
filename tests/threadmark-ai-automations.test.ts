@@ -295,9 +295,19 @@ test("Threadmark AI prepara, confirma, testa e gerencia automações com autoriz
     );
 
     addOperatorMessage(
-      "Você poderia melhorar então as automações existentes com base na análise?",
+      "Consegues dar uma olhada nas automações atual e sugerir melhorias?",
     );
-    const naturalConfirmation = addOperatorMessage("Pode aplicar as mudanças");
+    database.prepare(`
+      INSERT INTO investigation_thread_messages (
+        id, thread_id, role, body, phase, created_at
+      ) VALUES (?, ?, 'assistant', ?, 'conclusion', ?)
+    `).run(
+      "assistant-automation-suggestions",
+      thread.id,
+      "Sugeri ajustes nas automações atuais. Posso aplicar essas mudanças.",
+      "2026-08-29T17:45:00.000Z",
+    );
+    const naturalConfirmation = addOperatorMessage("Pode seguir com os ajustes");
     const inheritedPrepared = await executor.execute({
       requestId: "automation-natural-confirmation-prepare",
       toolId: "threadmark-automations",

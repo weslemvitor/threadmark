@@ -14,6 +14,7 @@ test("reconhece confirmações naturais e coloquiais de uma prévia", () => {
     "Pode daler",
     "Manda bala",
     "Eu confirmo",
+    "Eu confirmooo!",
     "Sim",
     "Beleza, pode seguir",
     "Pode vincular isso agora",
@@ -23,7 +24,15 @@ test("reconhece confirmações naturais e coloquiais de uma prévia", () => {
 });
 
 test("continuação de tarefa não confunde uma nova ordem explícita com retry", () => {
-  for (const message of ["Tenta novamente", "Continue", "Pode seguir", "Manda bala"]) {
+  for (const message of [
+    "Tenta novamente",
+    "Continue",
+    "Pode seguir",
+    "Pode seguir com os ajustes",
+    "Você consegue aplicar as mudanças?",
+    "Eu confirmooo!",
+    "Manda bala",
+  ]) {
     assert.equal(isTaskContinuationInstruction(message), true, message);
   }
   for (const message of ["Crie o ticket com as mensagens", "Pode criar o ticket #240"]) {

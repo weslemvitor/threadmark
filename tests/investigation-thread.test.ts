@@ -565,3 +565,67 @@ test("tarefa ativa retoma a diretiva original mesmo depois de uma conclusão inc
     ],
   );
 });
+
+test("tarefa de automação sobrevive a confirmações naturais em mensagens sucessivas", () => {
+  const current = fixture();
+  const thread = current.store.getOrCreateInvestigationThread(current.ticketId);
+  current.store.addInvestigationThreadMessage(thread.id, {
+    body: "Consegues dar uma olhada nas automações atual e sugerir melhorias?",
+  });
+  const review = current.store.claimNextAgentJob();
+  assert.equal(review?.kind, "thread_turn");
+  if (!review || review.kind !== "thread_turn") assert.fail("turno não reivindicado");
+  const original = current.store.getInvestigationThreadContext(review.id);
+  current.store.completeInvestigationThreadJob(review.id, turnResult({
+    phase: "conclusion",
+    assistantMessage: "Sugeri dois ajustes nas automações. Posso aplicá-los.",
+    threadSummary: "Melhorias de automação propostas e ainda não aplicadas.",
+    nextAction: "Aplicar os ajustes após autorização.",
+  }));
+
+  current.store.addInvestigationThreadMessage(thread.id, {
+    body: "Pode seguir com os ajustes",
+  });
+  const apply = current.store.claimNextAgentJob();
+  assert.equal(apply?.kind, "thread_turn");
+  if (!apply || apply.kind !== "thread_turn") assert.fail("turno não reivindicado");
+  const inherited = current.store.getInvestigationThreadContext(apply.id);
+  assert.equal(inherited.activeTask?.rootOperatorMessageId, original.currentOperatorMessageId);
+  assert.equal(inherited.activeTask?.continuation, true);
+  assert.deepEqual(
+    inherited.activeTask?.operatorDirectives.map((message) => message.body),
+    [
+      "Consegues dar uma olhada nas automações atual e sugerir melhorias?",
+      "Pode seguir com os ajustes",
+    ],
+  );
+  current.store.completeInvestigationThreadJob(apply.id, turnResult({
+    phase: "conclusion",
+    assistantMessage: "A prévia está pronta. Confirme para aplicar.",
+    threadSummary: "Prévia de automação pendente.",
+    nextAction: "Aplicar a prévia confirmada.",
+  }));
+
+  current.store.addInvestigationThreadMessage(thread.id, {
+    body: "Você consegue aplicar as mudanças?",
+  });
+  const request = current.store.claimNextAgentJob();
+  assert.equal(request?.kind, "thread_turn");
+  if (!request || request.kind !== "thread_turn") assert.fail("turno não reivindicado");
+  const requested = current.store.getInvestigationThreadContext(request.id);
+  assert.equal(requested.activeTask?.rootOperatorMessageId, original.currentOperatorMessageId);
+  current.store.completeInvestigationThreadJob(request.id, turnResult({
+    phase: "conclusion",
+    assistantMessage: "Confirme a aplicação da prévia.",
+    threadSummary: "Confirmação pendente.",
+    nextAction: "Aplicar a prévia.",
+  }));
+
+  current.store.addInvestigationThreadMessage(thread.id, { body: "Eu confirmooo!" });
+  const confirmation = current.store.claimNextAgentJob();
+  assert.equal(confirmation?.kind, "thread_turn");
+  if (!confirmation || confirmation.kind !== "thread_turn") assert.fail("turno não reivindicado");
+  const confirmed = current.store.getInvestigationThreadContext(confirmation.id);
+  assert.equal(confirmed.activeTask?.rootOperatorMessageId, original.currentOperatorMessageId);
+  assert.equal(confirmed.activeTask?.continuation, true);
+});

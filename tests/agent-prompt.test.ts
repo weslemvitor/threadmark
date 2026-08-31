@@ -205,7 +205,14 @@ test("prompt aprofundado encadeia ferramentas e mantém um mapa de trabalho dur�
         role: "external",
         timestampUtc: "2026-07-20T11:55:00.000Z",
         text: "Os totais não fecham.",
-        attachments: [],
+        attachments: [{
+          id: "ticket-screenshot-1",
+          kind: "image",
+          fileName: "metricas.jpg",
+          mimeType: "image/jpeg",
+          localPath: "/tmp/metricas.jpg",
+          extractedText: null,
+        }],
         quotedMessageId: null,
       }],
       sentResponses: [],
@@ -237,11 +244,18 @@ test("prompt aprofundado encadeia ferramentas e mantém um mapa de trabalho dur�
   assert.match(prompt, /get_automation_capabilities/i);
   assert.match(prompt, /prepare_automation_draft/i);
   assert.match(prompt, /apply_automation_draft/i);
+  assert.match(prompt, /Nao diga que ajustou, salvou ou aplicou uma automacao sem o recibo de sucesso/i);
   assert.match(prompt, /Uma criacao aplicada nasce em rascunho/i);
   assert.match(prompt, /Ativar, pausar ou excluir uma automacao e uma decisao separada/i);
   assert.match(prompt, /dry-run valida o fluxo sem executar acoes/i);
   assert.match(prompt, /REFERENCIAS_AUDITAVEIS_PERMITIDAS/);
   assert.match(prompt, /message-allowed-1/);
+  assert.match(prompt, /ticket-screenshot-1/);
+  assert.match(prompt, /"origin": "ticket"/);
+  assert.match(prompt, /nível de agregação exibido/i);
+  assert.match(prompt, /grupos mutuamente exclusivos/i);
+  assert.match(prompt, /Não repita search_support_context apenas para reler o mesmo ticket/i);
+  assert.match(prompt, /consulte primeiro por esses valores/i);
   assert.match(prompt, /Nunca use nome, telefone, externalId/i);
 });
 
