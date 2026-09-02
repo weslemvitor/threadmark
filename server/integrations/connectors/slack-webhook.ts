@@ -6,7 +6,6 @@ import {
 } from "../http-executor.js";
 import type {
   IntegrationActionExecutor,
-  IntegrationAppDescriptor,
   IntegrationExecutionContext,
   IntegrationSecretVault,
 } from "../types.js";
@@ -16,25 +15,6 @@ import {
   secretReferenceSchema,
   timeoutSchema,
 } from "../validation.js";
-
-export const SLACK_WEBHOOK_APP = {
-  id: "slack-webhook",
-  name: "Slack",
-  description: "Envie notificações por um Incoming Webhook autorizado.",
-  category: "communication",
-  capabilities: ["external_notification"],
-  actions: [
-    {
-      appId: "slack-webhook",
-      id: "send_message",
-      name: "Enviar mensagem",
-      description: "Publica uma notificação no canal associado ao webhook.",
-      capability: "external_notification",
-      executionMode: "external",
-      idempotency: "engine",
-    },
-  ],
-} as const satisfies IntegrationAppDescriptor<"slack-webhook">;
 
 export const slackWebhookConfigSchema = z
   .object({

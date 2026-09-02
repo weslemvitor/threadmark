@@ -5,17 +5,14 @@ import {
   assertResolvedDestinationAllowed,
   assertUrlAllowed,
   createCustomHttpExecutor,
-  createDefaultIntegrationRegistry,
   createSlackWebhookExecutor,
   customHttpConfigSchema,
   executeExternalHttp,
-  IntegrationRegistry,
   IntegrationRequestError,
   publicHeaderSchema,
   renderJsonTemplate,
   safeHttpUrlSchema,
   sanitizeExternalOutput,
-  THREADMARK_APP,
 } from "../server/integrations/index.js";
 
 const publicLookup = async () => [{ address: "93.184.216.34" }];
@@ -25,23 +22,6 @@ const executionContext = {
   nodeId: "node-123",
   idempotencyKey: "automation-123:node-123:attempt-1",
 };
-
-test("registry tipado expõe apenas apps e ações declarados, sem WhatsApp outbound", () => {
-  const registry = createDefaultIntegrationRegistry();
-  assert.deepEqual(
-    registry.listApps().map((app) => app.id),
-    ["threadmark", "slack-webhook", "custom-http"],
-  );
-  assert.equal(registry.getAction("threadmark", "assign_ticket")?.executionMode, "internal");
-  assert.equal(registry.getAction("custom-http", "request")?.idempotency, "provider");
-  assert.equal(registry.getAction("whatsapp", "send_message"), null);
-  assert.equal(JSON.stringify(registry.listApps()).toLowerCase().includes("sendmessage"), false);
-  assert.equal(Object.isFrozen(registry.getApp("threadmark")), true);
-  assert.throws(
-    () => new IntegrationRegistry().register(THREADMARK_APP).register(THREADMARK_APP),
-    /já está registrado/,
-  );
-});
 
 test("validação rejeita credenciais na URL e headers públicos sensíveis", () => {
   assert.throws(

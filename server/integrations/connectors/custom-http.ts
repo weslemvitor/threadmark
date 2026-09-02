@@ -7,7 +7,6 @@ import {
 import { renderJsonTemplate, validateJsonTemplate } from "../template.js";
 import type {
   IntegrationActionExecutor,
-  IntegrationAppDescriptor,
   IntegrationExecutionContext,
   IntegrationSecretVault,
 } from "../types.js";
@@ -18,25 +17,6 @@ import {
   secretHeaderSchema,
   timeoutSchema,
 } from "../validation.js";
-
-export const CUSTOM_HTTP_APP = {
-  id: "custom-http",
-  name: "API personalizada",
-  description: "Execute uma requisição HTTP segura em uma API configurada.",
-  category: "developer",
-  capabilities: ["http_request"],
-  actions: [
-    {
-      appId: "custom-http",
-      id: "request",
-      name: "Executar requisição",
-      description: "Envia um payload mapeado para um endpoint autorizado.",
-      capability: "http_request",
-      executionMode: "external",
-      idempotency: "provider",
-    },
-  ],
-} as const satisfies IntegrationAppDescriptor<"custom-http">;
 
 export const customHttpConfigSchema = z
   .object({

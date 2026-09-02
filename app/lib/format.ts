@@ -1,7 +1,5 @@
 import type {
-  AnswerSuggestion,
   TicketCategory,
-  TicketDetail,
   TicketPriority,
   TicketStatus,
   TicketSummary,
@@ -225,120 +223,6 @@ export function getRequesterPresentation(
 
 export function getCategoryName(category: TicketCategory | string): string {
   return typeof category === "string" ? category : category.label;
-}
-
-function getNewestSuggestionByStatus(
-  suggestions: AnswerSuggestion[],
-  status: AnswerSuggestion["status"],
-  createdAfter: string | null = null,
-): AnswerSuggestion | null {
-  return suggestions.reduce<AnswerSuggestion | null>((newest, suggestion) => {
-    if (suggestion.status !== status) return newest;
-    if (createdAfter && suggestion.createdAt <= createdAfter) return newest;
-    if (!newest) return suggestion;
-    return suggestion.createdAt > newest.createdAt ? suggestion : newest;
-  }, null);
-}
-
-type SuggestionTicket = Pick<
-  TicketDetail,
-  "suggestions" | "latestInvestigation"
-> & Partial<Pick<
-  TicketDetail,
-  "sentResponses" | "status" | "lastMessageAt" | "investigationThread"
->>;
-
-function hasTerminalTicketStatus(ticket: SuggestionTicket): boolean {
-  return ticket.status === "resolved" || ticket.status === "cancelled" || ticket.status === "archived";
-}
-
-function getLastSentResponseAt(ticket: SuggestionTicket): string | null {
-  return (ticket.sentResponses ?? []).reduce<string | null>((latest, response) => {
-    return !latest || response.sentAt > latest ? response.sentAt : latest;
-  }, null);
-}
-
-function getInvestigationTimestamp(
-  investigation: NonNullable<SuggestionTicket["latestInvestigation"]>,
-): string {
-  return (
-    investigation.finishedAt ??
-    investigation.startedAt ??
-    investigation.requestedAt
-  );
-}
-
-function latestTimestamp(...values: Array<string | null>): string | null {
-  return values.reduce<string | null>(
-    (latest, value) =>
-      value && (!latest || value > latest) ? value : latest,
-    null,
-  );
-}
-
-export function isLatestInvestigationSuperseded(
-  ticket: SuggestionTicket,
-): boolean {
-  const investigation = ticket.latestInvestigation;
-  if (!investigation || investigation.state !== "completed") return false;
-  if (hasTerminalTicketStatus(ticket)) return true;
-
-  const investigationAt = getInvestigationTimestamp(investigation);
-  const latestActivityAt = latestTimestamp(
-    getLastSentResponseAt(ticket),
-    ticket.lastMessageAt ?? null,
-    ticket.investigationThread?.lastAssistantMessageAt ?? null,
-  );
-  return Boolean(latestActivityAt && latestActivityAt > investigationAt);
-}
-
-export function getSuggestion(
-  ticket: SuggestionTicket,
-): AnswerSuggestion | null {
-  if (hasTerminalTicketStatus(ticket)) return null;
-
-  const lastSentResponseAt = getLastSentResponseAt(ticket);
-  const answeredAt =
-    ticket.latestInvestigation?.outcome === "already_answered"
-      ? getInvestigationTimestamp(ticket.latestInvestigation)
-      : null;
-  const validAfter = latestTimestamp(lastSentResponseAt, answeredAt);
-
-  return (
-    getNewestSuggestionByStatus(
-      ticket.suggestions,
-      "candidate",
-      validAfter,
-    ) ?? null
-  );
-}
-
-export function getSuggestedResponse(
-  ticket: SuggestionTicket,
-): string | null {
-  if (hasTerminalTicketStatus(ticket)) return null;
-
-  const lastSentResponseAt = getLastSentResponseAt(ticket);
-  const answeredAt =
-    ticket.latestInvestigation?.outcome === "already_answered"
-      ? getInvestigationTimestamp(ticket.latestInvestigation)
-      : null;
-  const validAfter = latestTimestamp(lastSentResponseAt, answeredAt);
-  const candidate = getNewestSuggestionByStatus(
-    ticket.suggestions,
-    "candidate",
-    validAfter,
-  );
-  if (candidate) return candidate.body;
-  return null;
-}
-
-export function formatDuration(minutes?: number | null): string {
-  if (minutes == null) return "—";
-  if (minutes < 60) return `${Math.round(minutes)} min`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = Math.round(minutes % 60);
-  return remainder ? `${hours}h ${remainder}min` : `${hours}h`;
 }
 
 export function formatNumber(value?: number | null): string {

@@ -8,13 +8,11 @@ import type {
   TicketSummary,
 } from "./types";
 import type {
-  AddInvestigationThreadMessageInput,
   CategoryCatalogDto,
   CategoryFacet,
+  AddThreadmarkAiMessageInput,
   CreateManualTicketInput,
-  DeleteClientResponse,
   DeleteTicketResponse,
-  InvestigationThreadDto,
   ThreadmarkAiContextDto,
   DeleteThreadmarkAiThreadResponse,
   ThreadmarkAiThreadDto,
@@ -29,9 +27,7 @@ import type {
   TriggerConversationAnalysisResponse,
   UpsertTicketProductForwardingInput,
   UpdateTriageAiSettingsInput,
-  UpdateClientProfileInput,
   UpdateTicketInternalNoteInput,
-  UpdateTicketContextInput,
   UpdateTicketMetadataInput,
   UpdateTicketAssigneeInput,
   DocumentationDraftDto,
@@ -52,7 +48,6 @@ import type {
   ConversationMessagesResponse,
   ConversationTicketListResponse,
   ConversationSuggestionSettingsResponse,
-  ConversationTriageBlocksResponse,
 } from "./conversations";
 import {
   dashboardExportFallbackName,
@@ -121,10 +116,6 @@ export async function getWebBuildRevision(): Promise<{ revision: string | null }
   return request("/api/runtime/web-build");
 }
 
-export async function getUnreadNotificationCount(): Promise<{ unread: number }> {
-  return request("/api/notifications/unread-count");
-}
-
 export async function updateNotificationRead(
   id: string,
   read: boolean,
@@ -152,12 +143,6 @@ export async function getDocumentationDrafts(options: {
 
 export async function queueTicketDocumentation(ticketId: string): Promise<DocumentationDraftDto> {
   return request(`/api/tickets/${encodeURIComponent(ticketId)}/documentation`, {
-    method: "POST",
-  });
-}
-
-export async function queueTicketKnowledge(ticketId: string): Promise<DocumentationDraftDto> {
-  return request(`/api/tickets/${encodeURIComponent(ticketId)}/knowledge`, {
     method: "POST",
   });
 }
@@ -425,26 +410,6 @@ export async function createManualTicket(
   });
 }
 
-export async function getBugTickets(): Promise<TicketSummary[]> {
-  const items: TicketSummary[] = [];
-  const limit = 200;
-  let offset = 0;
-
-  while (true) {
-    const params = new URLSearchParams({
-      productForwardingKind: "bug",
-      includeArchived: "true",
-      order: "created_desc",
-      limit: String(limit),
-      offset: String(offset),
-    });
-    const result = await request<TicketListResponse>(`/api/tickets?${params}`);
-    items.push(...result.items);
-    offset += result.items.length;
-    if (!result.items.length || offset >= result.total) return items;
-  }
-}
-
 export async function getArchivedTickets(
   options: { offset?: number; limit?: number; query?: string } = {},
 ): Promise<TicketListResponse> {
@@ -530,14 +495,6 @@ export async function getConversationTickets(
   for (const status of options.statuses ?? []) params.append("status", status);
   return request<ConversationTicketListResponse>(
     `/api/conversations/${encodeURIComponent(conversationId)}/tickets?${params}`,
-  );
-}
-
-export async function getConversationTriageBlocks(
-  conversationId: string,
-): Promise<ConversationTriageBlocksResponse> {
-  return request<ConversationTriageBlocksResponse>(
-    `/api/conversations/${encodeURIComponent(conversationId)}/triage-blocks?includeResolved=false`,
   );
 }
 
@@ -695,35 +652,6 @@ export async function getDirectory(): Promise<DirectorySnapshot> {
   return request<DirectorySnapshot>("/api/directory");
 }
 
-export async function updateClientProfile(
-  id: string,
-  input: UpdateClientProfileInput,
-): Promise<ClientSummary> {
-  return request<ClientSummary>(`/api/clients/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function deleteClient(id: string): Promise<DeleteClientResponse> {
-  return request<DeleteClientResponse>(`/api/clients/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-    body: JSON.stringify({
-      reason: "Removido manualmente da operação de suporte",
-    }),
-  });
-}
-
-export async function updateTicketContext(
-  id: string,
-  input: UpdateTicketContextInput,
-): Promise<TicketDetail> {
-  return request<TicketDetail>(`/api/tickets/${encodeURIComponent(id)}/context`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
 export async function addTicketInternalNote(
   id: string,
   body: string,
@@ -792,50 +720,6 @@ export async function updateTicketStatus(
   });
 }
 
-export async function openInvestigationThread(
-  ticketId: string,
-): Promise<InvestigationThreadDto> {
-  return request<InvestigationThreadDto>(
-    `/api/tickets/${encodeURIComponent(ticketId)}/investigation-thread`,
-    { method: "POST" },
-  );
-}
-
-export async function getInvestigationThread(
-  threadId: string,
-): Promise<InvestigationThreadDto> {
-  return request<InvestigationThreadDto>(
-    `/api/investigation-threads/${encodeURIComponent(threadId)}`,
-  );
-}
-
-export async function addInvestigationThreadMessage(
-  threadId: string,
-  body: string,
-  clientMessageId: string,
-): Promise<InvestigationThreadDto> {
-  const input: AddInvestigationThreadMessageInput = {
-    body: body.trim(),
-    clientMessageId,
-  };
-  return request<InvestigationThreadDto>(
-    `/api/investigation-threads/${encodeURIComponent(threadId)}/messages`,
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export async function cancelInvestigationThread(
-  threadId: string,
-): Promise<InvestigationThreadDto> {
-  return request<InvestigationThreadDto>(
-    `/api/investigation-threads/${encodeURIComponent(threadId)}/cancel`,
-    { method: "POST" },
-  );
-}
-
 export async function listThreadmarkAiThreads(): Promise<ThreadmarkAiThreadListResponse> {
   return request<ThreadmarkAiThreadListResponse>("/api/threadmark-ai/threads");
 }
@@ -889,7 +773,7 @@ export async function addThreadmarkAiMessage(
   body: string,
   clientMessageId: string,
   context: ThreadmarkAiContextDto | null,
-  attachments: NonNullable<AddInvestigationThreadMessageInput["attachments"]> = [],
+  attachments: NonNullable<AddThreadmarkAiMessageInput["attachments"]> = [],
   allowImageAnalysis = false,
 ): Promise<ThreadmarkAiThreadDto> {
   return request<ThreadmarkAiThreadDto>(

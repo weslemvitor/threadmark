@@ -78,28 +78,11 @@ test("ticket mostra resumo após resolução e delega a IA ao assistente global"
 });
 
 test("ticket resolvido não reapresenta orientação automática antiga", async () => {
-  const [detail, format] = await Promise.all([
-    readFile(
-      new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(new URL("../app/lib/format.ts", import.meta.url), "utf8"),
-  ]);
-  const suggestionSelection = sourceSection(
-    format,
-    "export function getSuggestion",
-    "export function getSuggestedResponse",
-  );
-  const responseSelection = sourceSection(
-    format,
-    "export function getSuggestedResponse",
-    "export function formatDuration",
+  const detail = await readFile(
+    new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
+    "utf8",
   );
 
-  assert.match(suggestionSelection, /getInvestigationTimestamp/);
-  assert.match(suggestionSelection, /validAfter/);
-  assert.match(responseSelection, /getInvestigationTimestamp/);
-  assert.match(responseSelection, /validAfter/);
   assert.doesNotMatch(detail, /getSuggestedResponse\(ticket\)|TicketAiGuidance/);
   assert.match(detail, /ticket\.resolution \? <TicketResolutionSummary ticket=\{ticket\} \/> : null/);
   assert.doesNotMatch(detail, /Investigação assistida|Investigar novamente/);
@@ -1072,12 +1055,6 @@ test("encaminhamento de bug persiste no ticket e pode finalizar o atendimento", 
   assert.match(detail, /Bug encaminhado/);
   assert.match(api, /\/api\/tickets\/\$\{encodeURIComponent\(id\)\}\/product-forwarding/);
   assert.match(api, /method: "PUT"/);
-  assert.match(api, /export async function getBugTickets/);
-  assert.match(api, /productForwardingKind: "bug"/);
-  assert.match(api, /includeArchived: "true"/);
-  assert.match(api, /const limit = 200/);
-  assert.match(api, /offset \+= result\.items\.length/);
-  assert.match(api, /offset >= result\.total/);
 });
 
 test("cards arquivados distinguem tickets resolvidos de cancelados", async () => {

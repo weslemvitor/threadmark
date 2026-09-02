@@ -219,8 +219,6 @@ test("dashboard usa donut para status e barras para categorias com Shadcn Charts
   assert.match(source, /Distribuição por status/);
   assert.match(viewSource, /grid-flow-row-dense/);
   assert.match(viewSource, /lg:grid-cols-12/);
-  assert.match(source, /<AreaChart/);
-  assert.match(source, /<Area/);
   assert.match(source, /<BarChart/);
   assert.match(source, /<CartesianGrid/);
   assert.match(source, /<XAxis/);

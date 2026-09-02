@@ -82,28 +82,6 @@ export function testAutomation(id: string): Promise<AutomationExecution> {
   return apiRequest(idPath(AUTOMATIONS_PATH, id, "/test"), { method: "POST" });
 }
 
-export function decideAutomationExecution(
-  id: string,
-  input: { approved: boolean; note?: string },
-): Promise<AutomationExecution> {
-  return apiRequest(idPath("/api/automation-runs", id, "/decision"), {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function pauseAutomationExecution(id: string): Promise<AutomationExecution> {
-  return apiRequest(idPath("/api/automation-runs", id, "/pause"), { method: "POST" });
-}
-
-export function resumeAutomationExecution(id: string): Promise<AutomationExecution> {
-  return apiRequest(idPath("/api/automation-runs", id, "/resume"), { method: "POST" });
-}
-
-export function cancelAutomationExecution(id: string): Promise<AutomationExecution> {
-  return apiRequest(idPath("/api/automation-runs", id, "/cancel"), { method: "POST" });
-}
-
 export function listConnectedApps(): Promise<ConnectedAppListResponse> {
   return apiRequest(CONNECTED_APPS_PATH);
 }

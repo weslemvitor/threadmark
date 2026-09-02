@@ -144,18 +144,6 @@ export interface StructuredJsonClient {
   generateJson(request: StructuredJsonRequest): Promise<unknown>;
 }
 
-export class ProviderCapabilityError extends Error {
-  constructor(
-    readonly providerId: AiProviderId,
-    readonly capability: keyof AiProviderCapabilities,
-  ) {
-    super(
-      `O provedor ${providerId} não oferece a capacidade ${capability} neste modo.`,
-    );
-    this.name = "ProviderCapabilityError";
-  }
-}
-
 export class ProviderRequestError extends Error {
   constructor(
     readonly providerId: Exclude<AiProviderId, "codex">,

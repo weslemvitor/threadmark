@@ -17,10 +17,6 @@ export function redactSensitiveAiText(value: string): string {
     .replace(WELL_KNOWN_SECRET, "[REDACTED]");
 }
 
-export function redactNullableSensitiveAiText(value: string | null): string | null {
-  return value === null ? null : redactSensitiveAiText(value);
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value) as unknown;

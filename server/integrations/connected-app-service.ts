@@ -187,7 +187,7 @@ export class ConnectedAppService {
     }
     const id = randomUUID();
     const secretRef = `connected-app:${id}:credential`;
-    const stored = await this.prepareStoredConfig(id, parsed, secretRef, false);
+    const stored = await this.prepareStoredConfig(parsed, secretRef, false);
     const now = new Date().toISOString();
     try {
       this.database
@@ -246,7 +246,6 @@ export class ConnectedAppService {
     }
     const secretRef = existing.secret_ref ?? `connected-app:${id}:credential`;
     const stored = await this.prepareStoredConfig(
-      id,
       parsed,
       secretRef,
       Boolean(existing.secret_configured),
@@ -438,7 +437,6 @@ export class ConnectedAppService {
   }
 
   private async prepareStoredConfig(
-    id: string,
     input: ReturnType<ConnectedAppService["parseWrite"]>,
     secretRef: string,
     hadSecret: boolean,

@@ -247,16 +247,6 @@ export type InboundRuntimeEvent =
       errorMessage: string;
     };
 
-export type InboundBaileysEventName =
-  | "connection.update"
-  | "contacts.upsert"
-  | "contacts.update"
-  | "messaging-history.set"
-  | "messaging-history.status"
-  | "messages.upsert"
-  | "lid-mapping.update"
-  | "group-participants.update";
-
 /** Event-only view of Baileys. It deliberately contains no socket operations. */
 export type InboundEventSource = Pick<BaileysEventEmitter, "on" | "off">;
 

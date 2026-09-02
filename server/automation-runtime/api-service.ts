@@ -4,7 +4,6 @@ import { z } from "zod";
 
 import type { SupportDatabase } from "../db/index.js";
 import {
-  AutomationValidationError,
   validateWorkflowDefinition,
   type AutomationEdge,
   type AutomationNode,
@@ -668,8 +667,4 @@ function requireString(value: unknown, label: string): string {
   const parsed = stringValue(value);
   if (!parsed) throw new AutomationApiError(`Informe ${label}.`);
   return parsed;
-}
-
-export function isAutomationValidationError(error: unknown): error is AutomationValidationError {
-  return error instanceof AutomationValidationError;
 }
