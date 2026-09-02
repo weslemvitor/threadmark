@@ -36,6 +36,10 @@ const CURRENT_OPERATOR_MESSAGE_ID = "operator-current";
 const DATABASE_REFERENCE = "tool:database-eval:query:request:database-check";
 const CAPABILITIES_REFERENCE =
   "tool:threadmark-automations:capabilities:request:automation-capabilities";
+const CAMPAIGN_DATABASE_REFERENCE =
+  "tool:database-eval:campaign:request:campaign-reconciliation";
+const CAMPAIGN_CODE_REFERENCE =
+  "tool:code-eval:template-rule:request:template-rule";
 
 const contextTool: InvestigationToolDescriptor = {
   id: "threadmark-context",
@@ -80,6 +84,18 @@ const databaseTool: InvestigationToolDescriptor = {
   operations: [
     operation("describe_schema", "Descreve tabelas.", '{"table":"orders","maxRows":50}'),
     operation("query", "Executa SELECT limitado.", '{"query":"SELECT status FROM orders LIMIT 20","maxRows":20}'),
+  ],
+};
+
+const codeTool: InvestigationToolDescriptor = {
+  id: "code-eval",
+  name: "Código de teste",
+  type: "codebase",
+  description: "Consulta a implementação fictícia somente para leitura.",
+  scope: "Codebase sintética",
+  operations: [
+    operation("search_files", "Busca um símbolo exato.", '{"query":"missing_template_variable","path":"server"}'),
+    operation("read_files", "Lê o trecho encontrado.", '{"paths":["server/send-template.ts"],"startLine":1,"maxLines":120}'),
   ],
 };
 
@@ -174,6 +190,96 @@ const cases: ThreadmarkAiEvalCase[] = [
         failures,
         !output.findings.some((finding) => finding.kind === "fact" && /causa|timeout/i.test(finding.statement)),
         "a falha da ferramenta não pode ser apresentada como causa comprovada",
+      );
+      return failures;
+    },
+  },
+  {
+    id: "causal-campaign-conclusion",
+    label: "Investigação causal entrega veredito direto, números e classificação",
+    repetitions: 3,
+    input: () => input({
+      operatorBody: "Investigue por que a campanha fictícia não enviou para a maioria da audiência.",
+      tools: [databaseTool, codeTool],
+      toolResults: [
+        toolResult({
+          requestId: "campaign-reconciliation",
+          tool: databaseTool,
+          operationName: "query",
+          content: JSON.stringify({
+            reachedNode: 2_000,
+            sent: 125,
+            skipped: {
+              noConsent: 175,
+              missingTemplateVariable: 1_600,
+              suppressed: 100,
+            },
+            template: { requiredVariable: "givenName", fallback: null },
+          }),
+          reference: CAMPAIGN_DATABASE_REFERENCE,
+        }),
+        toolResult({
+          requestId: "template-rule",
+          tool: codeTool,
+          operationName: "read_files",
+          content:
+            "A implementação marca SKIPPED com missing_template_variable quando uma variável obrigatória não possui valor nem fallback.",
+          reference: CAMPAIGN_CODE_REFERENCE,
+        }),
+      ],
+    }),
+    evaluate: (output) => {
+      const failures: string[] = [];
+      requireCondition(failures, output.phase === "conclusion", "deve concluir a causa comprovada");
+      requireCondition(failures, output.outcome?.rootCauseStatus === "confirmed", "deve marcar causa confirmada");
+      requireCondition(
+        failures,
+        ["configuration", "code"].includes(output.outcome?.causalClassification ?? ""),
+        "deve classificar a causa como configuração ou código",
+      );
+      requireCondition(failures, /^Motivo confirmado:/iu.test(output.assistantMessage), "deve começar pelo veredito");
+      requireCondition(failures, /1[.\s]?600|1600/u.test(output.assistantMessage), "deve informar o número decisivo");
+      requireCondition(failures, /givenName|fallback/iu.test(output.outcome?.rootCause ?? ""), "deve explicar variável e fallback");
+      requireCondition(
+        failures,
+        output.evidence.some((item) => item.reference === CAMPAIGN_DATABASE_REFERENCE) &&
+          output.evidence.some((item) => item.reference === CAMPAIGN_CODE_REFERENCE),
+        "deve cruzar banco e código",
+      );
+      return failures;
+    },
+  },
+  {
+    id: "symptom-is-not-root-cause",
+    label: "Último nó observado não é aceito como causa raiz",
+    repetitions: 3,
+    input: () => input({
+      operatorBody: "Investigue por que o processamento fictício não terminou.",
+      tools: [databaseTool, codeTool],
+      toolResults: [toolResult({
+        requestId: "node-state-only",
+        tool: databaseTool,
+        operationName: "query",
+        content: JSON.stringify({ node: "CHECK_CONDITION", doing: 900, done: 100 }),
+        reference: DATABASE_REFERENCE,
+      })],
+    }),
+    evaluate: (output) => {
+      const failures: string[] = [];
+      requireCondition(
+        failures,
+        output.outcome?.rootCauseStatus !== "confirmed",
+        "não pode confirmar causa usando apenas o estado do nó",
+      );
+      requireCondition(
+        failures,
+        output.phase === "analysis" || output.phase === "needs_information",
+        "deve continuar investigando ou declarar a lacuna",
+      );
+      requireCondition(
+        failures,
+        !/^Motivo confirmado:/iu.test(output.assistantMessage),
+        "não pode anunciar motivo confirmado",
       );
       return failures;
     },
@@ -415,7 +521,21 @@ function input(options: {
     threadId: "thread-eval",
     mode: "workspace",
     currentOperatorMessageId: CURRENT_OPERATOR_MESSAGE_ID,
+    currentOperator: {
+      displayName: "Pessoa avaliadora",
+      role: "owner",
+    },
     durableSummary: "Nenhuma conclusão técnica foi comprovada até agora.",
+    activeTask: {
+      rootOperatorMessageId: CURRENT_OPERATOR_MESSAGE_ID,
+      objective: options.operatorBody,
+      operatorDirectives: [{
+        id: CURRENT_OPERATOR_MESSAGE_ID,
+        body: options.operatorBody,
+        createdAt: "2026-08-25T12:05:00.000Z",
+      }],
+      continuation: false,
+    },
     recentMessages: [
       ...(options.previousOperatorMessages ?? []).map((message, index) => ({
         id: message.id,

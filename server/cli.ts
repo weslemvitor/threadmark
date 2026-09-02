@@ -815,6 +815,9 @@ async function runOneInvestigation(): Promise<void> {
     cwd: config.projectRoot,
     dataDir: path.join(config.dataDir, "agent-runs"),
     attachmentsRoot: config.attachmentsDir,
+    mcpToolLoopEnabled: config.codexMcpToolLoopEnabled,
+    databasePath: config.databasePath,
+    supportDataDir: config.dataDir,
   });
   const agent = new ConfiguredSupportAgent(
     database,

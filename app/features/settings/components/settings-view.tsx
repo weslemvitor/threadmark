@@ -2,7 +2,7 @@
 
 import { Bot, Database, HardDrive, Laptop, LoaderCircle, Menu, QrCode, RefreshCw, Settings2, ShieldCheck, UserRound, UsersRound, Wrench, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { getAiConnections, getAiTaskProfiles, getLocalTools, getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type AiConnection, type AiTaskProfile, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings, type LocalToolDto } from "@/app/lib/settings";
+import { getAiConnections, getAiTaskProfiles, getInvestigationPacks, getLocalTools, getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type AiConnection, type AiTaskProfile, type InvestigationPackDto, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings, type LocalToolDto } from "@/app/lib/settings";
 import { getTriageAiSettings } from "@/app/lib/api";
 import type { RuntimeState } from "@/app/lib/types";
 import type { SettingsRouteTab } from "@/app/lib/navigation";
@@ -79,6 +79,7 @@ export function SettingsView({
   const [triageAiSettings, setTriageAiSettings] =
     useState<TriageAiSettingsDto | null>(null);
   const [tools, setTools] = useState<LocalToolDto[]>([]);
+  const [investigationPacks, setInvestigationPacks] = useState<InvestigationPackDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -111,6 +112,7 @@ export function SettingsView({
             getAiConnections(),
             getAiTaskProfiles(),
             getLocalTools(),
+            getInvestigationPacks(),
           ]
         : [
             Promise.resolve([] as SettingsUser[]),
@@ -118,6 +120,7 @@ export function SettingsView({
             Promise.resolve([] as AiConnection[]),
             Promise.resolve([] as AiTaskProfile[]),
             Promise.resolve([] as LocalToolDto[]),
+            Promise.resolve({ items: [] as InvestigationPackDto[], active: null }),
           ];
 
       const results = await Promise.allSettled([
@@ -127,7 +130,7 @@ export function SettingsView({
         ...privilegedRequests,
       ]);
 
-      const [workspaceResult, runtimeResult, triageSettingsResult, usersResult, staffResult, connectionsResult, profilesResult, toolsResult] =
+      const [workspaceResult, runtimeResult, triageSettingsResult, usersResult, staffResult, connectionsResult, profilesResult, toolsResult, packsResult] =
         results;
       if (workspaceResult.status === "fulfilled") setWorkspace(workspaceResult.value);
       if (runtimeResult.status === "fulfilled") setRuntime(runtimeResult.value);
@@ -144,6 +147,11 @@ export function SettingsView({
       }
       if (toolsResult.status === "fulfilled") {
         setTools(toolsResult.value as LocalToolDto[]);
+      }
+      if (packsResult.status === "fulfilled") {
+        setInvestigationPacks(
+          (packsResult.value as { items: InvestigationPackDto[] }).items,
+        );
       }
 
       const failure = results.find(
@@ -382,6 +390,8 @@ export function SettingsView({
               canManage={canManage}
               onChange={setTools}
               onFeedback={showFeedback}
+              onPacksChange={setInvestigationPacks}
+              packs={investigationPacks}
               tools={tools}
             />
           ) : null}

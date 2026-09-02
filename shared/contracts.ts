@@ -1740,6 +1740,99 @@ export interface LocalToolTestResult {
   mode: "filesystem" | "configuration" | "connection";
 }
 
+export const INVESTIGATION_PACK_STATUSES = ["draft", "active", "archived"] as const;
+export type InvestigationPackStatus = (typeof INVESTIGATION_PACK_STATUSES)[number];
+
+export interface InvestigationPackPlaybookStep {
+  id: string;
+  title: string;
+  toolTypes: LocalToolType[];
+  operations: LocalToolOperation[];
+  evidenceExpected: string;
+  optional: boolean;
+}
+
+export interface InvestigationPackPlaybook {
+  id: string;
+  title: string;
+  triggers: string[];
+  objective: string;
+  hypotheses: string[];
+  steps: InvestigationPackPlaybookStep[];
+  stopConditions: string[];
+}
+
+export interface InvestigationPackManifest {
+  domain: string;
+  purpose: string;
+  goals: string[];
+  selectedToolIds: string[];
+  vocabulary: Array<{ term: string; meaning: string }>;
+  sourcePolicy: {
+    preferredToolTypes: LocalToolType[];
+    minimumIndependentSources: number;
+    preferExactIdentifiers: boolean;
+  };
+  responsePolicy: {
+    verdictFirst: boolean;
+    includeDecisiveNumbers: boolean;
+    separateUnknowns: boolean;
+    includeCustomerDraft: boolean;
+  };
+  playbooks: InvestigationPackPlaybook[];
+}
+
+export interface InvestigationPackReadinessDto {
+  state: "ready" | "needs_tools" | "needs_model" | "needs_probe";
+  deepInvestigationEnabled: boolean;
+  messages: string[];
+  toolChecks: Array<{
+    toolId: string;
+    name: string;
+    status: "ready" | "untested" | "failed" | "missing";
+  }>;
+  model: {
+    connectionId: string | null;
+    model: string | null;
+    status: "ready" | "untested" | "missing" | "unsupported" | "failed";
+  };
+  checkedAt: string;
+}
+
+export interface InvestigationPackDto {
+  id: string;
+  name: string;
+  status: InvestigationPackStatus;
+  version: number;
+  manifest: InvestigationPackManifest;
+  readiness: InvestigationPackReadinessDto;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  activatedAt: string | null;
+}
+
+export interface InvestigationPackOnboardingInput {
+  name: string;
+  domain: string;
+  purpose: string;
+  goals: string[];
+  selectedToolIds: string[];
+  vocabulary?: Array<{ term: string; meaning: string }>;
+  investigationExamples?: string[];
+  includeCustomerDraft?: boolean;
+}
+
+export interface InvestigationPackUpdateInput {
+  name?: string;
+  manifest?: InvestigationPackManifest;
+}
+
+export interface InvestigationPackListResponse {
+  items: InvestigationPackDto[];
+  active: InvestigationPackDto | null;
+}
+
 export type LegacyLocalToolSourceKey =
   | "SUPPORT_CODE_ROOTS"
   | "SUPPORT_VAULT_DIR";

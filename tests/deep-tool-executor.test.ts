@@ -1968,3 +1968,69 @@ test("CloudWatch limita uma página sem combinar flags incompatíveis da AWS CLI
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test("CloudWatch devolve erro recuperável e argumentos corrigidos quando o fim está no futuro", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-cloudwatch-recovery-"));
+  const database = createDatabase(":memory:");
+  const service = new LocalToolService(
+    database,
+    new LocalSecretVault(path.join(temporary, "secrets")),
+  );
+  const logGroup = "/aws/lambda/example-campaign";
+  const tool = await service.create({
+    type: "aws_cloudwatch",
+    name: "Campanhas readonly",
+    config: {
+      region: "us-east-1",
+      authMode: "profile",
+      profile: "default",
+      logGroupPrefixes: [logGroup],
+    },
+    allowedOperations: ["query_logs"],
+  }, "test");
+  const now = new Date("2026-08-31T16:00:00.000Z");
+  const executor = new DeepToolExecutor(service, {
+    now: () => now,
+    async commandRunner() {
+      assert.fail("Uma janela inválida não pode chegar à AWS CLI");
+    },
+  });
+
+  try {
+    const descriptor = executor.descriptors()[0];
+    const operation = descriptor?.operations.find((item) => item.name === "query_logs");
+    assert.equal(operation?.inputSchema?.type, "object");
+    assert.match(operation?.constraints?.join(" ") ?? "", /2026-08-31T16:00:00.000Z/);
+
+    const result = await executor.execute({
+      requestId: "future-window",
+      toolId: tool.id,
+      operation: "query_logs",
+      argumentsJson: JSON.stringify({
+        logGroup,
+        filterPattern: "campaign-id",
+        startTime: "2026-08-31T15:00:00.000Z",
+        endTime: "2026-09-01T16:00:00.000Z",
+        limit: 50,
+      }),
+      purpose: "Investigar a campanha no intervalo relatado.",
+    });
+
+    assert.equal(result.status, "error");
+    assert.deepEqual(result.error, {
+      code: "TIME_RANGE_IN_FUTURE",
+      category: "invalid_time_range",
+      retryable: true,
+      suggestedArgumentsJson: JSON.stringify({
+        logGroup,
+        filterPattern: "campaign-id",
+        startTime: "2026-08-31T15:00:00.000Z",
+        endTime: "2026-08-31T16:00:00.000Z",
+        limit: 50,
+      }),
+    });
+  } finally {
+    database.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

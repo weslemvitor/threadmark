@@ -7,6 +7,7 @@ import {
   availableToolsWithinBudget,
   boundedToolResultsForPrompt,
   ConfiguredSupportAgent,
+  enforceCausalCompletion,
   toolsForExecutionPolicy,
   type DeepInvestigationToolBroker,
 } from "../server/agent/provider-router.js";
@@ -90,17 +91,496 @@ function settingsForDeepAgent(agent: SupportAgent): AiProviderSettingsService {
   } as unknown as AiProviderSettingsService;
 }
 
-test("conversa objetiva usa o perfil rápido do provedor e orçamento curto", async () => {
+test("investigação profunda orienta onboarding sem impedir a conversa básica", async () => {
+  const database = createDatabase(":memory:");
+  let providerCalled = false;
+  const settings = {
+    async createAgentForTask() {
+      providerCalled = true;
+      throw new Error("o provedor não deveria ser chamado antes do onboarding");
+    },
+  } as unknown as AiProviderSettingsService;
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settings,
+    {} as CodexSupportAgent,
+  );
+  const blockedInput = input();
+  blockedInput.recentMessages[0]!.body =
+    "Investigue no banco e nos logs por que o processamento falhou.";
+  blockedInput.investigationReadiness = {
+    deepInvestigationEnabled: false,
+    reason: "Ative um pack privado validado.",
+  };
+
+  try {
+    const result = await configured.investigateThread(blockedInput);
+    assert.equal(providerCalled, false);
+    assert.equal(result.phase, "needs_information");
+    assert.match(result.assistantMessage, /conversa básica está disponível/i);
+    assert.match(result.assistantMessage, /Ative um pack privado validado/i);
+    assert.equal(result.outcome?.stopReason, "external_blocker");
+  } finally {
+    database.close();
+  }
+});
+
+test("loop MCP tenta uma síntese final antes de rebaixar confirmação sem duas referências diretas", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  let externalBrokerCalls = 0;
+  const audited: InvestigationToolResult[] = [];
+  const databaseResult: InvestigationToolResult = {
+    requestId: "mcp-db",
+    toolId: "db-mcp",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: '{"query":"SELECT reason FROM failures LIMIT 1"}',
+    purpose: "Confirmar o motivo persistido.",
+    status: "success",
+    summary: "Motivo consultado.",
+    content: "reason=missing_configuration",
+    reference: "tool:db:mcp-db",
+    executedAt: "2026-09-01T16:00:00.000Z",
+  };
+  const awsResult: InvestigationToolResult = {
+    requestId: "mcp-aws",
+    toolId: "aws-mcp",
+    toolName: "CloudWatch readonly",
+    operation: "query_logs",
+    argumentsJson: '{"query":"missing_configuration"}',
+    purpose: "Cruzar o motivo nos logs.",
+    status: "success",
+    summary: "Logs consultados.",
+    content: "delivery blocked: missing_configuration",
+    reference: "tool:aws:mcp-aws",
+    executedAt: "2026-09-01T16:00:01.000Z",
+  };
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      assert.equal(current.executionBudget?.toolProtocol, "mcp");
+      return {
+        assistantMessage:
+          "Motivo confirmado: a configuração obrigatória ausente bloqueou a entrega.",
+        phase: "conclusion" as const,
+        threadSummary: "Causa confirmada no banco e nos logs.",
+        findings: [{
+          statement: "A configuração obrigatória estava ausente.",
+          kind: "fact" as const,
+          evidenceReferences: [databaseResult.reference!, awsResult.reference!],
+        }],
+        evidence: [
+          { source: "database" as const, summary: "Motivo persistido.", reference: databaseResult.reference },
+          { source: "aws" as const, summary: "Bloqueio registrado.", reference: awsResult.reference },
+        ],
+        suggestedResponse: null,
+        nextAction: "Cadastrar a configuração obrigatória.",
+        confidence: 0.95,
+        outcome: {
+          objectiveStatus: "answered" as const,
+          rootCauseStatus: "confirmed" as const,
+          causalClassification: "configuration" as const,
+          rootCause: "A configuração obrigatória ausente bloqueou a entrega.",
+          rootCauseEvidenceReferences: [databaseResult.reference!],
+          unresolvedCriticalQuestions: [],
+          stopReason: "cause_confirmed" as const,
+        },
+        toolRequests: [],
+        toolExecutions: [databaseResult, awsResult],
+      };
+    },
+  } as unknown as SupportAgent;
+  const descriptors: InvestigationToolDescriptor[] = [
+    {
+      id: "db-mcp",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "teste",
+      operations: [{
+        name: "query_readonly",
+        description: "Consulta SQL readonly.",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    },
+    {
+      id: "aws-mcp",
+      name: "CloudWatch readonly",
+      type: "aws_cloudwatch",
+      description: null,
+      scope: "teste",
+      operations: [{
+        name: "query_logs",
+        description: "Consulta logs.",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    },
+  ];
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => descriptors,
+    async executeMany() {
+      externalBrokerCalls += 1;
+      return [];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    { supportsInternalToolLoop: () => true } as unknown as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body =
+    "Investigue no banco e nos logs por que a campanha não enviou.";
+  current.onToolExecution = async (result) => {
+    audited.push(result);
+  };
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(modelCalls, 2);
+    assert.equal(externalBrokerCalls, 0);
+    assert.equal(audited.length, 2);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(result.outcome?.rootCauseStatus, "probable");
+    assert.match(result.assistantMessage, /^Causa mais provável:/);
+    assert.deepEqual(result.toolExecutions?.map((item) => item.requestId), [
+      "mcp-db",
+      "mcp-aws",
+    ]);
+  } finally {
+    database.close();
+  }
+});
+
+test("loop MCP retoma uma vez quando a primeira execução termina em estado intermediário", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  let externalBrokerCalls = 0;
+  const databaseResult: InvestigationToolResult = {
+    requestId: "mcp-network-db",
+    toolId: "db-mcp",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: '{"query":"SELECT network_blocked FROM stores LIMIT 1"}',
+    purpose: "Confirmar o estado persistido da loja.",
+    status: "success",
+    summary: "Estado persistido consultado.",
+    content: "network_blocked=true",
+    reference: "tool:db:mcp-network",
+    executedAt: "2026-09-02T16:00:00.000Z",
+  };
+  const logResult: InvestigationToolResult = {
+    requestId: "mcp-network-log",
+    toolId: "aws-mcp",
+    toolName: "CloudWatch readonly",
+    operation: "query_logs",
+    argumentsJson: '{"query":"network blocked"}',
+    purpose: "Cruzar o bloqueio com a tentativa real.",
+    status: "success",
+    summary: "Tentativa bloqueada localizada.",
+    content: "request rejected by network policy",
+    reference: "tool:aws:mcp-network",
+    executedAt: "2026-09-02T16:00:01.000Z",
+  };
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      assert.equal(current.executionBudget?.toolProtocol, "mcp");
+      if (modelCalls === 1) {
+        return {
+          assistantMessage: "Ainda não confirmado: encontrei o bloqueio configurado e vou confrontar a execução.",
+          phase: "analysis" as const,
+          threadSummary: "Bloqueio persistido confirmado; falta confrontar os logs.",
+          findings: [{
+            statement: "A loja está marcada com bloqueio de rede.",
+            kind: "fact" as const,
+            evidenceReferences: [databaseResult.reference!],
+          }],
+          evidence: [{
+            source: "database" as const,
+            summary: databaseResult.summary,
+            reference: databaseResult.reference,
+          }],
+          suggestedResponse: null,
+          nextAction: "Confrontar a tentativa nos logs.",
+          confidence: 0.55,
+          outcome: {
+            objectiveStatus: "partially_answered" as const,
+            rootCauseStatus: "unknown" as const,
+            causalClassification: "unknown" as const,
+            rootCause: null,
+            rootCauseEvidenceReferences: [],
+            unresolvedCriticalQuestions: ["O bloqueio impediu uma tentativa real?"],
+            stopReason: "evidence_exhausted" as const,
+          },
+          toolRequests: [],
+          toolExecutions: [databaseResult],
+        };
+      }
+      assert.equal(current.executionBudget?.readonlyContinuationRequired, true);
+      return {
+        assistantMessage: "Motivo confirmado: a política de rede ativa rejeitou a tentativa da loja.",
+        phase: "conclusion" as const,
+        threadSummary: "Bloqueio confirmado no estado persistido e nos logs.",
+        findings: [{
+          statement: "A política de rede ativa rejeitou a tentativa da loja.",
+          kind: "fact" as const,
+          evidenceReferences: [databaseResult.reference!, logResult.reference!],
+        }],
+        evidence: [{
+          source: "database" as const,
+          summary: databaseResult.summary,
+          reference: databaseResult.reference,
+        }, {
+          source: "aws" as const,
+          summary: logResult.summary,
+          reference: logResult.reference,
+        }],
+        suggestedResponse: null,
+        nextAction: "Orientar a liberação da política de rede.",
+        confidence: 0.96,
+        outcome: {
+          objectiveStatus: "answered" as const,
+          rootCauseStatus: "confirmed" as const,
+          causalClassification: "configuration" as const,
+          rootCause: "A política de rede ativa rejeitou a tentativa da loja.",
+          rootCauseEvidenceReferences: [databaseResult.reference!, logResult.reference!],
+          unresolvedCriticalQuestions: [],
+          stopReason: "cause_confirmed" as const,
+        },
+        toolRequests: [],
+        toolExecutions: [logResult],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "db-mcp",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "teste",
+      operations: [{
+        name: "query_readonly",
+        description: "Consulta SQL readonly.",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    }, {
+      id: "aws-mcp",
+      name: "CloudWatch readonly",
+      type: "aws_cloudwatch",
+      description: null,
+      scope: "teste",
+      operations: [{
+        name: "query_logs",
+        description: "Consulta logs readonly.",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    }],
+    async executeMany() {
+      externalBrokerCalls += 1;
+      return [];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    { supportsInternalToolLoop: () => true } as unknown as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body =
+    "A Maloa está com problema de bloqueio de rede, como podemos ajudar ela a resolver? Ela diz que não tem, mas ficou claro que tem.";
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(modelCalls, 2);
+    assert.equal(externalBrokerCalls, 0);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(result.outcome?.rootCauseStatus, "confirmed");
+    assert.deepEqual(result.toolExecutions?.map((item) => item.requestId), [
+      "mcp-network-db",
+      "mcp-network-log",
+    ]);
+  } finally {
+    database.close();
+  }
+});
+
+test("loop MCP sem execução real recua uma vez para o coordenador tipado", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        assert.equal(current.executionBudget?.toolProtocol, "mcp");
+        return {
+          assistantMessage: "Ainda não confirmado: a leitura técnica não ocorreu.",
+          phase: "needs_information" as const,
+          threadSummary: "MCP não executou leituras.",
+          findings: [], evidence: [], suggestedResponse: null,
+          nextAction: "Consultar o código.", confidence: 0.2,
+          outcome: {
+            objectiveStatus: "partially_answered" as const,
+            rootCauseStatus: "unknown" as const,
+            causalClassification: "unknown" as const,
+            rootCause: null,
+            unresolvedCriticalQuestions: ["Qual regra foi aplicada?"],
+            stopReason: "external_blocker" as const,
+          },
+          toolRequests: [],
+        };
+      }
+      assert.equal(current.executionBudget?.toolProtocol, "coordinator");
+      if (!(current.toolResults?.length)) {
+        return {
+          assistantMessage: "Vou consultar a regra.",
+          phase: "analysis" as const,
+          threadSummary: "Fallback coordenado ativo.",
+          findings: [], evidence: [], suggestedResponse: null,
+          nextAction: "Ler código.", confidence: 0.4,
+          outcome: {
+            objectiveStatus: "partially_answered" as const,
+            rootCauseStatus: "unknown" as const,
+            causalClassification: "unknown" as const,
+            rootCause: null,
+            unresolvedCriticalQuestions: ["Qual regra foi aplicada?"],
+            stopReason: "not_applicable" as const,
+          },
+          toolRequests: [{
+            requestId: "fallback-code",
+            toolId: "code-fallback",
+            operation: "read_files",
+            argumentsJson: '{"paths":["rule.ts"]}',
+            purpose: "Confirmar a regra.",
+          }],
+        };
+      }
+      const reference = current.toolResults[0]!.reference!;
+      return {
+        assistantMessage: "Causa mais provável: a regra lida explica o comportamento.",
+        phase: "conclusion" as const,
+        threadSummary: "Regra confirmada por leitura auditada.",
+        findings: [{ statement: "A regra explica o comportamento.", kind: "fact" as const, evidenceReferences: [reference] }],
+        evidence: [{ source: "code" as const, summary: "Regra lida.", reference }],
+        suggestedResponse: null, nextAction: null, confidence: 0.8,
+        outcome: {
+          objectiveStatus: "answered" as const,
+          rootCauseStatus: "probable" as const,
+          causalClassification: "code" as const,
+          rootCause: "A regra lida explica o comportamento.",
+          unresolvedCriticalQuestions: [],
+          stopReason: "evidence_exhausted" as const,
+        },
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "code-fallback",
+      name: "Código readonly",
+      type: "codebase",
+      description: null,
+      scope: "teste",
+      operations: [{
+        name: "read_files",
+        description: "Lê arquivos.",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    }],
+    async executeMany([request]) {
+      brokerCalls += 1;
+      return [{
+        ...request!,
+        toolName: "Código readonly",
+        status: "success",
+        summary: "Regra lida.",
+        content: "RULE=true",
+        reference: "tool:code:fallback",
+        executedAt: "2026-09-01T16:00:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    { supportsInternalToolLoop: () => true } as unknown as CodexSupportAgent,
+    broker,
+  );
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(modelCalls, 3);
+    assert.equal(brokerCalls, 1);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(result.toolExecutions?.[0]?.requestId, "fallback-code");
+  } finally {
+    database.close();
+  }
+});
+
+test("intenção explícita de mutação permanece no coordenador autorizado", async () => {
+  const database = createDatabase(":memory:");
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      assert.equal(current.executionBudget?.toolProtocol, "coordinator");
+      return {
+        assistantMessage: "Vou manter a atualização no fluxo autorizado.",
+        phase: "conclusion" as const,
+        threadSummary: "Mutação roteada pelo coordenador.",
+        findings: [], evidence: [], suggestedResponse: null,
+        nextAction: null, confidence: 0.8, toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "context",
+      name: "Contexto",
+      type: "knowledge",
+      description: null,
+      scope: "teste",
+      operations: [{ name: "read_files", description: "Lê.", argumentsExample: "{}", effect: "read" }],
+    }],
+    async executeMany() { return []; },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    { supportsInternalToolLoop: () => true } as unknown as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue o caso e atualize o ticket com o resultado.";
+
+  try {
+    await configured.investigateThread(current);
+  } finally {
+    database.close();
+  }
+});
+
+test("conversa trivial usa o perfil rápido do provedor sem ferramentas", async () => {
   const database = createDatabase(":memory:");
   database.prepare(`
     INSERT INTO investigation_threads (
       id, scope, title, created_by, created_at, updated_at
-    ) VALUES ('thread-tools', 'workspace', 'Conversa rápida', 'operator-local', ?, ?)
+    ) VALUES ('thread-tools', 'workspace', 'Conversa trivial', 'operator-local', ?, ?)
   `).run("2026-08-27T12:00:00.000Z", "2026-08-27T12:00:00.000Z");
   database.prepare(`
     INSERT INTO investigation_thread_messages (
       id, thread_id, role, body, created_at
-    ) VALUES ('operator-1', 'thread-tools', 'operator', 'Pode criar o ticket.', ?)
+    ) VALUES ('operator-1', 'thread-tools', 'operator', 'Qual é o meu nome?', ?)
   `).run("2026-08-27T12:00:01.000Z");
   database.prepare(`
     INSERT INTO investigation_thread_jobs (
@@ -119,9 +599,9 @@ test("conversa objetiva usa o perfil rápido do provedor e orçamento curto", as
         reasoningOutputTokens: 30,
       });
       return {
-        assistantMessage: "Ação objetiva concluída.",
+        assistantMessage: "Você é o Operador local.",
         phase: "conclusion" as const,
-        threadSummary: "Ação objetiva concluída.",
+        threadSummary: "Identidade do operador respondida pela conversa.",
         evidence: [],
         suggestedResponse: null,
         nextAction: "Nenhuma.",
@@ -168,7 +648,7 @@ test("conversa objetiva usa o perfil rápido do provedor e orçamento curto", as
     },
   } as unknown as AiProviderSettingsService;
   const quickInput = input();
-  quickInput.recentMessages[0]!.body = "Pode criar o ticket.";
+  quickInput.recentMessages[0]!.body = "Qual é o meu nome?";
   const configured = new ConfiguredSupportAgent(
     database,
     settings,
@@ -179,9 +659,9 @@ test("conversa objetiva usa o perfil rápido do provedor e orçamento curto", as
     await configured.investigateThread(quickInput);
     assert.equal(selectedTask, "quick");
     assert.equal(observedBudget?.workload, "quick");
-    assert.equal(observedBudget?.promptMode, "task");
-    assert.equal(observedBudget?.maxToolRounds, 4);
-    assert.equal(observedBudget?.maxToolOperations, 12);
+    assert.equal(observedBudget?.promptMode, "conversation");
+    assert.equal(observedBudget?.maxToolRounds, 0);
+    assert.equal(observedBudget?.maxToolOperations, 0);
     assert.deepEqual(
       database.prepare(`
         SELECT ai_provider_id, ai_connection_id, ai_model, ai_workload,
@@ -249,7 +729,7 @@ test("resposta omite guardrail de WhatsApp quando a tarefa não trata do canal",
   }
 });
 
-test("rota rápida expõe somente ferramentas relacionadas à tarefa", () => {
+test("agente adaptativo recebe o catálogo autorizado e conversa trivial não recebe ferramentas", () => {
   const descriptors = [
     { id: "threadmark-context", name: "Contexto", type: "knowledge", description: "", scope: "", operations: [] },
     { id: "threadmark-automations", name: "Automações", type: "knowledge", description: "", scope: "", operations: [] },
@@ -260,15 +740,15 @@ test("rota rápida expõe somente ferramentas relacionadas à tarefa", () => {
   current.recentMessages[0]!.body = "Analise as automações criadas.";
   const policy = investigationExecutionPolicy(current);
   assert.deepEqual(
-    toolsForExecutionPolicy(descriptors, policy, current).map((tool) => tool.id),
-    ["threadmark-context", "threadmark-automations"],
+    toolsForExecutionPolicy(descriptors, policy).map((tool) => tool.id),
+    descriptors.map((tool) => tool.id),
   );
 
-  current.recentMessages[0]!.body = "Liste a conversa no Intercom.";
-  const appPolicy = investigationExecutionPolicy(current);
+  current.recentMessages[0]!.body = "Qual é o meu nome?";
+  const conversationPolicy = investigationExecutionPolicy(current);
   assert.deepEqual(
-    toolsForExecutionPolicy(descriptors, appPolicy, current).map((tool) => tool.id),
-    ["threadmark-context", "connected-app:intercom"],
+    toolsForExecutionPolicy(descriptors, conversationPolicy),
+    [],
   );
 });
 
@@ -1592,7 +2072,7 @@ test("roteador neutraliza alegação técnica inventada antes de persistir check
 
   try {
     const result = await configured.investigateThread(input());
-    assert.equal(turns, 4);
+    assert.equal(turns, 3);
     assert.match(checkpointSeen, /aguardando evidência local auditável/);
     assert.doesNotMatch(checkpointSeen, /Banco indisponível/);
     assert.deepEqual(result.evidence, []);
@@ -1789,8 +2269,8 @@ test("consulta explícita ao banco por pedidos usa investigação profunda", () 
     current.recentMessages[0]!.body = body;
     const policy = investigationExecutionPolicy(current);
     assert.equal(policy.workload, "deep");
-    assert.equal(policy.maxToolRounds, 16);
-    assert.equal(policy.maxToolOperations, 64);
+    assert.equal(policy.maxToolRounds, 8);
+    assert.equal(policy.maxToolOperations, 16);
   }
 });
 
@@ -2004,7 +2484,148 @@ test("bloqueio prematuro é reavaliado quando ainda existe leitura autorizada", 
   }
 });
 
-test("orçamento interno abre novo ciclo sem devolver bloqueio ao operador", async () => {
+test("retomada no limite usa as evidências persistidas e não reabre o orçamento", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  let brokerCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      assert.equal(current.executionBudget?.forceConclusion, true);
+      return {
+        assistantMessage: "Ainda tentaria uma nova leitura.",
+        phase: "analysis" as const,
+        threadSummary: "A evidência persistida já atingiu o limite desta execução.",
+        findings: [],
+        evidence: [],
+        suggestedResponse: null,
+        nextAction: "Executar outra consulta.",
+        confidence: 0.4,
+        outcome: {
+          objectiveStatus: "partially_answered" as const,
+          rootCauseStatus: "unknown" as const,
+          causalClassification: "unknown" as const,
+          rootCause: null,
+          unresolvedCriticalQuestions: ["Qual mecanismo causou a divergência?"],
+          stopReason: "evidence_exhausted" as const,
+        },
+        toolRequests: [{
+          requestId: `resume-read-${modelCalls}`,
+          toolId: "resume-db",
+          operation: "query_readonly",
+          argumentsJson: JSON.stringify({ query: `SELECT ${modelCalls}`, maxRows: 1 }),
+          purpose: "Tentar ampliar a investigação retomada.",
+        }],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "resume-db",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "Banco de teste",
+      operations: [{
+        name: "query_readonly",
+        description: "Executa SELECT limitado.",
+        argumentsExample: "{}",
+        effect: "read",
+        authorization: "none",
+      }],
+    }],
+    async executeMany() {
+      brokerCalls += 1;
+      return [];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+    { maxToolOperations: 1 },
+  );
+  const current = input();
+  current.toolResults = [{
+    requestId: "persisted-read",
+    toolId: "resume-db",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: JSON.stringify({ query: "SELECT 1", maxRows: 1 }),
+    purpose: "Leitura concluída antes da retomada.",
+    status: "success",
+    summary: "Evidência persistida.",
+    content: "value=1",
+    reference: "tool:resume-db:persisted",
+    executedAt: "2026-09-01T17:00:00.000Z",
+  }];
+  current.recentMessages[0]!.body =
+    "Investigue por que os dados ficaram divergentes.";
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(modelCalls, 1);
+    assert.equal(brokerCalls, 0);
+    assert.equal(result.phase, "needs_information");
+    assert.equal(result.toolExecutions?.length, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test("retentativas compartilham um teto global de chamadas ao modelo", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent({
+      async investigateThread() {
+        modelCalls += 1;
+        return {
+          assistantMessage: "Não deveria executar outra chamada.",
+          phase: "conclusion" as const,
+          threadSummary: "",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: null,
+          confidence: 0,
+          toolRequests: [],
+        };
+      },
+    } as unknown as SupportAgent),
+    {} as CodexSupportAgent,
+  );
+  database.prepare(
+    `INSERT INTO investigation_threads (id, scope, created_at, updated_at)
+     VALUES ('thread-tools', 'workspace', '2026-09-01T12:00:00.000Z', '2026-09-01T12:00:00.000Z')`,
+  ).run();
+  database.prepare(
+    `INSERT INTO investigation_thread_messages
+       (id, thread_id, role, body, created_at)
+     VALUES ('operator-1', 'thread-tools', 'operator', 'Investigue.', '2026-09-01T12:00:00.000Z')`,
+  ).run();
+  database.prepare(
+    `INSERT INTO investigation_thread_jobs
+       (id, thread_id, operator_message_id, state, requested_at, ai_model_calls)
+     VALUES ('job-limit', 'thread-tools', 'operator-1', 'running', '2026-09-01T12:00:00.000Z', 10)`,
+  ).run();
+
+  try {
+    const result = await configured.investigateThread(input());
+    assert.equal(modelCalls, 0);
+    assert.equal(result.phase, "needs_information");
+    assert.doesNotMatch(
+      `${result.assistantMessage} ${result.nextAction ?? ""}`,
+      /orçamento|limite|budget/i,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("orçamento interno encerra com síntese sem reabrir ciclos autônomos", async () => {
   const database = createDatabase(":memory:");
   let modelTurns = 0;
   let brokerCalls = 0;
@@ -2016,26 +2637,9 @@ test("orçamento interno abre novo ciclo sem devolver bloqueio ao operador", asy
       }
       if (modelTurns === 2) {
         assert.equal(current.executionBudget?.forceConclusion, true);
-        assert.equal(current.executionBudget?.cycle, 1);
         return analysisRequest("cycle-second", "SELECT 2 AS second_value");
       }
-      if (modelTurns === 3) {
-        assert.equal(current.executionBudget?.forceConclusion, false);
-        assert.equal(current.executionBudget?.cycle, 2);
-        assert.equal(current.executionBudget?.readonlyContinuationRequired, true);
-        return analysisRequest("cycle-second", "SELECT 2 AS second_value");
-      }
-      return {
-        assistantMessage: "As duas verificações readonly foram concluídas.",
-        phase: "conclusion" as const,
-        threadSummary: "Ciclos internos concluídos sem bloquear o operador.",
-        findings: [],
-        evidence: [],
-        suggestedResponse: null,
-        nextAction: null,
-        confidence: 0.8,
-        toolRequests: [],
-      };
+      assert.fail("O coordenador não deve abrir um novo ciclo autônomo.");
     },
   } as unknown as SupportAgent;
   const analysisRequest = (requestId: string, query: string) => ({
@@ -2098,16 +2702,16 @@ test("orçamento interno abre novo ciclo sem devolver bloqueio ao operador", asy
 
   try {
     const result = await configured.investigateThread(input());
-    assert.equal(result.phase, "conclusion");
-    assert.equal(brokerCalls, 2);
-    assert.equal(modelTurns, 4);
+    assert.equal(result.phase, "needs_information");
+    assert.equal(brokerCalls, 1);
+    assert.equal(modelTurns, 2);
     assert.doesNotMatch(result.assistantMessage, /orçamento|limite|tente novamente/i);
   } finally {
     database.close();
   }
 });
 
-test("encerramento terminal do terceiro ciclo oculta limites internos e preserva evidência", async () => {
+test("encerramento terminal do primeiro ciclo oculta limites internos e preserva evidência", async () => {
   const database = createDatabase(":memory:");
   let modelTurns = 0;
   let brokerCalls = 0;
@@ -2208,7 +2812,7 @@ test("encerramento terminal do terceiro ciclo oculta limites internos e preserva
 
   try {
     const result = await configured.investigateThread(input());
-    assert.equal(brokerCalls, 3);
+    assert.equal(brokerCalls, 1);
     assert.equal(result.phase, "conclusion");
     assert.match(result.assistantMessage, /evidências verificadas/i);
     assert.doesNotMatch(
@@ -2435,4 +3039,625 @@ test("leitura concluída permanece auditada quando outra leitura paralela falha"
   } finally {
     database.close();
   }
+});
+
+test("coordenador corrige e repete uma leitura com erro contratual recuperável", async () => {
+  const database = createDatabase(":memory:");
+  const requests: InvestigationToolRequest[] = [];
+  const audited: InvestigationToolResult[] = [];
+  let modelCalls = 0;
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      if (!current.toolResults?.some((result) => result.status === "success")) {
+        return {
+          assistantMessage: "Vou consultar os logs da campanha.",
+          phase: "analysis" as const,
+          threadSummary: "Objetivo: confirmar a falha da campanha nos logs.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Consultar logs.",
+          confidence: 0.2,
+          toolRequests: [{
+            requestId: "logs-future",
+            toolId: "campaign-logs",
+            operation: "query_logs",
+            argumentsJson: JSON.stringify({
+              logGroup: "/aws/lambda/campaign",
+              endTime: "2026-09-01T16:00:00.000Z",
+            }),
+            purpose: "Confirmar o erro de envio.",
+          }],
+        };
+      }
+      const evidence = current.toolResults.find((result) => result.status === "success")!;
+      return {
+        assistantMessage: "Motivo confirmado: o processamento foi ignorado por variável ausente.",
+        phase: "conclusion" as const,
+        threadSummary: "Causa confirmada nos logs: variável ausente.",
+        findings: [{
+          statement: "O processamento foi ignorado por variável ausente.",
+          kind: "fact" as const,
+          evidenceReferences: [evidence.reference!],
+        }],
+        evidence: [{
+          source: "aws" as const,
+          summary: evidence.summary,
+          reference: evidence.reference,
+        }],
+        suggestedResponse: null,
+        nextAction: "Corrigir o fallback antes de reenviar.",
+        confidence: 0.98,
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "campaign-logs",
+      name: "Logs de campanhas",
+      type: "aws_cloudwatch",
+      description: null,
+      scope: "readonly",
+      operations: [{
+        name: "query_logs",
+        description: "Consulta logs.",
+        argumentsExample: "{}",
+        effect: "read",
+        authorization: "none",
+      }],
+    }],
+    async executeMany(current) {
+      const request = current[0]!;
+      requests.push(request);
+      if (requests.length === 1) {
+        return [{
+          requestId: request.requestId,
+          toolId: request.toolId,
+          toolName: "Logs de campanhas",
+          operation: request.operation,
+          argumentsJson: request.argumentsJson,
+          purpose: request.purpose,
+          status: "error",
+          error: {
+            code: "TIME_RANGE_IN_FUTURE",
+            category: "invalid_time_range",
+            retryable: true,
+            suggestedArgumentsJson: JSON.stringify({
+              logGroup: "/aws/lambda/campaign",
+              endTime: "2026-08-31T16:00:00.000Z",
+            }),
+          },
+          summary: "Janela corrigível.",
+          content: "Janela corrigível.",
+          reference: null,
+          executedAt: "2026-08-31T16:00:00.000Z",
+        }];
+      }
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Logs de campanhas",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success",
+        summary: "Logs consultados no intervalo corrigido.",
+        content: "missing_variable_fallback",
+        reference: "tool:campaign-logs:query:corrected",
+        executedAt: "2026-08-31T16:00:01.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue por que a campanha não enviou.";
+  current.onToolExecution = (execution) => {
+    audited.push(execution);
+  };
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(result.phase, "conclusion");
+    assert.equal(modelCalls, 2);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1]?.requestId, "logs-future:safe-retry");
+    assert.equal(
+      JSON.parse(requests[1]!.argumentsJson).endTime,
+      "2026-08-31T16:00:00.000Z",
+    );
+    assert.deepEqual(audited.map((item) => item.status), ["error", "success"]);
+  } finally {
+    database.close();
+  }
+});
+
+test("verificador causal rejeita conclusão que descreve apenas onde o fluxo parou", () => {
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue por que a campanha não enviou as mensagens.";
+  const result = enforceCausalCompletion({
+    assistantMessage: "O fluxo parou no nó de carrinho.",
+    phase: "conclusion",
+    threadSummary: "O nó de carrinho permaneceu processando.",
+    findings: [{
+      statement: "O nó de carrinho permaneceu processando.",
+      kind: "fact",
+      evidenceReferences: ["tool:db:node-state"],
+    }],
+    evidence: [{
+      source: "database",
+      summary: "Estado do nó consultado.",
+      reference: "tool:db:node-state",
+    }],
+    suggestedResponse: null,
+    nextAction: "Revisar o nó.",
+    confidence: 0.9,
+    outcome: {
+      objectiveStatus: "partially_answered",
+      rootCauseStatus: "unknown",
+      causalClassification: "unknown",
+      rootCause: null,
+      unresolvedCriticalQuestions: [
+        "Qual condição fez os destinatários serem ignorados?",
+      ],
+      stopReason: "evidence_exhausted",
+    },
+    toolRequests: [],
+  }, current, [{
+    requestId: "node-state",
+    toolId: "db",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: "{}",
+    purpose: "Consultar estado.",
+    status: "success",
+    summary: "Estado consultado.",
+    content: "DOING",
+    reference: "tool:db:node-state",
+    executedAt: "2026-08-31T16:00:00.000Z",
+  }], [{
+    id: "db",
+    name: "Banco readonly",
+    type: "postgres_readonly",
+    description: null,
+    scope: "readonly",
+    operations: [{
+      name: "query_readonly",
+      description: "Consulta.",
+      argumentsExample: "{}",
+      effect: "read",
+      authorization: "none",
+    }],
+  }]);
+
+  assert.equal(result.phase, "needs_information");
+  assert.match(result.assistantMessage, /^Ainda não confirmado:/);
+  assert.match(result.nextAction ?? "", /Cruzar a próxima fonte readonly/i);
+  assert.ok(result.findings.some((finding) =>
+    finding.kind === "missing_information" && /condição/i.test(finding.statement)
+  ));
+});
+
+test("verificador causal conclui como provável quando só uma fonte técnica sustenta a causa", async () => {
+  const database = createDatabase(":memory:");
+  let modelCalls = 0;
+  let brokerCalls = 0;
+  const reference = "tool:db:root-cause";
+  const modelAgent = {
+    async investigateThread(current: InvestigationThreadInput) {
+      modelCalls += 1;
+      if (!current.toolResults?.length) {
+        return {
+          assistantMessage: "Vou consultar a fonte readonly disponível.",
+          phase: "analysis" as const,
+          threadSummary: "A causa ainda precisa ser confirmada no banco.",
+          findings: [],
+          evidence: [],
+          suggestedResponse: null,
+          nextAction: "Consultar o motivo da falha.",
+          confidence: 0.4,
+          outcome: {
+            objectiveStatus: "partially_answered" as const,
+            rootCauseStatus: "unknown" as const,
+            causalClassification: "unknown" as const,
+            rootCause: null,
+            unresolvedCriticalQuestions: ["Qual condição causou a falha?"],
+            stopReason: "needs_more_evidence" as const,
+          },
+          toolRequests: [{
+            requestId: "root-cause-read",
+            toolId: "db-root-cause",
+            operation: "query_readonly",
+            argumentsJson: JSON.stringify({ query: "SELECT failure_reason LIMIT 1", maxRows: 1 }),
+            purpose: "Confirmar a causa raiz da falha.",
+          }],
+        };
+      }
+      return {
+        assistantMessage: "Causa mais provável: a configuração ausente causou a falha.",
+        phase: "conclusion" as const,
+        threadSummary: "Causa provável encontrada no banco.",
+        findings: [{
+          statement: "A configuração obrigatória estava ausente.",
+          kind: "fact" as const,
+          evidenceReferences: [reference],
+        }],
+        evidence: [{
+          source: "database" as const,
+          summary: "Motivo da falha consultado.",
+          reference,
+        }],
+        suggestedResponse: null,
+        nextAction: "Corrigir a configuração obrigatória.",
+        confidence: 0.95,
+        outcome: {
+          objectiveStatus: "answered" as const,
+          rootCauseStatus: "probable" as const,
+          causalClassification: "configuration" as const,
+          rootCause: "A configuração obrigatória estava ausente.",
+          rootCauseEvidenceReferences: [reference],
+          unresolvedCriticalQuestions: [],
+          stopReason: "evidence_exhausted" as const,
+        },
+        toolRequests: [],
+      };
+    },
+  } as unknown as SupportAgent;
+  const broker: DeepInvestigationToolBroker = {
+    descriptors: () => [{
+      id: "db-root-cause",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "Banco de teste",
+      operations: [{
+        name: "query_readonly",
+        description: "Executa SELECT limitado.",
+        argumentsExample: "{}",
+        effect: "read",
+        authorization: "none",
+      }],
+    }],
+    async executeMany(requests) {
+      brokerCalls += 1;
+      const request = requests[0]!;
+      return [{
+        requestId: request.requestId,
+        toolId: request.toolId,
+        toolName: "Banco readonly",
+        operation: request.operation,
+        argumentsJson: request.argumentsJson,
+        purpose: request.purpose,
+        status: "success" as const,
+        summary: "Motivo consultado.",
+        content: "failure_reason=missing_required_config",
+        reference,
+        executedAt: "2026-09-01T15:45:00.000Z",
+      }];
+    },
+  };
+  const configured = new ConfiguredSupportAgent(
+    database,
+    settingsForDeepAgent(modelAgent),
+    {} as CodexSupportAgent,
+    broker,
+  );
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue por que o processamento falhou.";
+
+  try {
+    const result = await configured.investigateThread(current);
+    assert.equal(brokerCalls, 1);
+    assert.equal(modelCalls, 2);
+    assert.equal(result.phase, "conclusion");
+    assert.match(result.assistantMessage, /^Causa mais provável:/);
+    assert.equal(result.outcome?.rootCauseStatus, "probable");
+  } finally {
+    database.close();
+  }
+});
+
+test("verificador causal libera causa confirmada com duas fontes técnicas independentes", () => {
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue o motivo da campanha não enviar.";
+  const reference = "tool:db:skip-reason";
+  const codeReference = "tool:code:fallback-rule";
+  const result = enforceCausalCompletion({
+    assistantMessage: "A maioria foi ignorada antes do envio.",
+    phase: "conclusion",
+    threadSummary: "Causa confirmada por motivo de skip.",
+    findings: [{
+      statement: "1.418 destinatários foram ignorados porque firstName não tinha fallback.",
+      kind: "fact",
+      evidenceReferences: [reference, codeReference],
+    }],
+    evidence: [
+      { source: "database", summary: "Motivos reconciliados.", reference },
+      { source: "code", summary: "Contrato da variável confirmado.", reference: codeReference },
+    ],
+    suggestedResponse: null,
+    nextAction: "Adicionar fallback e reenviar somente aos elegíveis.",
+    confidence: 0.99,
+    outcome: {
+      objectiveStatus: "answered",
+      rootCauseStatus: "confirmed",
+      causalClassification: "configuration",
+      rootCause: "O template exigia firstName sem fallback.",
+      rootCauseEvidenceReferences: [reference, codeReference],
+      unresolvedCriticalQuestions: [],
+      stopReason: "cause_confirmed",
+    },
+    toolRequests: [],
+  }, current, [{
+    requestId: "skip-reason",
+    toolId: "db",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: "{}",
+    purpose: "Reconciliar motivos.",
+    status: "success",
+    summary: "Motivos reconciliados.",
+    content: "missing_variable_fallback=1418",
+    reference,
+    executedAt: "2026-08-31T16:00:00.000Z",
+  }, {
+    requestId: "fallback-rule",
+    toolId: "code",
+    toolName: "Código",
+    operation: "search_files",
+    argumentsJson: "{}",
+    purpose: "Confirmar o contrato da variável.",
+    status: "success",
+    summary: "Contrato consultado.",
+    content: "firstName.required=true; fallback=false",
+    reference: codeReference,
+    executedAt: "2026-08-31T16:00:01.000Z",
+  }], [{
+    id: "db",
+    name: "Banco readonly",
+    type: "postgres_readonly",
+    description: null,
+    scope: "readonly",
+    operations: [],
+  }, {
+    id: "code",
+    name: "Código",
+    type: "codebase",
+    description: null,
+    scope: "readonly",
+    operations: [],
+  }]);
+
+  assert.equal(result.phase, "conclusion");
+  assert.match(result.assistantMessage, /^Motivo confirmado:/);
+  assert.equal(result.outcome?.causalClassification, "configuration");
+});
+
+test("pack pode exigir duas fontes técnicas independentes antes de confirmar causa", () => {
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue o motivo da campanha não enviar.";
+  current.activeInvestigationPack = {
+    id: "pack-two-sources",
+    name: "Pack privado",
+    status: "active",
+    version: 1,
+    manifest: {
+      domain: "Domínio de teste",
+      purpose: "Exigir confirmação cruzada.",
+      goals: ["Confirmar a causa."],
+      selectedToolIds: ["db", "code"],
+      vocabulary: [],
+      sourcePolicy: {
+        preferredToolTypes: ["postgres_readonly", "codebase"],
+        minimumIndependentSources: 2,
+        preferExactIdentifiers: true,
+      },
+      responsePolicy: {
+        verdictFirst: true,
+        includeDecisiveNumbers: true,
+        separateUnknowns: true,
+        includeCustomerDraft: false,
+      },
+      playbooks: [],
+    },
+    readiness: {
+      state: "ready",
+      deepInvestigationEnabled: true,
+      messages: [],
+      toolChecks: [],
+      model: { connectionId: "codex", model: "default", status: "ready" },
+      checkedAt: "2026-08-31T16:00:00.000Z",
+    },
+    createdByUserId: null,
+    createdAt: "2026-08-31T16:00:00.000Z",
+    updatedAt: "2026-08-31T16:00:00.000Z",
+    activatedAt: "2026-08-31T16:00:00.000Z",
+  };
+  const reference = "tool:db:skip-reason";
+  const result = enforceCausalCompletion({
+    assistantMessage: "O template não tinha fallback.",
+    phase: "conclusion",
+    threadSummary: "Uma fonte indicou a causa.",
+    findings: [{
+      statement: "1.600 destinatários ficaram sem a variável obrigatória.",
+      kind: "fact",
+      evidenceReferences: [reference],
+    }],
+    evidence: [{ source: "database", summary: "Motivos reconciliados.", reference }],
+    suggestedResponse: null,
+    nextAction: "Confirmar a regra no código.",
+    confidence: 0.9,
+    outcome: {
+      objectiveStatus: "answered",
+      rootCauseStatus: "confirmed",
+      causalClassification: "configuration",
+      rootCause: "O template exigia uma variável sem fallback.",
+      unresolvedCriticalQuestions: [],
+      stopReason: "cause_confirmed",
+    },
+    toolRequests: [],
+  }, current, [{
+    requestId: "skip-reason",
+    toolId: "db",
+    toolName: "Banco readonly",
+    operation: "query_readonly",
+    argumentsJson: "{}",
+    purpose: "Reconciliar motivos.",
+    status: "success",
+    summary: "Motivos reconciliados.",
+    content: "missing_variable=1600",
+    reference,
+    executedAt: "2026-08-31T16:00:00.000Z",
+  }], [{
+    id: "db",
+    name: "Banco readonly",
+    type: "postgres_readonly",
+    description: null,
+    scope: "readonly",
+    operations: [{
+      name: "query_readonly",
+      description: "Consulta.",
+      argumentsExample: "{}",
+      effect: "read",
+      authorization: "none",
+    }],
+  }]);
+
+  assert.equal(result.phase, "needs_information");
+  assert.match(result.nextAction ?? "", /próxima fonte readonly/i);
+  assert.doesNotMatch(result.assistantMessage, /^Motivo confirmado:/);
+});
+
+test("verificador causal não usa fatos técnicos alheios para confirmar a causa raiz", () => {
+  const current = input();
+  current.recentMessages[0]!.body = "Investigue por que as notas de agosto não sincronizaram.";
+  current.activeInvestigationPack = {
+    id: "pack-causal-sources",
+    name: "Pack privado",
+    status: "active",
+    version: 1,
+    manifest: {
+      domain: "Integrações",
+      purpose: "Investigar causa com confirmação cruzada.",
+      goals: ["Confirmar a causa."],
+      selectedToolIds: ["db", "code"],
+      vocabulary: [],
+      sourcePolicy: {
+        preferredToolTypes: ["postgres_readonly", "codebase"],
+        minimumIndependentSources: 2,
+        preferExactIdentifiers: true,
+      },
+      responsePolicy: {
+        verdictFirst: true,
+        includeDecisiveNumbers: true,
+        separateUnknowns: true,
+        includeCustomerDraft: false,
+      },
+      playbooks: [],
+    },
+    readiness: {
+      state: "ready",
+      deepInvestigationEnabled: true,
+      messages: [],
+      toolChecks: [],
+      model: { connectionId: "codex", model: "default", status: "ready" },
+      checkedAt: "2026-09-01T16:00:00.000Z",
+    },
+    createdByUserId: null,
+    createdAt: "2026-09-01T16:00:00.000Z",
+    updatedAt: "2026-09-01T16:00:00.000Z",
+    activatedAt: "2026-09-01T16:00:00.000Z",
+  };
+  const dbReference = "tool:db:invoice-gap";
+  const codeReference = "tool:code:sync-flow";
+  const result = enforceCausalCompletion({
+    assistantMessage: "O 429 causou a lacuna histórica.",
+    phase: "conclusion",
+    threadSummary: "A lacuna e o fluxo foram consultados; o 429 histórico segue sem log.",
+    findings: [
+      {
+        statement: "Existem datas sem notas no banco.",
+        kind: "fact",
+        evidenceReferences: [dbReference],
+      },
+      {
+        statement: "O fluxo atual trata HTTP 429 com retry.",
+        kind: "fact",
+        evidenceReferences: [codeReference],
+      },
+    ],
+    evidence: [
+      { source: "database", summary: "Lacuna de notas atual.", reference: dbReference },
+      { source: "code", summary: "Comportamento atual do retry.", reference: codeReference },
+      { source: "conversation", summary: "Relato anterior de 429.", reference: "ticket:323" },
+    ],
+    suggestedResponse: null,
+    nextAction: null,
+    confidence: 0.94,
+    outcome: {
+      objectiveStatus: "answered",
+      rootCauseStatus: "confirmed",
+      causalClassification: "provider",
+      rootCause: "O rate limit 429 interrompeu a sincronização histórica.",
+      rootCauseEvidenceReferences: ["ticket:323"],
+      unresolvedCriticalQuestions: [],
+      stopReason: "cause_confirmed",
+    },
+    toolRequests: [],
+  }, current, [
+    {
+      requestId: "invoice-gap",
+      toolId: "db",
+      toolName: "Banco readonly",
+      operation: "query_readonly",
+      argumentsJson: "{}",
+      purpose: "Medir a lacuna.",
+      status: "success",
+      summary: "Lacuna consultada.",
+      content: "missing_dates=14",
+      reference: dbReference,
+      executedAt: "2026-09-01T16:00:00.000Z",
+    },
+    {
+      requestId: "sync-flow",
+      toolId: "code",
+      toolName: "Código",
+      operation: "search_files",
+      argumentsJson: "{}",
+      purpose: "Entender o fluxo.",
+      status: "success",
+      summary: "Fluxo consultado.",
+      content: "retryAfter429()",
+      reference: codeReference,
+      executedAt: "2026-09-01T16:00:00.000Z",
+    },
+  ], [
+    {
+      id: "db",
+      name: "Banco readonly",
+      type: "postgres_readonly",
+      description: null,
+      scope: "readonly",
+      operations: [],
+    },
+    {
+      id: "code",
+      name: "Código",
+      type: "codebase",
+      description: null,
+      scope: "readonly",
+      operations: [],
+    },
+  ], true);
+
+  assert.equal(result.phase, "conclusion");
+  assert.match(result.assistantMessage, /^Causa mais provável:/);
+  assert.equal(result.outcome?.rootCauseStatus, "probable");
+  assert.match(result.assistantMessage, /429 causou a lacuna histórica/i);
 });

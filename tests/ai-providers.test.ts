@@ -15,7 +15,10 @@ import {
   type StructuredJsonRequest,
 } from "../server/agent/provider.js";
 import { createSupportAgent } from "../server/agent/provider-factory.js";
-import { SUPPORT_ANALYSIS_JSON_SCHEMA } from "../server/agent/provider-schemas.js";
+import {
+  INVESTIGATION_TURN_JSON_SCHEMA,
+  SUPPORT_ANALYSIS_JSON_SCHEMA,
+} from "../server/agent/provider-schemas.js";
 import { AnthropicMessagesClient } from "../server/agent/providers/anthropic.js";
 import { OllamaChatClient } from "../server/agent/providers/ollama.js";
 import { OpenAIResponsesClient } from "../server/agent/providers/openai.js";
@@ -409,6 +412,33 @@ test("agente estruturado valida a resposta final com o schema Zod existente", as
   });
 
   await assert.rejects(agent.analyse(supportInput()), /confidence/i);
+});
+
+test("investigação não perde resultados auditados quando o modelo deixa a mensagem vazia", async () => {
+  const schemaProperties = INVESTIGATION_TURN_JSON_SCHEMA.properties as Record<
+    string,
+    { minLength?: number }
+  >;
+  assert.equal(schemaProperties.assistantMessage?.minLength, 1);
+
+  const client: StructuredJsonClient = {
+    async generateJson() {
+      return {
+        ...validTurn,
+        assistantMessage: "",
+      };
+    },
+  };
+  const agent = new StructuredSupportAgent({
+    providerId: "openai",
+    model: "model",
+    client,
+  });
+
+  const result = await agent.investigateThread(threadInput());
+  assert.equal(result.phase, "conclusion");
+  assert.match(result.assistantMessage, /investigação terminou/i);
+  assert.equal(result.evidence.length, 1);
 });
 
 test("agente remoto limita respostas enviadas e precedentes antes do prompt", async () => {

@@ -10,6 +10,9 @@ import {
   type LocalToolTestResult,
   type LocalToolType,
   type LocalToolWriteInput,
+  type InvestigationPackDto,
+  type InvestigationPackListResponse,
+  type InvestigationPackOnboardingInput,
   type AudioTranscriptionSettingsDto,
   type LocalTranscriptionModelDto,
 } from "../../shared/contracts";
@@ -20,6 +23,8 @@ export type {
   LocalToolTestResult,
   LocalToolType,
   LocalToolWriteInput,
+  InvestigationPackDto,
+  InvestigationPackOnboardingInput,
   AudioTranscriptionSettingsDto,
   LocalTranscriptionModelDto,
 };
@@ -781,6 +786,37 @@ export async function deleteLocalTool(toolId: string): Promise<void> {
 export function testLocalTool(toolId: string): Promise<LocalToolTestResult> {
   return settingsRequest<LocalToolTestResult>(
     `/api/tools/${encodeURIComponent(toolId)}/test`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function getInvestigationPacks(): Promise<InvestigationPackListResponse> {
+  return settingsRequest<InvestigationPackListResponse>("/api/investigation-packs");
+}
+
+export function createInvestigationPack(
+  input: InvestigationPackOnboardingInput,
+): Promise<InvestigationPackDto> {
+  return settingsRequest<InvestigationPackDto>("/api/investigation-packs/onboarding", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function probeInvestigationPack(
+  packId: string,
+): Promise<InvestigationPackDto> {
+  return settingsRequest<InvestigationPackDto>(
+    `/api/investigation-packs/${encodeURIComponent(packId)}/probe`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function activateInvestigationPack(
+  packId: string,
+): Promise<InvestigationPackDto> {
+  return settingsRequest<InvestigationPackDto>(
+    `/api/investigation-packs/${encodeURIComponent(packId)}/activate`,
     { method: "POST", body: JSON.stringify({}) },
   );
 }

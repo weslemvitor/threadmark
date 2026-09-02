@@ -8,6 +8,7 @@ import { Textarea } from "@/app/components/ui/textarea";
 
 import {
   BookOpen,
+  BrainCircuit,
   Bug,
   Check,
   CheckCircle2,
@@ -30,14 +31,18 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import {
   createLocalTool,
+  activateInvestigationPack,
+  createInvestigationPack,
   deleteLocalTool,
   getLocalTools,
+  probeInvestigationPack,
   testLocalTool,
   updateLocalTool,
   type LocalToolDto,
   type LocalToolOperation,
   type LocalToolType,
   type LocalToolWriteInput,
+  type InvestigationPackDto,
 } from "@/app/lib/settings";
 
 const inputClass =
@@ -132,10 +137,14 @@ export function ToolsSettingsSection({
   canManage,
   onChange,
   onFeedback,
+  packs,
+  onPacksChange,
 }: {
   tools: LocalToolDto[];
+  packs: InvestigationPackDto[];
   canManage: boolean;
   onChange(value: LocalToolDto[]): void;
+  onPacksChange(value: InvestigationPackDto[]): void;
   onFeedback(tone: "success" | "error", message: string): void;
 }) {
   const [draft, setDraft] = useState<ToolDraft | null>(null);
@@ -237,6 +246,14 @@ export function ToolsSettingsSection({
   }
 
   return (
+    <div className="space-y-6">
+      <InvestigationPackPanel
+        canManage={canManage}
+        onFeedback={onFeedback}
+        onPacksChange={onPacksChange}
+        packs={packs}
+        tools={tools}
+      />
     <section className="rounded-3xl border border-border bg-card p-4 shadow-sm sm:p-6 lg:p-7">
       <header className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
         <div className="flex gap-3">
@@ -328,7 +345,214 @@ export function ToolsSettingsSection({
         )}
       </div>
     </section>
+    </div>
   );
+}
+
+type PackDraft = {
+  name: string;
+  domain: string;
+  purpose: string;
+  goals: string;
+  examples: string;
+  selectedToolIds: string[];
+  includeCustomerDraft: boolean;
+};
+
+function InvestigationPackPanel({
+  packs,
+  tools,
+  canManage,
+  onPacksChange,
+  onFeedback,
+}: {
+  packs: InvestigationPackDto[];
+  tools: LocalToolDto[];
+  canManage: boolean;
+  onPacksChange(value: InvestigationPackDto[]): void;
+  onFeedback(tone: "success" | "error", message: string): void;
+}) {
+  const [draft, setDraft] = useState<PackDraft | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const active = packs.find((pack) => pack.status === "active") ?? null;
+  const pending = packs.filter((pack) => pack.status === "draft");
+
+  function beginOnboarding() {
+    setDraft({
+      name: "Pack de investigação do workspace",
+      domain: "",
+      purpose: "",
+      goals: "",
+      examples: "",
+      selectedToolIds: tools
+        .filter((tool) => tool.enabled && tool.deepEnabled)
+        .map((tool) => tool.id),
+      includeCustomerDraft: false,
+    });
+  }
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (!draft || !canManage) return;
+    setBusy("create");
+    try {
+      const created = await createInvestigationPack({
+        name: draft.name.trim(),
+        domain: draft.domain.trim(),
+        purpose: draft.purpose.trim(),
+        goals: lines(draft.goals),
+        selectedToolIds: draft.selectedToolIds,
+        investigationExamples: lines(draft.examples),
+        includeCustomerDraft: draft.includeCustomerDraft,
+      });
+      onPacksChange([created, ...packs]);
+      setDraft(null);
+      onFeedback(
+        "success",
+        "Pack privado criado em rascunho. Teste as fontes antes de ativá-lo.",
+      );
+    } catch (cause) {
+      onFeedback("error", errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function probe(pack: InvestigationPackDto) {
+    setBusy(`probe:${pack.id}`);
+    try {
+      const checked = await probeInvestigationPack(pack.id);
+      onPacksChange(packs.map((item) => item.id === checked.id ? checked : item));
+      onFeedback(
+        checked.readiness.deepInvestigationEnabled ? "success" : "error",
+        checked.readiness.messages.join(" "),
+      );
+    } catch (cause) {
+      onFeedback("error", errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function activate(pack: InvestigationPackDto) {
+    setBusy(`activate:${pack.id}`);
+    try {
+      const activated = await activateInvestigationPack(pack.id);
+      onPacksChange(packs.map((item) =>
+        item.id === activated.id
+          ? activated
+          : item.status === "active"
+            ? { ...item, status: "archived" as const }
+            : item
+      ));
+      onFeedback("success", "Pack ativado. A investigação profunda já pode usar esse conhecimento.");
+    } catch (cause) {
+      onFeedback("error", errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="rounded-3xl border border-border bg-card p-4 shadow-sm sm:p-6 lg:p-7">
+      <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div className="flex gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+            <BrainCircuit size={19} />
+          </span>
+          <div>
+            <h2 className="text-lg font-bold tracking-[-0.02em] text-foreground">Pack privado de investigação</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
+              Ensina o domínio deste workspace sem engessar outras instalações. O pack fica somente no SQLite local e nunca amplia a permissão das ferramentas.
+            </p>
+          </div>
+        </div>
+        {canManage && !draft ? (
+          <Button onClick={beginOnboarding} type="button" variant={active ? "outline" : "default"}>
+            <Plus size={16} /> {active ? "Nova versão" : "Iniciar onboarding"}
+          </Button>
+        ) : null}
+      </header>
+
+      {active ? (
+        <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold text-emerald-800">{active.name}</p>
+              <p className="mt-1 text-sm text-emerald-800">{active.manifest.domain} · versão {active.version}</p>
+            </div>
+            <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">Ativo</span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-emerald-800">{active.manifest.purpose}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="rounded-full bg-card px-2.5 py-1 text-xs font-medium text-foreground">{active.manifest.selectedToolIds.length} fonte(s)</span>
+            <span className="rounded-full bg-card px-2.5 py-1 text-xs font-medium text-foreground">{active.manifest.playbooks.length} playbook(s)</span>
+            <span className="rounded-full bg-card px-2.5 py-1 text-xs font-medium text-foreground">Veredito direto</span>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-5 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
+          <CircleAlert className="mt-0.5 shrink-0" size={17} />
+          <p><strong className="block">Investigação profunda ainda não configurada</strong>O chat simples continua disponível. Configure, teste e ative um pack para liberar investigações com banco, código, logs e conhecimento local.</p>
+        </div>
+      )}
+
+      {draft ? (
+        <form className="mt-5 rounded-2xl border border-border bg-muted/30 p-4 sm:p-5" onSubmit={create}>
+          <div className="flex items-start justify-between gap-3">
+            <div><h3 className="font-semibold text-foreground">Onboarding da investigação</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">Descreva o negócio; o Threadmark monta um playbook estruturado e local.</p></div>
+            <Button aria-label="Fechar onboarding" onClick={() => setDraft(null)} size="icon-sm" type="button" variant="ghost"><X size={16} /></Button>
+          </div>
+          <fieldset className="mt-5 space-y-4" disabled={busy !== null}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Nome do pack"><Input className={inputClass} maxLength={120} onChange={(event) => setDraft({ ...draft, name: event.target.value })} required value={draft.name} /></Field>
+              <Field label="Domínio do negócio"><Input className={inputClass} maxLength={160} onChange={(event) => setDraft({ ...draft, domain: event.target.value })} placeholder="Ex.: suporte de ecommerce e campanhas" required value={draft.domain} /></Field>
+            </div>
+            <Field label="Objetivo" hint="O que uma boa investigação precisa entregar para sua equipe?"><Textarea className={`${inputClass} min-h-20`} maxLength={2_000} onChange={(event) => setDraft({ ...draft, purpose: event.target.value })} required value={draft.purpose} /></Field>
+            <Field label="Resultados esperados" hint="Um por linha."><Textarea className={`${inputClass} min-h-24`} onChange={(event) => setDraft({ ...draft, goals: event.target.value })} placeholder={"Explicar por que uma campanha não enviou\nDistinguir erro de código e configuração"} required value={draft.goals} /></Field>
+            <Field label="Exemplos de investigação" hint="Opcional; um pedido realista por linha, sem credenciais ou dados sensíveis."><Textarea className={`${inputClass} min-h-20`} onChange={(event) => setDraft({ ...draft, examples: event.target.value })} value={draft.examples} /></Field>
+            <div>
+              <p className="text-sm font-semibold text-foreground">Fontes disponíveis para o pack</p>
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {tools.filter((tool) => tool.enabled && tool.deepEnabled).map((tool) => (
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border bg-card p-3" key={tool.id}>
+                    <Checkbox checked={draft.selectedToolIds.includes(tool.id)} onCheckedChange={(checked) => setDraft({ ...draft, selectedToolIds: checked === true ? [...draft.selectedToolIds, tool.id] : draft.selectedToolIds.filter((id) => id !== tool.id) })} />
+                    <span><strong className="block text-xs text-foreground">{tool.name}</strong><span className="mt-1 block text-xs text-muted-foreground">{TOOL_META[tool.type].label}</span></span>
+                  </label>
+                ))}
+              </div>
+              {tools.every((tool) => !tool.enabled || !tool.deepEnabled) ? <p className="mt-2 text-xs text-amber-700">Autorize ao menos uma ferramenta antes de criar o pack.</p> : null}
+            </div>
+            <Toggle checked={draft.includeCustomerDraft} label="Permitir minuta opcional para o cliente após a causa estar sustentada" onChange={(includeCustomerDraft) => setDraft({ ...draft, includeCustomerDraft })} />
+          </fieldset>
+          <div className="mt-5 flex justify-end gap-2 border-t border-border pt-4">
+            <Button onClick={() => setDraft(null)} type="button" variant="outline">Cancelar</Button>
+            <Button disabled={busy !== null || !draft.name.trim() || !draft.domain.trim() || !draft.purpose.trim() || lines(draft.goals).length === 0 || draft.selectedToolIds.length === 0} type="submit">{busy === "create" ? <LoaderCircle className="animate-spin" size={16} /> : <Save size={16} />} Criar rascunho</Button>
+          </div>
+        </form>
+      ) : null}
+
+      {pending.length > 0 ? (
+        <div className="mt-5 space-y-3">
+          {pending.map((pack) => (
+            <article className="rounded-2xl border border-border bg-muted/30 p-4" key={pack.id}>
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                <div><p className="font-semibold text-foreground">{pack.name}</p><p className="mt-1 text-xs text-muted-foreground">{pack.readiness.messages.join(" ")}</p></div>
+                <div className="flex gap-2">
+                  <Button disabled={busy !== null} onClick={() => void probe(pack)} type="button" variant="outline">{busy === `probe:${pack.id}` ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />} Testar pack</Button>
+                  <Button disabled={busy !== null || !pack.readiness.deepInvestigationEnabled} onClick={() => void activate(pack)} type="button">{busy === `activate:${pack.id}` ? <LoaderCircle className="animate-spin" size={14} /> : <CheckCircle2 size={14} />} Ativar</Button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function lines(value: string): string[] {
+  return value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
 }
 
 function ToolForm({

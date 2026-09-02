@@ -461,6 +461,33 @@ const investigationTurnResultShapeSchema = z
     suggestedResponse: z.string().trim().min(1).max(20_000).nullable(),
     nextAction: z.string().trim().min(1).max(8_000).nullable(),
     confidence: z.number().min(0).max(1),
+    outcome: z.object({
+      objectiveStatus: z.enum(["answered", "partially_answered", "unanswered"]),
+      rootCauseStatus: z.enum(["confirmed", "probable", "unknown", "not_applicable"]),
+      causalClassification: z.enum([
+        "code",
+        "configuration",
+        "data",
+        "infrastructure",
+        "provider",
+        "process",
+        "unknown",
+        "not_applicable",
+      ]),
+      rootCause: z.string().trim().min(1).max(8_000).nullable(),
+      rootCauseEvidenceReferences: z.array(
+        z.string().trim().min(1).max(4_000),
+      ).max(10),
+      unresolvedCriticalQuestions: z.array(
+        z.string().trim().min(1).max(2_000),
+      ).max(20),
+      stopReason: z.enum([
+        "cause_confirmed",
+        "evidence_exhausted",
+        "external_blocker",
+        "not_applicable",
+      ]),
+    }).strict().optional(),
     toolRequests: z
       .array(
         z.object({
@@ -741,7 +768,9 @@ export function parseInvestigationTurnResult(
 
   const parsed = investigationTurnResultSchema.parse(
     restoreTrustedFindingEvidence(
-      investigationTurnResultShapeSchema.parse(value),
+      investigationTurnResultShapeSchema.parse(
+        recoverEmptyInvestigationAssistantMessage(value),
+      ),
       input,
     ),
   ) as InvestigationTurnResult;
@@ -818,6 +847,27 @@ export function parseInvestigationTurnResult(
       }
     })
     .parse(normalized) as InvestigationTurnResult;
+}
+
+function recoverEmptyInvestigationAssistantMessage(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  if (
+    typeof result.assistantMessage !== "string" ||
+    result.assistantMessage.trim().length > 0
+  ) {
+    return value;
+  }
+
+  const toolRequestCount = Array.isArray(result.toolRequests)
+    ? result.toolRequests.length
+    : 0;
+  const assistantMessage = result.phase === "analysis" && toolRequestCount > 0
+    ? "A investigação continua com as próximas verificações auditáveis."
+    : result.phase === "needs_information"
+      ? "A investigação precisa de contexto adicional para continuar."
+      : "A investigação terminou com os achados e as evidências auditáveis deste turno.";
+  return { ...result, assistantMessage };
 }
 
 export const triageAnalysisSchema = z.object({

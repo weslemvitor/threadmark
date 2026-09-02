@@ -11,15 +11,24 @@
     "suggestedResponse",
     "nextAction",
     "confidence",
+    "outcome",
     "toolRequests"
   ],
   "properties": {
-    "assistantMessage": { "type": "string" },
+    "assistantMessage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40000
+    },
     "phase": {
       "type": "string",
       "enum": ["analysis", "needs_information", "conclusion"]
     },
-    "threadSummary": { "type": "string" },
+    "threadSummary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 12000
+    },
     "findings": {
       "type": "array",
       "maxItems": 30,
@@ -28,7 +37,7 @@
         "additionalProperties": false,
         "required": ["statement", "kind", "evidenceReferences"],
         "properties": {
-          "statement": { "type": "string" },
+          "statement": { "type": "string", "minLength": 1, "maxLength": 4000 },
           "kind": {
             "type": "string",
             "enum": ["fact", "hypothesis", "missing_information"]
@@ -36,7 +45,7 @@
           "evidenceReferences": {
             "type": "array",
             "maxItems": 10,
-            "items": { "type": "string" }
+            "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
           }
         }
       }
@@ -62,14 +71,82 @@
               "external_app"
             ]
           },
-          "summary": { "type": "string" },
-          "reference": { "type": ["string", "null"] }
+          "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "reference": { "type": ["string", "null"], "maxLength": 4000 }
         }
       }
     },
-    "suggestedResponse": { "type": ["string", "null"] },
-    "nextAction": { "type": ["string", "null"] },
+    "suggestedResponse": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "nextAction": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 8000
+    },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectiveStatus",
+        "rootCauseStatus",
+        "causalClassification",
+        "rootCause",
+        "rootCauseEvidenceReferences",
+        "unresolvedCriticalQuestions",
+        "stopReason"
+      ],
+      "properties": {
+        "objectiveStatus": {
+          "type": "string",
+          "enum": ["answered", "partially_answered", "unanswered"]
+        },
+        "rootCauseStatus": {
+          "type": "string",
+          "enum": ["confirmed", "probable", "unknown", "not_applicable"]
+        },
+        "causalClassification": {
+          "type": "string",
+          "enum": [
+            "code",
+            "configuration",
+            "data",
+            "infrastructure",
+            "provider",
+            "process",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "rootCause": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "rootCauseEvidenceReferences": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        },
+        "unresolvedCriticalQuestions": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        },
+        "stopReason": {
+          "type": "string",
+          "enum": [
+            "cause_confirmed",
+            "evidence_exhausted",
+            "external_blocker",
+            "not_applicable"
+          ]
+        }
+      }
+    },
     "toolRequests": {
       "type": "array",
       "maxItems": 5,
@@ -84,11 +161,11 @@
           "purpose"
         ],
         "properties": {
-          "requestId": { "type": "string" },
-          "toolId": { "type": "string" },
-          "operation": { "type": "string" },
-          "argumentsJson": { "type": "string" },
-          "purpose": { "type": "string" }
+          "requestId": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "toolId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "operation": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "argumentsJson": { "type": "string", "minLength": 2, "maxLength": 20000 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 1000 }
         }
       }
     }

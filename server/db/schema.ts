@@ -3727,4 +3727,68 @@ export const migrations: Migration[] = [
           CHECK (ai_reasoning_output_tokens >= 0);
     `,
   },
+  {
+    version: 72,
+    name: "workspace_investigation_packs_and_causal_state",
+    sql: `
+      CREATE TABLE investigation_packs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'archived')),
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+        manifest_json TEXT NOT NULL,
+        readiness_json TEXT NOT NULL,
+        created_by_user_id TEXT REFERENCES local_users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        activated_at TEXT
+      ) STRICT;
+
+      CREATE UNIQUE INDEX investigation_packs_single_active_idx
+        ON investigation_packs(status) WHERE status = 'active';
+      CREATE INDEX investigation_packs_updated_idx
+        ON investigation_packs(updated_at DESC, id);
+
+      INSERT INTO investigation_packs (
+        id, name, status, version, manifest_json, readiness_json,
+        created_by_user_id, created_at, updated_at, activated_at
+      )
+      SELECT
+        'legacy-local-tools',
+        'Ferramentas locais existentes',
+        'active',
+        1,
+        '{"domain":"Workspace existente","purpose":"Preservar a investigação profunda já configurada antes do onboarding por packs.","goals":["Investigar solicitações usando as ferramentas readonly existentes."],"selectedToolIds":[],"vocabulary":[],"sourcePolicy":{"preferredToolTypes":[],"minimumIndependentSources":1,"preferExactIdentifiers":true},"responsePolicy":{"verdictFirst":true,"includeDecisiveNumbers":true,"separateUnknowns":true,"includeCustomerDraft":false},"playbooks":[]}',
+        '{"state":"needs_probe","deepInvestigationEnabled":true,"messages":["Pack de compatibilidade criado a partir das ferramentas locais existentes."],"toolChecks":[],"model":{"connectionId":null,"model":null,"status":"ready"},"checkedAt":"migration-72"}',
+        NULL,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE EXISTS (
+        SELECT 1 FROM local_tools WHERE enabled = 1 AND deep_enabled = 1
+      );
+
+      CREATE TABLE investigation_thread_states (
+        thread_id TEXT PRIMARY KEY
+          REFERENCES investigation_threads(id) ON DELETE CASCADE,
+        pack_id TEXT REFERENCES investigation_packs(id) ON DELETE SET NULL,
+        objective TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (
+          phase IN ('planning', 'investigating', 'blocked', 'concluded')
+        ),
+        root_cause_status TEXT NOT NULL CHECK (
+          root_cause_status IN ('unknown', 'probable', 'confirmed', 'not_applicable')
+        ),
+        causal_classification TEXT NOT NULL CHECK (
+          causal_classification IN (
+            'code', 'configuration', 'data', 'infrastructure', 'provider',
+            'process', 'unknown', 'not_applicable'
+          )
+        ),
+        state_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];

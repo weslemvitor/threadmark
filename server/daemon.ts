@@ -213,6 +213,9 @@ async function main(): Promise<void> {
       cwd: config.projectRoot,
       dataDir: path.join(config.dataDir, "agent-runs"),
       attachmentsRoot: config.attachmentsDir,
+      mcpToolLoopEnabled: config.codexMcpToolLoopEnabled,
+      databasePath: config.databasePath,
+      supportDataDir: config.dataDir,
     });
     const deepTools = new DeepToolExecutor(
       new LocalToolService(database, secretVault),

@@ -7,6 +7,7 @@ import type {
   KnowledgeConfidence,
   KnowledgeDocumentType,
   KnowledgeEvidenceDto,
+  InvestigationPackDto,
   KnowledgeLanguageLevelsDto,
 } from "../../shared/contracts.js";
 
@@ -302,6 +303,8 @@ export interface InvestigationThreadImage {
 
 export interface InvestigationToolDescriptor {
   id: string;
+  /** Stable local registry id used by private packs; not a credential. */
+  configurationId?: string;
   name: string;
   type:
     | "codebase"
@@ -318,6 +321,10 @@ export interface InvestigationToolDescriptor {
     name: string;
     description: string;
     argumentsExample: string;
+    /** Machine-readable input contract. The broker still validates it again. */
+    inputSchema?: Record<string, unknown>;
+    /** Short, trusted execution limits that help the model avoid invalid calls. */
+    constraints?: string[];
     /** Declarative policy enforced by the coordinator and again by the tool. */
     effect?: "read" | "prepare" | "write";
     authorization?: "none" | "task";
@@ -354,6 +361,21 @@ export interface InvestigationToolResult {
   argumentsJson: string;
   purpose: string;
   status: "success" | "error";
+  /** Structured failure metadata produced by the trusted broker. */
+  error?: {
+    code: string;
+    category:
+      | "invalid_arguments"
+      | "invalid_time_range"
+      | "authorization"
+      | "not_found"
+      | "unavailable"
+      | "timeout"
+      | "execution";
+    retryable: boolean;
+    /** Full replacement arguments for one deterministic, readonly retry. */
+    suggestedArgumentsJson?: string;
+  };
   summary: string;
   content: string;
   reference: string | null;
@@ -389,6 +411,15 @@ export interface InvestigationThreadInput {
     groupName: string | null;
   } | null;
   automaticInvestigation: SupportAnalysis | null;
+  /** Active, owner-approved private workspace pack. Stored only in local SQLite. */
+  activeInvestigationPack?: InvestigationPackDto | null;
+  /** Present for production inputs; absent keeps legacy/custom agents compatible. */
+  investigationReadiness?: {
+    deepInvestigationEnabled: boolean;
+    reason: string | null;
+  };
+  /** Coordinator-generated working memory. It is data, never authority. */
+  investigationState?: Record<string, unknown> | null;
   /** Trusted registry metadata. Secrets and concrete credentials never enter the prompt. */
   availableTools?: InvestigationToolDescriptor[];
   /** Outputs are untrusted evidence even though execution was authorized by Threadmark. */
@@ -402,8 +433,8 @@ export interface InvestigationThreadInput {
     maxToolOperations: number;
     usedToolOperations: number;
     forceConclusion: boolean;
-    cycle?: number;
-    maxCycles?: number;
+    /** MCP keeps discovery and readonly execution inside one Codex invocation. */
+    toolProtocol?: "coordinator" | "mcp";
     /** The model tried to stop even though an authorized readonly path remains. */
     readonlyContinuationRequired?: boolean;
   };
@@ -453,6 +484,29 @@ export interface InvestigationTurnResult {
   suggestedResponse: string | null;
   nextAction: string | null;
   confidence: number;
+  /** Explicit causal completion contract used by the trusted coordinator. */
+  outcome?: {
+    objectiveStatus: "answered" | "partially_answered" | "unanswered";
+    rootCauseStatus: "confirmed" | "probable" | "unknown" | "not_applicable";
+    causalClassification:
+      | "code"
+      | "configuration"
+      | "data"
+      | "infrastructure"
+      | "provider"
+      | "process"
+      | "unknown"
+      | "not_applicable";
+    rootCause: string | null;
+    /** References that directly prove the asserted causal mechanism, not merely the symptom. */
+    rootCauseEvidenceReferences?: string[];
+    unresolvedCriticalQuestions: string[];
+    stopReason:
+      | "cause_confirmed"
+      | "evidence_exhausted"
+      | "external_blocker"
+      | "not_applicable";
+  };
   toolRequests: InvestigationToolRequest[];
   /** Added by the trusted coordinator after execution; it is never model-authored. */
   toolExecutions?: InvestigationToolResult[];

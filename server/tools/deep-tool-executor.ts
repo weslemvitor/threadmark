@@ -377,6 +377,30 @@ const OPERATION_HELP: Record<LocalToolOperation, {
   },
 };
 
+const LOCAL_OPERATION_SCHEMAS: Record<LocalToolOperation, z.ZodType> = {
+  list_files: listFilesSchema,
+  search_files: searchFilesSchema,
+  read_files: readFilesSchema,
+  read_skill: readSkillSchema,
+  describe_schema: describeSchemaSchema,
+  query_readonly: readonlyQuerySchema,
+  query_logs: queryLogsSchema,
+  read_metrics: readMetricsSchema,
+  read_deployments: readDeploymentsSchema,
+  read_logs: readVercelLogsSchema,
+};
+
+class ToolContractError extends Error {
+  constructor(
+    message: string,
+    readonly details: NonNullable<InvestigationToolResult["error"]>,
+    readonly suggestedArguments?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "ToolContractError";
+  }
+}
+
 export interface DeepToolExecutorOptions {
   timeoutMs?: number;
   fetchImpl?: typeof globalThis.fetch;
@@ -451,6 +475,7 @@ export class DeepToolExecutor {
     const enabledLocalTools = this.tools.listEnabledForDeep();
     const configured = enabledLocalTools.map((tool) => ({
       id: localToolModelId(tool, enabledLocalTools),
+      configurationId: tool.id,
       name: tool.name,
       type: tool.type,
       description: tool.description,
@@ -458,6 +483,8 @@ export class DeepToolExecutor {
       operations: tool.allowedOperations.map((operation) => ({
         name: operation,
         ...OPERATION_HELP[operation],
+        inputSchema: operationJsonSchema(LOCAL_OPERATION_SCHEMAS[operation]),
+        constraints: operationConstraints(operation, this.now()),
         effect: "read" as const,
         authorization: "none" as const,
       })),
@@ -478,6 +505,7 @@ export class DeepToolExecutor {
             "Busca por número do ticket, título, cliente, grupo, mensagem ou conteúdo da resolução. Um número isolado, como 305 ou #305, retorna somente o ticket exato, suas mensagens de origem e os metadados dos anexos; buscas textuais continuam limitadas e têm credenciais redigidas.",
           argumentsExample:
             '{"query":"ROAS Global","scope":"all","limit":10}',
+          inputSchema: operationJsonSchema(searchSupportContextSchema),
           effect: "read",
           authorization: "none",
         }, {
@@ -485,6 +513,7 @@ export class DeepToolExecutor {
           description:
             "Localiza grupos de destino existentes por nome do grupo, cliente ou participante. A busca ignora acentos, pontuação e diferenças como ecommerce/e-commerce.",
           argumentsExample: '{"query":"GPS do Ecommerce","limit":10}',
+          inputSchema: operationJsonSchema(searchTicketGroupsSchema),
           effect: "read",
           authorization: "none",
         }, {
@@ -493,6 +522,7 @@ export class DeepToolExecutor {
             "Lista o catálogo real de categorias do SQLite. Consulte antes de criar ou atualizar tickets e use somente IDs cujo significado tenha relação direta com o problema comprovado.",
           argumentsExample:
             '{"query":"Dashboard","facets":["product","symptom"],"limit":50}',
+          inputSchema: operationJsonSchema(listTicketCategoriesSchema),
           effect: "read",
           authorization: "none",
         }, {
@@ -501,6 +531,7 @@ export class DeepToolExecutor {
             "Persiste uma prévia de ticket vinculada a um grupo existente, às mensagens que originaram a demanda e a categorias reais já consultadas. Para conversas locais use messageIds retornados pela busca; uma mensagem interna da equipe pode ser usada quando o operador pedir explicitamente um ticket operacional, mas nunca como gatilho automático. Para Intercom informe externalSource com o ID da conversa: a ferramenta importa diretamente todas as mensagens textuais reais, sem exigir que o modelo as copie. Não cria o ticket e não exige confirmação.",
           argumentsExample:
             '{"operatorMessageId":"<currentOperatorMessageId>","groupId":"<groupId encontrado>","title":"Título","summary":"Descrição completa","priority":"normal","categoryIds":["<categoryId real>"],"messageIds":[],"sourceMessages":[],"externalSource":{"type":"intercom_conversation","id":"123"}}',
+          inputSchema: operationJsonSchema(prepareThreadmarkTicketDraftSchema),
           effect: "prepare",
           authorization: "none",
           automaticFollowUpOperation: "create_ticket_from_draft",
@@ -510,6 +541,7 @@ export class DeepToolExecutor {
             "Cria no SQLite um ticket a partir de um rascunho já apresentado. Exige confirmação explícita na mensagem atual.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+          inputSchema: operationJsonSchema(createThreadmarkTicketFromDraftSchema),
           effect: "write",
           authorization: "task",
         }, {
@@ -518,6 +550,7 @@ export class DeepToolExecutor {
             "Prepara uma prévia auditável para atualizar título, descrição, prioridade, categorias e anexar mensagens locais ou do Intercom a um ticket existente. Use messageIds para mensagens locais ou externalSource com o ID da conversa do Intercom para importar diretamente todas as mensagens textuais reais. Não altera nada antes da confirmação.",
           argumentsExample:
             '{"operatorMessageId":"<currentOperatorMessageId>","ticketId":"<ticketId encontrado>","title":"Título corrigido","addCategoryIds":["<categoryId real>"],"removeCategoryIds":[],"messageIds":["<messageId real>"],"sourceMessages":[],"externalSource":null}',
+          inputSchema: operationJsonSchema(prepareThreadmarkTicketUpdateDraftSchema),
           effect: "prepare",
           authorization: "none",
           automaticFollowUpOperation: "apply_ticket_update_draft",
@@ -527,6 +560,7 @@ export class DeepToolExecutor {
             "Aplica uma atualização de ticket já apresentada. Exige confirmação explícita posterior e rejeita uma prévia desatualizada.",
           argumentsExample:
             '{"confirmationMessageId":"<currentOperatorMessageId>","draftId":"<id do rascunho apresentado>"}',
+          inputSchema: operationJsonSchema(applyThreadmarkTicketUpdateDraftSchema),
           effect: "write",
           authorization: "task",
         }],
@@ -620,9 +654,10 @@ export class DeepToolExecutor {
       };
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
-      return failedResult(
+      return failedExecutionResult(
         request,
-        safeExecutionError(error),
+        error,
+        argumentsValue,
         executedAt,
         registered.name,
       );
@@ -2553,14 +2588,46 @@ function boundedTimeRange(
 ): { start: Date; end: Date } {
   const end = endValue ? new Date(endValue) : now;
   const start = startValue ? new Date(startValue) : new Date(end.getTime() - defaultDurationMs);
+  const validStart = Number.isFinite(start.getTime());
+  const validEnd = Number.isFinite(end.getTime());
+  if (!validStart || !validEnd) {
+    throw new ToolContractError(
+      "A janela temporal deve usar datas ISO 8601 válidas com fuso horário.",
+      {
+        code: "INVALID_TIME_FORMAT",
+        category: "invalid_time_range",
+        retryable: false,
+      },
+    );
+  }
   if (
-    !Number.isFinite(start.getTime()) ||
-    !Number.isFinite(end.getTime()) ||
     start >= end ||
     end.getTime() - start.getTime() > maxDurationMs ||
     end.getTime() > now.getTime() + 60_000
   ) {
-    throw new Error("A janela temporal solicitada é inválida ou ampla demais.");
+    const suggestedEnd = new Date(Math.min(end.getTime(), now.getTime()));
+    const requestedDuration = suggestedEnd.getTime() - start.getTime();
+    const suggestedStart = start < suggestedEnd && requestedDuration <= maxDurationMs
+      ? start
+      : new Date(
+          suggestedEnd.getTime() - Math.min(defaultDurationMs, maxDurationMs),
+        );
+    throw new ToolContractError(
+      "A janela temporal foi ajustada para um intervalo válido que termina no horário atual do Threadmark.",
+      {
+        code: end.getTime() > now.getTime() + 60_000
+          ? "TIME_RANGE_IN_FUTURE"
+          : start >= end
+            ? "TIME_RANGE_REVERSED"
+            : "TIME_RANGE_TOO_WIDE",
+        category: "invalid_time_range",
+        retryable: true,
+      },
+      {
+        startTime: suggestedStart.toISOString(),
+        endTime: suggestedEnd.toISOString(),
+      },
+    );
   }
   return { start, end };
 }
@@ -3982,6 +4049,7 @@ function failedResult(
   message: string,
   executedAt: string,
   toolName = "Ferramenta não autorizada",
+  error?: InvestigationToolResult["error"],
 ): InvestigationToolResult {
   return {
     requestId: request.requestId,
@@ -3991,11 +4059,107 @@ function failedResult(
     argumentsJson: request.argumentsJson,
     purpose: request.purpose,
     status: "error",
+    ...(error ? { error } : {}),
     summary: message,
     content: message,
     reference: null,
     executedAt,
   };
+}
+
+function failedExecutionResult(
+  request: InvestigationToolRequest,
+  error: unknown,
+  argumentsValue: unknown,
+  executedAt: string,
+  toolName: string,
+): InvestigationToolResult {
+  if (error instanceof ToolContractError) {
+    const original = isPlainRecord(argumentsValue) ? argumentsValue : {};
+    const suggestedArgumentsJson = error.suggestedArguments
+      ? JSON.stringify({ ...original, ...error.suggestedArguments })
+      : undefined;
+    return failedResult(
+      request,
+      safeExecutionError(error),
+      executedAt,
+      toolName,
+      {
+        ...error.details,
+        ...(suggestedArgumentsJson ? { suggestedArgumentsJson } : {}),
+      },
+    );
+  }
+  if (error instanceof z.ZodError) {
+    return failedResult(
+      request,
+      safeExecutionError(error),
+      executedAt,
+      toolName,
+      {
+        code: "INVALID_ARGUMENTS",
+        category: "invalid_arguments",
+        retryable: false,
+      },
+    );
+  }
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const category = code === "ENOENT"
+    ? "unavailable" as const
+    : code === "EACCES"
+      ? "authorization" as const
+      : code === "ETIMEDOUT" || code === "ABORT_ERR"
+        ? "timeout" as const
+        : "execution" as const;
+  return failedResult(
+    request,
+    safeExecutionError(error),
+    executedAt,
+    toolName,
+    {
+      code: typeof code === "string" ? code : "TOOL_EXECUTION_FAILED",
+      category,
+      retryable: category === "timeout" || category === "unavailable",
+    },
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function operationJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  return z.toJSONSchema(schema, { unrepresentable: "any" }) as Record<string, unknown>;
+}
+
+function operationConstraints(
+  operation: LocalToolOperation,
+  now: Date,
+): string[] {
+  switch (operation) {
+    case "query_logs":
+      return [
+        `Horário atual UTC: ${now.toISOString()}.`,
+        "A janela máxima é de 7 dias e endTime não pode estar no futuro.",
+        "No máximo 200 eventos por consulta; o executor não pagina automaticamente.",
+      ];
+    case "read_metrics":
+      return [
+        `Horário atual UTC: ${now.toISOString()}.`,
+        "A janela máxima é de 7 dias e endTime não pode estar no futuro.",
+      ];
+    case "query_readonly":
+      return [
+        "Apenas um SELECT ou WITH sem mutações.",
+        "No máximo 500 linhas e timeout de 30 segundos.",
+      ];
+    case "read_files":
+      return ["Até 10 arquivos e 1.000 linhas por arquivo em cada chamada."];
+    case "search_files":
+      return ["Use o identificador mais distintivo e no máximo 200 resultados."];
+    default:
+      return [];
+  }
 }
 
 function safeExecutionError(error: unknown): string {

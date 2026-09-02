@@ -330,7 +330,9 @@ export class LocalToolService {
           `UPDATE local_tools
            SET name = ?, description = ?, enabled = ?, deep_enabled = ?,
                allowed_operations_json = ?, config_json = ?, secret_ref = ?,
-               secret_fields_json = ?, updated_by = ?, updated_at = ?
+               secret_fields_json = ?, last_tested_at = NULL,
+               last_test_status = NULL, last_test_message = NULL,
+               updated_by = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(

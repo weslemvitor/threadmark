@@ -8,7 +8,9 @@ import {
   buildCodexEnvironment,
   CodexSupportAgent,
   isolatedCodexConfigArgs,
+  parseCodexSessionId,
   prepareIsolatedCodexHome,
+  threadmarkMcpConfigArgs,
 } from "../server/agent/codex-runner.js";
 import type {
   InvestigationThreadInput,
@@ -57,6 +59,16 @@ const validTurn = {
   confidence: 0.9,
   toolRequests: [],
 } as const;
+
+test("parser encontra o id da sessão persistente nos eventos do Codex", () => {
+  assert.equal(
+    parseCodexSessionId([
+      JSON.stringify({ type: "thread.started", thread_id: "session-123" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10 } }),
+    ].join("\n")),
+    "session-123",
+  );
+});
 
 function emptyReplyContext() {
   return {
@@ -217,6 +229,263 @@ test("runner Codex anexa imagem aprovada pelo operador na investigação profund
   }
 });
 
+test("investigação profunda retoma a mesma sessão Codex entre rodadas", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-codex-session-"));
+  const invocations: Array<{ argv: string[]; stdin: string; cwd: string; codexHome: string }> = [];
+  let invocation = 0;
+  const runner = new CodexSupportAgent(
+    {
+      cwd: temporary,
+      dataDir: path.join(temporary, "runs"),
+      attachmentsRoot: path.join(temporary, "attachments"),
+      environment: { HOME: temporary, PATH: "/usr/bin:/bin" },
+    },
+    async ({ argv, stdin, cwd, env }) => {
+      invocation += 1;
+      invocations.push({ argv, stdin, cwd, codexHome: env.CODEX_HOME ?? "" });
+      const outputFlag = argv.indexOf("--output-last-message");
+      await writeFile(
+        argv[outputFlag + 1] as string,
+        JSON.stringify(invocation === 1
+          ? {
+              ...validTurn,
+              assistantMessage: "Vou consultar a fonte readonly.",
+              phase: "analysis",
+              suggestedResponse: null,
+              toolRequests: [{
+                requestId: "read-1",
+                toolId: "db",
+                operation: "query_readonly",
+                argumentsJson: '{"query":"SELECT 1","maxRows":1}',
+                purpose: "Validar a hipótese.",
+              }],
+            }
+          : validTurn),
+      );
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: invocation === 1
+          ? `${JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" })}\n`
+          : "",
+      };
+    },
+  );
+  const baseInput: InvestigationThreadInput = {
+    threadId: "thread-session",
+    currentOperatorMessageId: "operator-session",
+    durableSummary: "",
+    recentMessages: [{
+      id: "operator-session",
+      role: "operator",
+      body: "Investigue o erro do ticket.",
+      phase: null,
+      createdAt: "2026-09-01T12:00:00.000Z",
+    }],
+    ticket: {
+      accountName: "Cliente",
+      accountType: "ecommerce",
+      groupName: "Suporte Cliente",
+      knownEcommerces: [],
+      ...emptyReplyContext(),
+      openTickets: [],
+      messages: [{
+        id: "message-thread",
+        author: "Cliente",
+        role: "external",
+        timestampUtc: "2026-09-01T11:59:00.000Z",
+        text: "O envio falhou.",
+        attachments: [],
+        quotedMessageId: null,
+      }],
+    },
+    automaticInvestigation: null,
+    availableTools: [],
+    toolResults: [],
+    executionBudget: {
+      workload: "deep",
+      promptMode: "deep",
+      maxToolRounds: 8,
+      usedToolRounds: 0,
+      maxToolOperations: 24,
+      usedToolOperations: 0,
+      forceConclusion: false,
+    },
+  };
+
+  try {
+    await runner.investigateThread(baseInput, "gpt-5.6-terra");
+    await runner.investigateThread({
+      ...baseInput,
+      durableSummary: "A primeira leitura foi solicitada.",
+      toolResults: [{
+        requestId: "read-1",
+        toolId: "db",
+        toolName: "Banco",
+        operation: "query_readonly",
+        argumentsJson: '{"query":"SELECT 1","maxRows":1}',
+        purpose: "Validar a hipótese.",
+        status: "success",
+        summary: "Consulta concluída.",
+        content: "value=1",
+        reference: "tool:db:read:1",
+        executedAt: "2026-09-01T12:00:10.000Z",
+      }],
+      executionBudget: {
+        ...baseInput.executionBudget!,
+        usedToolRounds: 1,
+        usedToolOperations: 1,
+      },
+    }, "gpt-5.6-terra");
+
+    assert.equal(invocations.length, 2);
+    assert.deepEqual(invocations[0]?.argv.slice(0, 2), ["exec", "--json"]);
+    assert.deepEqual(invocations[1]?.argv.slice(0, 2), ["exec", "resume"]);
+    assert.ok(invocations[1]?.argv.includes("codex-session-1"));
+    assert.equal(invocations[0]?.cwd, invocations[1]?.cwd);
+    assert.equal(invocations[0]?.codexHome, invocations[1]?.codexHome);
+    assert.match(invocations[1]?.stdin ?? "", /Continuação da mesma investigação/);
+    assert.doesNotMatch(invocations[1]?.stdin ?? "", /O envio falhou/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("investigação MCP configura somente o bridge readonly e oculta o catálogo completo do prompt", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-codex-mcp-runner-"));
+  const observedManifests: Array<Record<string, unknown>> = [];
+  const observedPrompts: string[] = [];
+  let observedTimeout: number | null = null;
+  let observedArgs: string[] = [];
+  const runner = new CodexSupportAgent({
+    cwd: temporary,
+    dataDir: path.join(temporary, "runs"),
+    attachmentsRoot: path.join(temporary, "attachments"),
+    databasePath: path.join(temporary, "threadmark.sqlite"),
+    supportDataDir: path.join(temporary, "data"),
+    mcpToolLoopEnabled: true,
+    nodeBin: "/usr/local/bin/node",
+    tsxCliPath: "/app/tsx.mjs",
+    toolMcpServerPath: "/app/tool-mcp-server.ts",
+    environment: { HOME: temporary, PATH: "/usr/bin:/bin" },
+  }, async ({ argv, stdin, timeoutMs }) => {
+    observedArgs = argv;
+    observedPrompts.push(stdin);
+    observedTimeout = timeoutMs;
+    const config = argv.find((value) =>
+      value.startsWith("mcp_servers.threadmark_tools.env=")
+    );
+    const manifestPath = config?.match(/THREADMARK_TOOL_BRIDGE_MANIFEST="([^"]+)"/u)?.[1];
+    assert.ok(manifestPath);
+    observedManifests.push(
+      JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>,
+    );
+    const outputFlag = argv.indexOf("--output-last-message");
+    await writeFile(argv[outputFlag + 1] as string, JSON.stringify(validTurn));
+    return {
+      exitCode: 0,
+      stderr: "",
+      stdout: `${JSON.stringify({ type: "thread.started", thread_id: "mcp-session" })}\n`,
+    };
+  });
+  const input: InvestigationThreadInput = {
+    threadId: "thread-mcp",
+    currentOperatorMessageId: "operator-mcp",
+    durableSummary: "",
+    recentMessages: [{
+      id: "operator-mcp",
+      role: "operator",
+      body: "Investigue a campanha.",
+      phase: null,
+      createdAt: "2026-09-01T12:00:00.000Z",
+    }],
+    ticket: {
+      accountName: "Cliente",
+      accountType: "ecommerce",
+      groupName: "Suporte Cliente",
+      knownEcommerces: [],
+      ...emptyReplyContext(),
+      openTickets: [],
+      messages: [],
+    },
+    automaticInvestigation: null,
+    availableTools: [{
+      id: "code",
+      name: "Código",
+      type: "codebase",
+      description: "Regras de campanha",
+      scope: "raiz autorizada",
+      operations: [{
+        name: "search_files",
+        description: "Busca arquivos",
+        argumentsExample: "{}",
+        effect: "read",
+      }],
+    }],
+    toolResults: [],
+    executionBudget: {
+      workload: "deep",
+      promptMode: "deep",
+      maxToolRounds: 8,
+      usedToolRounds: 0,
+      maxToolOperations: 24,
+      usedToolOperations: 0,
+      forceConclusion: false,
+      toolProtocol: "mcp",
+    },
+  };
+
+  try {
+    await runner.investigateThread(input, "gpt-5.6-terra");
+    await runner.investigateThread({
+      ...input,
+      durableSummary: "A primeira fonte foi consultada; falta confrontar a segunda.",
+      executionBudget: {
+        ...input.executionBudget!,
+        readonlyContinuationRequired: true,
+      },
+    }, "gpt-5.6-terra");
+    assert.equal(observedTimeout, 10 * 60_000);
+    assert.ok(observedArgs.includes('mcp_servers.threadmark_tools.command="/usr/local/bin/node"'));
+    const toolSuggestIndex = observedArgs.indexOf("tool_suggest");
+    assert.equal(toolSuggestIndex === -1 || observedArgs[toolSuggestIndex - 1] !== "--disable", true);
+    const codeModeHostIndex = observedArgs.indexOf("code_mode_host");
+    assert.equal(codeModeHostIndex === -1 || observedArgs[codeModeHostIndex - 1] !== "--disable", true);
+    assert.match(observedPrompts[0]!, /progressive_readonly_discovery/);
+    assert.doesNotMatch(observedPrompts[0]!, /search_files/);
+    assert.match(observedPrompts[1]!, /Continuação da mesma investigação/);
+    assert.match(observedPrompts[1]!, /redescubra os contratos no bridge atual/);
+    assert.match(observedPrompts[1]!, /progressive_readonly_discovery/);
+    assert.doesNotMatch(observedPrompts[1]!, /search_files/);
+    assert.equal(
+      (observedManifests[0]?.authorizedDescriptors as Array<{ id: string }>)[0]?.id,
+      "code",
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("configuração MCP efêmera aponta somente para o servidor Threadmark", () => {
+  assert.deepEqual(threadmarkMcpConfigArgs({
+    nodeBin: "/node",
+    tsxCliPath: "/tsx.mjs",
+    serverPath: "/tool-mcp-server.ts",
+    manifestPath: "/manifest.json",
+  }), [
+    "-c",
+    'mcp_servers.threadmark_tools.command="/node"',
+    "-c",
+    'mcp_servers.threadmark_tools.args=["/tsx.mjs","/tool-mcp-server.ts"]',
+    "-c",
+    'mcp_servers.threadmark_tools.env={THREADMARK_TOOL_BRIDGE_MANIFEST="/manifest.json"}',
+    "-c",
+    "mcp_servers.threadmark_tools.startup_timeout_sec=15",
+    "-c",
+    "mcp_servers.threadmark_tools.tool_timeout_sec=120",
+  ]);
+});
+
 test("runner isola análise automática e investigação profunda do ambiente pessoal", async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "support-agent-env-"));
   const invocations: Array<{
@@ -346,7 +615,7 @@ test("runner isola análise automática e investigação profunda do ambiente pe
     assert.notEqual(deep.cwd, temporary);
     assert.match(deep.cwd, /threadmark-codex-/);
     assert.equal(automatic.timeoutMs, 300_000);
-    assert.equal(deep.timeoutMs, null);
+    assert.equal(deep.timeoutMs, 120_000);
     assert.ok(deep.argv.includes("--ignore-user-config"));
     assert.ok(deep.argv.includes("--ignore-rules"));
     assert.ok(deep.argv.includes("--skip-git-repo-check"));

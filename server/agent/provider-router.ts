@@ -33,12 +33,13 @@ const MAX_TOOL_RESULT_PROMPT_TOTAL_CHARS = 30_000;
 const MAX_SINGLE_TOOL_CONTENT_PROMPT_CHARS = 8_000;
 const MAX_PERSISTED_TOOL_CONTENT_CHARS = 4_000;
 const MAX_CHECKPOINT_SUMMARY_CHARS = 24_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 16;
-const DEFAULT_MAX_TOOL_OPERATIONS = 64;
-const DEFAULT_MAX_SAME_OPERATION = 16;
-const DEFAULT_MAX_CODE_SEARCH_OPERATIONS = 12;
-const MAX_PREMATURE_READONLY_BLOCK_RETRIES = 2;
-const MAX_AUTONOMOUS_BUDGET_CYCLES = 3;
+const DEFAULT_MAX_TOOL_ROUNDS = 8;
+const DEFAULT_MAX_TOOL_OPERATIONS = 24;
+const DEFAULT_MAX_SAME_OPERATION = 8;
+const DEFAULT_MAX_CODE_SEARCH_OPERATIONS = 6;
+const MAX_PREMATURE_READONLY_BLOCK_RETRIES = 1;
+const MAX_INTERNAL_TOOL_LOOP_CYCLES = 2;
+const MAX_MODEL_CALLS_PER_INVESTIGATION = 10;
 const TECHNICAL_EVIDENCE_SOURCES = new Set([
   "database",
   "clickhouse",
@@ -57,6 +58,18 @@ const TOOL_EVIDENCE_SOURCE = {
   vercel: "deployment",
   connected_app: "external_app",
 } as const;
+
+const EXPLICIT_MUTATION_INTENT = /\b(?:apag\p{L}*|aplic\p{L}*|arquiv\p{L}*|atribu\p{L}*|ativ\p{L}*|atualiz\p{L}*|cri(?:ar|e|a|ou|ado|ada)|edit\p{L}*|exclu\p{L}*|ger(?:ar|e|a|ou|ado|ada)|paus\p{L}*|public\p{L}*|salv\p{L}*|vincul\p{L}*|anex\p{L}*|abr(?:ir|a|e|iu))\b/iu;
+
+function hasExplicitMutationIntent(input: InvestigationThreadInput): boolean {
+  const directives = input.activeTask?.operatorDirectives.map((item) => item.body) ?? [];
+  const text = [
+    input.activeTask?.objective ?? "",
+    ...directives,
+    input.recentMessages.find((message) => message.id === input.currentOperatorMessageId)?.body ?? "",
+  ].join("\n");
+  return EXPLICIT_MUTATION_INTENT.test(text);
+}
 
 export interface DeepInvestigationToolBroker {
   descriptors(): InvestigationToolDescriptor[];
@@ -205,6 +218,12 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
     signal?: AbortSignal,
   ): Promise<InvestigationTurnResult> {
     const executionPolicy = investigationExecutionPolicy(input);
+    if (
+      executionPolicy.workload === "deep" &&
+      input.investigationReadiness?.deepInvestigationEnabled === false
+    ) {
+      return investigationOnboardingRequiredResult(input);
+    }
     const maxToolRounds = Math.min(
       this.maxToolRounds,
       executionPolicy.maxToolRounds,
@@ -239,12 +258,22 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         executionPolicy.workload,
         input.threadId,
     );
-    const registeredTools = this.deepTools?.descriptors() ?? [];
+    const registeredTools = toolsForActivePack(
+      this.deepTools?.descriptors() ?? [],
+      input.activeInvestigationPack ?? null,
+    );
     const availableTools = toolsForExecutionPolicy(
       registeredTools,
       executionPolicy,
-      input,
     );
+    let usesInternalToolLoop =
+      executionPolicy.workload === "deep" &&
+      resolved.connection.providerId === "codex" &&
+      typeof this.codex.supportsInternalToolLoop === "function" &&
+      this.codex.supportsInternalToolLoop() &&
+      !hasExplicitMutationIntent(input) &&
+      availableTools.length > 0;
+    let internalToolLoopFallbackUsed = false;
     const toolResults: InvestigationToolResult[] = [...(input.toolResults ?? [])];
     const pendingConfirmation = resolvePendingDraftConfirmation(
       this.database,
@@ -277,7 +306,8 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
     let readonlyContinuationRequired = false;
     let usedToolRounds = 0;
     let usedToolOperations = toolResults.length;
-    let budgetCycle = 1;
+    let usedModelCalls = this.currentInvestigationModelCalls(input.threadId);
+    let usedInternalToolLoopCycles = 0;
     const appendToolResult = async (execution: InvestigationToolResult): Promise<void> => {
       toolResults.push(execution);
       await input.onToolExecution?.(execution);
@@ -285,6 +315,9 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
 
     while (true) {
       signal?.throwIfAborted();
+      if (usedModelCalls >= MAX_MODEL_CALLS_PER_INVESTIGATION) {
+        return investigationModelCallBoundaryResult(toolResults, durableSummary);
+      }
       const operationAvailableTools = availableToolsWithinBudget(
         availableTools,
         operationCounts,
@@ -292,6 +325,7 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
         maxCodeSearchOperations,
       );
       const forceConclusion =
+        usedModelCalls >= MAX_MODEL_CALLS_PER_INVESTIGATION - 1 ||
         usedToolRounds >= maxToolRounds ||
         usedToolOperations >= maxToolOperations ||
         (
@@ -302,6 +336,10 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       const rawResult = await resolved.agent.investigateThread({
         ...input,
         durableSummary,
+        investigationState: workingInvestigationState(
+          input.investigationState,
+          toolResults,
+        ),
         availableTools: forceConclusion ? [] : operationAvailableTools,
         toolResults: boundedToolResultsForPrompt(toolResults),
         executionBudget: {
@@ -312,38 +350,71 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           maxToolOperations,
           usedToolOperations,
           forceConclusion,
-          cycle: budgetCycle,
-          maxCycles: MAX_AUTONOMOUS_BUDGET_CYCLES,
+          toolProtocol: usesInternalToolLoop ? "mcp" : "coordinator",
           readonlyContinuationRequired,
         },
         onModelUsage: (usage) => {
           this.recordInvestigationUsage(input.threadId, usage);
         },
       }, signal);
+      usedModelCalls += 1;
+      if (usesInternalToolLoop) usedInternalToolLoopCycles += 1;
       signal?.throwIfAborted();
-      const result = suppressIrrelevantWhatsAppGuardrail(
-        enforceVerifiedTechnicalEvidence(
-          rawResult,
-          toolResults,
-          availableTools,
+      const internalExecutions = rawResult.toolExecutions ?? [];
+      if (internalExecutions.length) usedToolRounds += 1;
+      for (const execution of internalExecutions) {
+        if (observedRequestIds.has(execution.requestId)) continue;
+        observedRequestIds.add(execution.requestId);
+        observedRequests.add(toolRequestFingerprint(execution));
+        observedSemanticRequests.add(semanticToolRequestFingerprint(execution));
+        const key = toolOperationKey(execution);
+        operationCounts.set(key, (operationCounts.get(key) ?? 0) + 1);
+        usedToolOperations += 1;
+        await appendToolResult(execution);
+      }
+      if (
+        usesInternalToolLoop &&
+        !internalExecutions.length &&
+        !rawResult.toolRequests.length &&
+        !forceConclusion &&
+        !internalToolLoopFallbackUsed
+      ) {
+        usesInternalToolLoop = false;
+        internalToolLoopFallbackUsed = true;
+        readonlyContinuationRequired = true;
+        durableSummary = checkpointSummary(rawResult.threadSummary);
+        this.persistInvestigationCheckpoint(input.threadId, durableSummary);
+        continue;
+      }
+      const causalForceConclusion =
+        forceConclusion ||
+        (
+          usesInternalToolLoop &&
+          usedInternalToolLoopCycles >= MAX_INTERNAL_TOOL_LOOP_CYCLES
+        );
+      const result = enforceCausalCompletion(
+        suppressIrrelevantWhatsAppGuardrail(
+          enforceVerifiedTechnicalEvidence(
+            rawResult,
+            toolResults,
+            availableTools,
+          ),
+          input,
         ),
         input,
+        toolResults,
+        availableTools,
+        causalForceConclusion,
       );
+      this.persistInvestigationState(input, result, toolResults);
       if (!result.toolRequests.length) {
         if (
           result.phase === "needs_information" &&
-          (
-            prematureReadonlyBlockRetries < MAX_PREMATURE_READONLY_BLOCK_RETRIES ||
-            (forceConclusion && budgetCycle < MAX_AUTONOMOUS_BUDGET_CYCLES)
-          ) &&
+          !causalForceConclusion &&
+          prematureReadonlyBlockRetries < MAX_PREMATURE_READONLY_BLOCK_RETRIES &&
           hasAuthorizedReadonlyOperation(operationAvailableTools)
         ) {
           prematureReadonlyBlockRetries += 1;
-          if (forceConclusion) {
-            budgetCycle += 1;
-            usedToolRounds = 0;
-            usedToolOperations = 0;
-          }
           readonlyContinuationRequired = true;
           durableSummary = checkpointSummary(result.threadSummary);
           this.persistInvestigationCheckpoint(input.threadId, durableSummary);
@@ -355,19 +426,7 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
           toolExecutions: compactToolExecutions(toolResults),
         };
       }
-      if (forceConclusion) {
-        if (
-          budgetCycle < MAX_AUTONOMOUS_BUDGET_CYCLES &&
-          operationAvailableTools.length > 0
-        ) {
-          budgetCycle += 1;
-          usedToolRounds = 0;
-          usedToolOperations = 0;
-          readonlyContinuationRequired = true;
-          durableSummary = checkpointSummary(result.threadSummary);
-          this.persistInvestigationCheckpoint(input.threadId, durableSummary);
-          continue;
-        }
+      if (causalForceConclusion) {
         return finalizeAtExecutionBoundary(result, toolResults);
       }
 
@@ -450,7 +509,14 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
             readonlyRequests.map(async (request) => {
               const executions = await this.deepTools!.executeMany([request], signal);
               for (const execution of executions) await appendToolResult(execution);
-              return executions;
+              const retry = recoverableReadonlyRetryRequest(executions, request);
+              if (!retry) return executions;
+              observedRequestIds.add(retry.requestId);
+              observedRequests.add(toolRequestFingerprint(retry));
+              observedSemanticRequests.add(semanticToolRequestFingerprint(retry));
+              const retried = await this.deepTools!.executeMany([retry], signal);
+              for (const execution of retried) await appendToolResult(execution);
+              return [...executions, ...retried];
             }),
           )
         : await Promise.allSettled(
@@ -517,6 +583,17 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
     );
   }
 
+  private currentInvestigationModelCalls(threadId: string): number {
+    const row = this.database.prepare(
+      `SELECT ai_model_calls
+       FROM investigation_thread_jobs
+       WHERE thread_id = ? AND state = 'running'
+       ORDER BY requested_at DESC
+       LIMIT 1`,
+    ).get(threadId) as { ai_model_calls: number } | undefined;
+    return row?.ai_model_calls ?? 0;
+  }
+
   private persistInvestigationCheckpoint(
     threadId: string,
     summary: string,
@@ -529,40 +606,134 @@ export class ConfiguredSupportAgent implements Pick<SupportAgent, "analyse" | "t
       )
       .run(summary, new Date().toISOString(), threadId);
   }
+
+  private persistInvestigationState(
+    input: InvestigationThreadInput,
+    result: InvestigationTurnResult,
+    toolResults: InvestigationToolResult[],
+  ): void {
+    const threadExists = this.database.prepare(
+      "SELECT 1 FROM investigation_threads WHERE id = ?",
+    ).get(input.threadId);
+    if (!threadExists) return;
+    const now = new Date().toISOString();
+    const outcome = result.outcome;
+    const objective = input.activeTask?.objective ??
+      input.recentMessages.find((message) => message.id === input.currentOperatorMessageId)?.body ??
+      "Tarefa de investigação";
+    const phase = result.phase === "conclusion"
+      ? "concluded"
+      : result.phase === "needs_information"
+        ? "blocked"
+        : toolResults.length > 0
+          ? "investigating"
+          : "planning";
+    const state = {
+      objective: objective.slice(0, 4_000),
+      plan: input.activeInvestigationPack?.manifest.playbooks ?? [],
+      facts: result.findings.filter((finding) => finding.kind === "fact"),
+      hypotheses: result.findings.filter((finding) => finding.kind === "hypothesis"),
+      missingInformation: result.findings.filter(
+        (finding) => finding.kind === "missing_information",
+      ),
+      evidence: result.evidence,
+      sourceCoverage: [...new Set(result.evidence.map((item) => item.source))],
+      recoverableErrors: toolResults.flatMap((execution) =>
+        execution.status === "error" && execution.error
+          ? [{
+              toolId: execution.toolId,
+              operation: execution.operation,
+              code: execution.error.code,
+              retryable: execution.error.retryable,
+            }]
+          : []
+      ),
+      outcome: outcome ?? null,
+      nextAction: result.nextAction,
+      updatedAt: now,
+    };
+    this.database.prepare(
+      `INSERT INTO investigation_thread_states (
+         thread_id, pack_id, objective, phase, root_cause_status,
+         causal_classification, state_json, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         pack_id = excluded.pack_id,
+         objective = excluded.objective,
+         phase = excluded.phase,
+         root_cause_status = excluded.root_cause_status,
+         causal_classification = excluded.causal_classification,
+         state_json = excluded.state_json,
+         updated_at = excluded.updated_at`,
+    ).run(
+      input.threadId,
+      input.activeInvestigationPack?.id ?? null,
+      objective.slice(0, 4_000),
+      phase,
+      outcome?.rootCauseStatus ?? "unknown",
+      outcome?.causalClassification ?? "unknown",
+      JSON.stringify(state),
+      now,
+      now,
+    );
+  }
 }
 
 export function toolsForExecutionPolicy(
   descriptors: InvestigationToolDescriptor[],
   policy: InvestigationExecutionPolicy,
-  input: Pick<
-    InvestigationThreadInput,
-    "currentOperatorMessageId" | "recentMessages" | "activeTask" | "durableSummary"
-  >,
 ): InvestigationToolDescriptor[] {
-  if (policy.workload === "deep") return descriptors;
   if (policy.promptMode === "conversation") return [];
+  return descriptors;
+}
 
-  const currentBody = input.recentMessages.find(
-    (message) => message.id === input.currentOperatorMessageId,
-  )?.body ?? "";
-  const taskBody = input.activeTask?.operatorDirectives
-    .map((directive) => directive.body)
-    .join("\n") ?? "";
-  const context = `${currentBody}\n${taskBody}\n${input.durableSummary}`
-    .toLocaleLowerCase("pt-BR");
-  const automationRequested = /\bautoma(?:cao|ção|coes|ções)\b/iu.test(context);
-  const knowledgeRequested =
-    /\b(?:documento|documentacao|documentação|conhecimento|knowledge|artigo|faq|runbook)\b/iu
-      .test(context);
+function toolsForActivePack(
+  descriptors: InvestigationToolDescriptor[],
+  pack: NonNullable<InvestigationThreadInput["activeInvestigationPack"]> | null,
+): InvestigationToolDescriptor[] {
+  const selected = new Set(pack?.manifest.selectedToolIds ?? []);
+  if (!selected.size) return descriptors;
+  return descriptors.filter(
+    (descriptor) =>
+      descriptor.id === "threadmark-context" ||
+      descriptor.id === "threadmark-automations" ||
+      descriptor.type === "connected_app" ||
+      selected.has(descriptor.id) ||
+      Boolean(descriptor.configurationId && selected.has(descriptor.configurationId)),
+  );
+}
 
-  return descriptors.filter((descriptor) => {
-    if (descriptor.id === "threadmark-context") return true;
-    if (descriptor.id === "threadmark-automations") return automationRequested;
-    if (descriptor.type === "knowledge") return knowledgeRequested;
-    if (descriptor.type !== "connected_app") return false;
-    const appName = descriptor.name.trim().toLocaleLowerCase("pt-BR");
-    return appName.length > 1 && context.includes(appName);
-  });
+function investigationOnboardingRequiredResult(
+  input: InvestigationThreadInput,
+): InvestigationTurnResult {
+  const reason = input.investigationReadiness?.reason?.trim() ||
+    "Conclua o onboarding e ative um pack privado para habilitar as ferramentas de investigação profunda.";
+  return {
+    assistantMessage:
+      `A conversa básica está disponível, mas a investigação profunda deste workspace ainda não está pronta. ${reason}`,
+    phase: "needs_information",
+    threadSummary: "Investigação profunda aguardando onboarding e pack ativo.",
+    findings: [{
+      statement: reason,
+      kind: "missing_information",
+      evidenceReferences: [],
+    }],
+    evidence: [],
+    suggestedResponse: null,
+    nextAction:
+      "Um proprietário ou administrador deve concluir o onboarding em Configurações > Ferramentas, testar as conexões e ativar o pack.",
+    confidence: 1,
+    outcome: {
+      objectiveStatus: "unanswered",
+      rootCauseStatus: "unknown",
+      causalClassification: "unknown",
+      rootCause: null,
+      unresolvedCriticalQuestions: [reason],
+      stopReason: "external_blocker",
+    },
+    toolRequests: [],
+    toolExecutions: [],
+  };
 }
 
 function boundedPositiveInteger(
@@ -773,7 +944,7 @@ function suppressIrrelevantWhatsAppGuardrail(
   result: InvestigationTurnResult,
   input: Pick<
     InvestigationThreadInput,
-    "activeTask" | "currentOperatorMessageId" | "recentMessages"
+    "activeTask" | "activeInvestigationPack" | "currentOperatorMessageId" | "recentMessages"
   >,
 ): InvestigationTurnResult {
   const currentMessage = input.recentMessages.find(
@@ -849,6 +1020,37 @@ function hasAuthorizedReadonlyOperation(
   );
 }
 
+function recoverableReadonlyRetryRequest(
+  executions: InvestigationToolResult[],
+  original: InvestigationToolRequest,
+): InvestigationToolRequest | null {
+  if (executions.length !== 1) return null;
+  const execution = executions[0];
+  const suggestedArgumentsJson = execution?.error?.suggestedArgumentsJson;
+  if (
+    !execution ||
+    execution.status !== "error" ||
+    execution.error?.retryable !== true ||
+    !suggestedArgumentsJson
+  ) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(suggestedArgumentsJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  } catch {
+    return null;
+  }
+  return {
+    requestId: `${original.requestId.slice(0, 80)}:safe-retry`,
+    toolId: original.toolId,
+    operation: original.operation,
+    argumentsJson: suggestedArgumentsJson,
+    purpose:
+      `Repetição automática readonly após ${execution.error.code}; argumentos corrigidos pelo executor confiável.`,
+  };
+}
+
 function connectedAppConfirmationRequiredResult(
   request: InvestigationToolRequest,
 ): InvestigationToolResult {
@@ -878,6 +1080,31 @@ function checkpointSummary(value: string): string {
   return normalized.slice(0, MAX_CHECKPOINT_SUMMARY_CHARS);
 }
 
+function workingInvestigationState(
+  previous: Record<string, unknown> | null | undefined,
+  results: InvestigationToolResult[],
+): Record<string, unknown> {
+  return {
+    ...(previous ?? {}),
+    executionLedger: results.slice(-64).map((result) => ({
+      requestId: result.requestId,
+      toolId: result.toolId,
+      operation: result.operation,
+      status: result.status,
+      summary: result.summary.slice(0, 1_000),
+      reference: result.reference,
+      error: result.error
+        ? {
+            code: result.error.code,
+            category: result.error.category,
+            retryable: result.error.retryable,
+          }
+        : null,
+      executedAt: result.executedAt,
+    })),
+  };
+}
+
 function stalledInvestigationResult(
   result: InvestigationTurnResult,
   toolResults: InvestigationToolResult[],
@@ -896,6 +1123,41 @@ function stalledInvestigationResult(
     nextAction:
       "Revise as operações repetidas e oriente um novo caminho de investigação.",
     confidence: Math.min(result.confidence, 0.5),
+    toolRequests: [],
+    toolExecutions: compactToolExecutions(toolResults),
+  };
+}
+
+function investigationModelCallBoundaryResult(
+  toolResults: InvestigationToolResult[],
+  durableSummary: string,
+): InvestigationTurnResult {
+  return {
+    assistantMessage:
+      "Ainda não confirmado: as leituras concluídas não foram suficientes para comprovar a causa raiz. As evidências encontradas foram preservadas para uma continuação focada.",
+    phase: "needs_information",
+    threadSummary: checkpointSummary(durableSummary),
+    findings: [{
+      statement:
+        "As fontes consultadas ainda não distinguem com segurança a causa do sintoma observado.",
+      kind: "missing_information",
+      evidenceReferences: [],
+    }],
+    evidence: [],
+    suggestedResponse: null,
+    nextAction:
+      "Informe o identificador ou período exato que falta para direcionar a próxima verificação.",
+    confidence: 0.3,
+    outcome: {
+      objectiveStatus: "partially_answered",
+      rootCauseStatus: "unknown",
+      causalClassification: "unknown",
+      rootCause: null,
+      unresolvedCriticalQuestions: [
+        "Qual identificador ou período exato permite concluir a verificação restante?",
+      ],
+      stopReason: "evidence_exhausted",
+    },
     toolRequests: [],
     toolExecutions: compactToolExecutions(toolResults),
   };
@@ -1247,6 +1509,199 @@ function enforceVerifiedTechnicalEvidence(
     confidence: Math.min(normalizedResult.confidence, 0.5),
     toolRequests: blocksOperationalResponse ? [] : normalizedResult.toolRequests,
   };
+}
+
+export function enforceCausalCompletion(
+  result: InvestigationTurnResult,
+  input: Pick<
+    InvestigationThreadInput,
+    "activeTask" | "activeInvestigationPack" | "currentOperatorMessageId" | "recentMessages"
+  >,
+  executions: InvestigationToolResult[],
+  descriptors: InvestigationToolDescriptor[],
+  forceConclusion = false,
+): InvestigationTurnResult {
+  const outcome = result.outcome;
+  // Legacy/custom agents created before the causal contract remain compatible.
+  // Every bundled provider schema now requires this object.
+  if (!outcome || !requiresRootCauseInvestigation(input)) return result;
+
+  const descriptorById = new Map(
+    descriptors.map((descriptor) => [descriptor.id, descriptor] as const),
+  );
+  const technicalReferences = new Set(
+    executions.flatMap((execution) => {
+      if (execution.status !== "success" || !execution.reference) return [];
+      const descriptor = descriptorById.get(execution.toolId);
+      if (!descriptor || descriptor.type === "knowledge" || descriptor.type === "debugger_skill") {
+        return [];
+      }
+      return [execution.reference];
+    }),
+  );
+  const declaredRootCauseReferences = new Set(
+    outcome.rootCauseEvidenceReferences ?? [],
+  );
+  const causalFacts = result.findings.filter(
+    (finding) =>
+      finding.kind === "fact" &&
+      finding.evidenceReferences.some((reference) =>
+        declaredRootCauseReferences.has(reference) && technicalReferences.has(reference)
+      ),
+  );
+  const technicalSourceByReference = new Map(
+    executions.flatMap((execution) => {
+      if (execution.status !== "success" || !execution.reference) return [];
+      const descriptor = descriptorById.get(execution.toolId);
+      if (!descriptor || descriptor.type === "knowledge" || descriptor.type === "debugger_skill") {
+        return [];
+      }
+      return [[execution.reference, descriptor.type] as const];
+    }),
+  );
+  const causalSourceTypes = new Set(
+    [...declaredRootCauseReferences].flatMap((reference) => {
+      const source = technicalSourceByReference.get(reference);
+      return source ? [source] : [];
+    }),
+  );
+  const requiredIndependentSources = Math.max(
+    2,
+    Math.min(
+      3,
+      input.activeInvestigationPack?.manifest.sourcePolicy.minimumIndependentSources ?? 2,
+    ),
+  );
+  const confirmed =
+    outcome.objectiveStatus === "answered" &&
+    outcome.rootCauseStatus === "confirmed" &&
+    outcome.causalClassification !== "unknown" &&
+    outcome.causalClassification !== "not_applicable" &&
+    Boolean(outcome.rootCause?.trim()) &&
+    outcome.stopReason === "cause_confirmed" &&
+    causalFacts.length > 0 &&
+    causalSourceTypes.size >= requiredIndependentSources;
+  const probableAfterExhaustion =
+    outcome.objectiveStatus !== "unanswered" &&
+    outcome.rootCauseStatus === "probable" &&
+    Boolean(outcome.rootCause?.trim()) &&
+    outcome.stopReason === "evidence_exhausted" &&
+    causalFacts.length > 0;
+
+  if (confirmed || probableAfterExhaustion) {
+    const prefix = confirmed ? "Motivo confirmado:" : "Causa mais provável:";
+    const assistantMessage = new RegExp(`^${prefix}`, "iu").test(result.assistantMessage.trim())
+      ? result.assistantMessage
+      : `${prefix} ${outcome.rootCause!.trim()}\n\n${result.assistantMessage.trim()}`;
+    return {
+      ...result,
+      assistantMessage,
+      phase: "conclusion",
+      toolRequests: [],
+    };
+  }
+
+  const missing = outcome.unresolvedCriticalQuestions.length
+    ? outcome.unresolvedCriticalQuestions
+    : ["A evidência atual ainda não diferencia a causa raiz do sintoma observado."];
+  const canContinueReadonly = !forceConclusion && hasAuthorizedReadonlyOperation(descriptors);
+  const readonlyToolRequests = canContinueReadonly
+    ? result.toolRequests.filter((request) =>
+        resolveOperationPolicy(
+          descriptorById.get(request.toolId),
+          request.operation,
+        ).effect === "read"
+      )
+    : [];
+  const willContinueReadonly = readonlyToolRequests.length > 0;
+  const downgradedRootCauseStatus =
+    Boolean(outcome.rootCause?.trim()) && technicalReferences.size > 0
+      ? "probable" as const
+      : "unknown" as const;
+  if (!canContinueReadonly && downgradedRootCauseStatus === "probable") {
+    const originalDetail = result.assistantMessage
+      .trim()
+      .replace(/^Motivo confirmado:\s*/iu, "");
+    return {
+      ...result,
+      assistantMessage:
+        `Causa mais provável: ${outcome.rootCause!.trim()}\n\n${originalDetail}`,
+      phase: "conclusion",
+      findings: [
+        ...result.findings.filter((finding) => finding.kind !== "missing_information"),
+        ...missing.slice(0, 5).map((statement) => ({
+          statement,
+          kind: "missing_information" as const,
+          evidenceReferences: [],
+        })),
+      ],
+      nextAction: result.nextAction ?? missing[0]!,
+      confidence: Math.min(result.confidence, 0.75),
+      outcome: {
+        ...outcome,
+        objectiveStatus: outcome.objectiveStatus === "answered"
+          ? "partially_answered"
+          : outcome.objectiveStatus,
+        rootCauseStatus: "probable",
+        rootCauseEvidenceReferences: [...declaredRootCauseReferences].filter(
+          (reference) => technicalReferences.has(reference),
+        ),
+        unresolvedCriticalQuestions: missing,
+        stopReason: "evidence_exhausted",
+      },
+      toolRequests: [],
+    };
+  }
+  return {
+    ...result,
+    assistantMessage: canContinueReadonly
+      ? "Ainda não confirmado: a investigação encontrou sinais do problema, mas ainda não comprovou a causa raiz. Vou continuar pelas fontes readonly disponíveis."
+      : `Ainda não confirmado: as evidências disponíveis não comprovam a causa raiz.\n\n${result.assistantMessage
+        .trim()
+        .replace(/^(?:Motivo confirmado|Causa mais provável|Ainda não confirmado):\s*/iu, "")}`,
+    phase: willContinueReadonly ? "analysis" : "needs_information",
+    findings: [
+      ...result.findings.filter((finding) => finding.kind !== "missing_information"),
+      ...missing.slice(0, 5).map((statement) => ({
+        statement,
+        kind: "missing_information" as const,
+        evidenceReferences: [],
+      })),
+    ],
+    suggestedResponse: null,
+    nextAction: canContinueReadonly
+      ? "Cruzar a próxima fonte readonly capaz de confirmar ou eliminar a hipótese causal."
+      : missing[0]!,
+    confidence: Math.min(result.confidence, probableAfterExhaustion ? 0.75 : 0.55),
+    outcome: {
+      ...outcome,
+      objectiveStatus: outcome.objectiveStatus === "answered"
+        ? "partially_answered"
+        : outcome.objectiveStatus,
+      rootCauseStatus: downgradedRootCauseStatus,
+      causalClassification: downgradedRootCauseStatus === "probable"
+        ? outcome.causalClassification
+        : "unknown",
+      rootCause: downgradedRootCauseStatus === "probable" ? outcome.rootCause : null,
+      unresolvedCriticalQuestions: missing,
+      stopReason: "evidence_exhausted",
+    },
+    toolRequests: readonlyToolRequests,
+  };
+}
+
+function requiresRootCauseInvestigation(
+  input: Pick<
+    InvestigationThreadInput,
+    "activeTask" | "currentOperatorMessageId" | "recentMessages"
+  >,
+): boolean {
+  const current = input.recentMessages.find(
+    (message) => message.id === input.currentOperatorMessageId,
+  )?.body ?? "";
+  const task = input.activeTask?.operatorDirectives.map((item) => item.body).join("\n") ?? "";
+  return /\b(?:investig\p{L}*|diagnostic\p{L}*|causa|motivo|por\s+que|porque|raiz|falh\p{L}*|erro|problema|nao\s+(?:envi\p{L}*|carreg\p{L}*|aparec\p{L}*|funcion\p{L}*)|não\s+(?:envi\p{L}*|carreg\p{L}*|aparec\p{L}*|funcion\p{L}*)|sem\s+(?:dados|produtos?|mensagens?))\b/iu
+    .test(`${current}\n${task}`);
 }
 
 function unavailableToolResult(

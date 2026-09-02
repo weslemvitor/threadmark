@@ -46,6 +46,8 @@ import {
   LOCAL_TOOL_OPERATIONS,
   LOCAL_TOOL_TYPES,
   type CategoryFacet,
+  type InvestigationPackOnboardingInput,
+  type InvestigationPackUpdateInput,
 } from "../shared/contracts.js";
 import {
   AuthError,
@@ -60,6 +62,10 @@ import {
   type AiTaskProfileDto,
 } from "./agent/provider-settings.js";
 import { InvestigationExecutionRegistry } from "./agent/investigation-execution-registry.js";
+import {
+  InvestigationPackError,
+  InvestigationPackService,
+} from "./agent/investigation-pack-service.js";
 import { createDatabase, type SupportDatabase } from "./db/index.js";
 import {
   DirectoryStore,
@@ -150,6 +156,7 @@ export interface StartApiServerOptions {
   tools?: LocalToolService;
   legacyTools?: LegacyLocalToolImportService;
   toolTester?: LocalToolTester;
+  investigationPacks?: InvestigationPackService;
   storageUsage?: LocalStorageUsageReader;
   investigationExecutions?: InvestigationExecutionRegistry;
   requestShutdown?: (reason: string) => void | Promise<void>;
@@ -188,6 +195,7 @@ interface ApiServices {
   tools?: LocalToolService;
   legacyTools?: LegacyLocalToolImportService;
   toolTester?: LocalToolTester;
+  investigationPacks?: InvestigationPackService;
   storageUsage?: LocalStorageUsageReader;
   investigationExecutions?: InvestigationExecutionRegistry;
   requestShutdown?: (reason: string) => void | Promise<void>;
@@ -724,6 +732,29 @@ const legacyLocalToolImportSchema = z
   })
   .strict();
 
+const investigationPackOnboardingSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  domain: z.string().trim().min(1).max(160),
+  purpose: z.string().trim().min(1).max(2_000),
+  goals: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+  selectedToolIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+  vocabulary: z.array(z.object({
+    term: z.string().trim().min(1).max(120),
+    meaning: z.string().trim().min(1).max(1_000),
+  }).strict()).max(100).optional(),
+  investigationExamples: z.array(
+    z.string().trim().min(1).max(500),
+  ).max(30).optional(),
+  includeCustomerDraft: z.boolean().optional(),
+}).strict();
+
+const investigationPackUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  manifest: z.record(z.string(), z.unknown()).optional(),
+}).strict().refine((input) => Object.keys(input).length > 0, {
+  message: "Informe ao menos uma alteração para o pack",
+});
+
 const backupInputSchema = z
   .object({ includeAttachments: z.boolean().default(false) })
   .strict();
@@ -1027,6 +1058,19 @@ function requireLocalToolTester(services: ApiServices): LocalToolTester {
     );
   }
   return services.toolTester;
+}
+
+function requireInvestigationPacks(
+  services: ApiServices,
+): InvestigationPackService {
+  if (!services.investigationPacks) {
+    throw new DomainError(
+      "Packs de investigação indisponíveis",
+      "service_unavailable",
+      503,
+    );
+  }
+  return services.investigationPacks;
 }
 
 function requireStorageUsage(services: ApiServices): LocalStorageUsageReader {
@@ -1902,6 +1946,49 @@ function createApiAppInternal(
     requireRole(context, ["owner", "admin"]);
     return context.json(
       await requireLocalToolTester(services).test(context.req.param("id")),
+    );
+  });
+
+  app.get("/api/investigation-packs", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    const packs = requireInvestigationPacks(services);
+    return context.json({ items: packs.list(), active: packs.getActive() });
+  });
+
+  app.post("/api/investigation-packs/onboarding", async (context) => {
+    const identity = requireRole(context, ["owner", "admin"]);
+    const input = investigationPackOnboardingSchema.parse(await context.req.json());
+    return context.json(
+      requireInvestigationPacks(services).createDraft(
+        input as InvestigationPackOnboardingInput,
+        identity.user.id,
+      ),
+      201,
+    );
+  });
+
+  app.patch("/api/investigation-packs/:id", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    const input = investigationPackUpdateSchema.parse(await context.req.json());
+    return context.json(
+      requireInvestigationPacks(services).updateDraft(
+        context.req.param("id"),
+        input as unknown as InvestigationPackUpdateInput,
+      ),
+    );
+  });
+
+  app.post("/api/investigation-packs/:id/probe", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      await requireInvestigationPacks(services).probe(context.req.param("id")),
+    );
+  });
+
+  app.post("/api/investigation-packs/:id/activate", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(
+      requireInvestigationPacks(services).activate(context.req.param("id")),
     );
   });
 
@@ -3060,6 +3147,18 @@ function createApiAppInternal(
         status,
       );
     }
+    if (error instanceof InvestigationPackError) {
+      const status = {
+        invalid: 400,
+        not_found: 404,
+        conflict: 409,
+        unavailable: 503,
+      }[error.kind] as 400 | 404 | 409 | 503;
+      return context.json(
+        apiError(`investigation_pack_${error.kind}`, error.message),
+        status,
+      );
+    }
     if (error instanceof AutomationApiError) {
       const status = {
         invalid: 400,
@@ -3152,6 +3251,22 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
       codeRoots: config.legacyCodeRoots,
       vaultDirectory: config.legacyVaultDirectory,
     });
+  const toolTester = options.toolTester ?? new DeepToolExecutor(tools);
+  const aiSettings =
+    options.aiSettings ??
+    new AiProviderSettingsService(
+      operationalDatabase,
+      secretVault,
+      { codexBin: config.codexBin, attachmentsRoot: config.attachmentsDir },
+    );
+  const investigationPacks =
+    options.investigationPacks ??
+    new InvestigationPackService(
+      operationalDatabase,
+      tools,
+      toolTester,
+      aiSettings,
+    );
   const automationRuntime =
     options.automationRuntime ??
     new AutomationRuntime(operationalDatabase, store, secretVault, {
@@ -3177,16 +3292,11 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
       options.localAccessToken ?? new LocalAccessToken(config.localAccessTokenPath),
     localSettings:
       options.localSettings ?? new LocalSettingsFile(config.localSettingsPath),
-    aiSettings:
-      options.aiSettings ??
-      new AiProviderSettingsService(
-        operationalDatabase,
-        secretVault,
-        { codexBin: config.codexBin, attachmentsRoot: config.attachmentsDir },
-      ),
+    aiSettings,
     tools,
     legacyTools,
-    toolTester: options.toolTester ?? new DeepToolExecutor(tools),
+    toolTester,
+    investigationPacks,
     storageUsage:
       options.storageUsage ??
       new LocalStorageUsageService({

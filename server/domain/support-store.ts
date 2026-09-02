@@ -47,6 +47,7 @@ import type {
   InvestigationJobListResponse,
   InvestigationJobState,
   InvestigationOutcome,
+  InvestigationPackDto,
   InvestigationToolExecutionDto,
   InvestigationThreadDto,
   InvestigationThreadMessageDto,
@@ -10506,6 +10507,39 @@ export class SupportStore {
       automaticRow?.result_json ?? null,
       null,
     );
+    const activePackRow = this.database.prepare(
+      `SELECT id, name, status, version, manifest_json, readiness_json,
+              created_by_user_id, created_at, updated_at, activated_at
+       FROM investigation_packs WHERE status = 'active' LIMIT 1`,
+    ).get() as {
+      id: string;
+      name: string;
+      status: "active";
+      version: number;
+      manifest_json: string;
+      readiness_json: string;
+      created_by_user_id: string | null;
+      created_at: string;
+      updated_at: string;
+      activated_at: string | null;
+    } | undefined;
+    const activeInvestigationPack = activePackRow
+      ? {
+          id: activePackRow.id,
+          name: activePackRow.name,
+          status: activePackRow.status,
+          version: activePackRow.version,
+          manifest: parseJson(activePackRow.manifest_json, {}),
+          readiness: parseJson(activePackRow.readiness_json, {}),
+          createdByUserId: activePackRow.created_by_user_id,
+          createdAt: activePackRow.created_at,
+          updatedAt: activePackRow.updated_at,
+          activatedAt: activePackRow.activated_at,
+        } as InvestigationPackDto
+      : null;
+    const investigationStateRow = this.database.prepare(
+      "SELECT state_json FROM investigation_thread_states WHERE thread_id = ?",
+    ).get(job.thread_id) as { state_json: string } | undefined;
 
     return {
       threadId: job.thread_id,
@@ -10547,6 +10581,20 @@ export class SupportStore {
       automaticInvestigation: isRecord(automaticResult)
         ? (automaticResult as unknown as SupportAnalysis)
         : null,
+      activeInvestigationPack,
+      investigationReadiness: {
+        deepInvestigationEnabled:
+          activeInvestigationPack?.readiness.deepInvestigationEnabled === true,
+        reason: activeInvestigationPack
+          ? activeInvestigationPack.readiness.deepInvestigationEnabled
+            ? null
+            : activeInvestigationPack.readiness.messages.join(" ")
+          : "Conclua o onboarding e ative um pack privado para habilitar investigações profundas.",
+      },
+      investigationState: parseJson<Record<string, unknown> | null>(
+        investigationStateRow?.state_json ?? null,
+        null,
+      ),
       toolResults: this.getInvestigationThreadToolExecutions(job.id),
     };
   }

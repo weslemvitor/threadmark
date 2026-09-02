@@ -24,13 +24,13 @@ for (const body of [
   "Qual a diferença entre faturamento e aprovado?",
   "Atualize o título do ticket #240.",
 ]) {
-  test(`conversa objetiva usa rota rápida: ${body}`, () => {
+  test(`tarefa não trivial usa o agente adaptativo: ${body}`, () => {
     const policy = investigationExecutionPolicy(input(body));
-    assert.equal(policy.workload, "quick");
-    assert.equal(policy.promptMode, "task");
-    assert.equal(policy.maxToolRounds, 4);
-    assert.equal(policy.maxToolOperations, 12);
-    assert.equal(policy.maxCodeSearchOperations, 0);
+    assert.equal(policy.workload, "deep");
+    assert.equal(policy.promptMode, "deep");
+    assert.equal(policy.maxToolRounds, 8);
+    assert.equal(policy.maxToolOperations, 16);
+    assert.equal(policy.maxCodeSearchOperations, 4);
   });
 }
 
@@ -55,8 +55,8 @@ test("criação de ticket que exige descobrir conversa usa rota profunda", () =>
   ));
   assert.equal(policy.workload, "deep");
   assert.equal(policy.promptMode, "deep");
-  assert.equal(policy.maxToolRounds, 16);
-  assert.equal(policy.maxToolOperations, 64);
+  assert.equal(policy.maxToolRounds, 8);
+  assert.equal(policy.maxToolOperations, 16);
 });
 
 test("continuação curta herda a rota profunda do ticket pendente", () => {
@@ -66,8 +66,8 @@ test("continuação curta herda a rota profunda do ticket pendente", () => {
       "Objetivo pendente: criar ticket usando o contexto da conversa do Intercom e anexar as mensagens.",
   });
   assert.equal(policy.workload, "deep");
-  assert.equal(policy.maxToolRounds, 16);
-  assert.equal(policy.maxToolOperations, 64);
+  assert.equal(policy.maxToolRounds, 8);
+  assert.equal(policy.maxToolOperations, 16);
 });
 
 test("edição de automações usa orçamento profundo inclusive após confirmação curta", () => {
@@ -89,9 +89,9 @@ test("edição de automações usa orçamento profundo inclusive após confirma�
 
   assert.equal(policy.workload, "deep");
   assert.equal(policy.promptMode, "deep");
-  assert.equal(policy.maxToolRounds, 16);
-  assert.equal(policy.maxToolOperations, 64);
-  assert.equal(policy.maxSameOperation, 16);
+  assert.equal(policy.maxToolRounds, 8);
+  assert.equal(policy.maxToolOperations, 16);
+  assert.equal(policy.maxSameOperation, 6);
 });
 
 test("confirmação natural herda a análise de automações e mantém orçamento profundo", () => {
@@ -117,7 +117,7 @@ test("confirmação natural herda a análise de automações e mantém orçament
 
   assert.equal(policy.workload, "deep");
   assert.equal(policy.promptMode, "deep");
-  assert.equal(policy.maxToolOperations, 64);
+  assert.equal(policy.maxToolOperations, 16);
 });
 
 test("revisão rápida comporta a leitura de mais de três automações", () => {
@@ -125,8 +125,8 @@ test("revisão rápida comporta a leitura de mais de três automações", () => 
     "Revise as automações existentes e me apresente sugestões.",
   ));
 
-  assert.equal(policy.workload, "quick");
-  assert.equal(policy.maxSameOperation, 8);
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.maxSameOperation, 6);
 });
 
 for (const body of [
@@ -138,10 +138,30 @@ for (const body of [
   test(`investigação explícita preserva rota profunda: ${body}`, () => {
     const policy = investigationExecutionPolicy(input(body));
     assert.equal(policy.workload, "deep");
-    assert.equal(policy.maxToolRounds, 16);
-    assert.equal(policy.maxToolOperations, 64);
+    assert.equal(policy.maxToolRounds, 8);
+    assert.equal(policy.maxToolOperations, 16);
   });
 }
+
+test("pedido de solução para problema de cliente entra no ciclo profundo sem verbo investigar", () => {
+  const policy = investigationExecutionPolicy(input(
+    "A Maloa está com problema de bloqueio de rede, como podemos ajudar ela a resolver? Ela diz que não tem, mas ficou claro que tem.",
+  ));
+
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.promptMode, "deep");
+  assert.equal(policy.maxToolRounds, 8);
+  assert.equal(policy.maxToolOperations, 16);
+});
+
+test("pedido para validar dado externo usa o mesmo agente sem depender de palavras-chave", () => {
+  const policy = investigationExecutionPolicy(input(
+    "Veja a situação dos pedidos da loja IAP considerando o hostname e me diga se o comportamento está correto.",
+  ));
+
+  assert.equal(policy.workload, "deep");
+  assert.equal(policy.promptMode, "deep");
+});
 
 test("análise visual autorizada preserva rota profunda", () => {
   const policy = investigationExecutionPolicy({
