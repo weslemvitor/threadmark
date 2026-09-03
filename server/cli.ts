@@ -63,6 +63,12 @@ import {
 } from "./triage/history-rescan.js";
 import { DeepToolExecutor } from "./tools/deep-tool-executor.js";
 import { LocalToolService } from "./tools/local-tool-service.js";
+import {
+  createHeadlessHttpTransport,
+  executeHeadlessCommand,
+  isHeadlessCommand,
+  type HeadlessTransport,
+} from "./headless/cli.js";
 
 await main().catch((error) => {
   console.error(`Erro: ${error instanceof Error ? error.message : String(error)}`);
@@ -71,6 +77,10 @@ await main().catch((error) => {
 
 async function main(): Promise<void> {
   const command = (process.argv[2] ?? "help").toLowerCase();
+  if (isHeadlessCommand(command)) {
+    await runHeadlessCommand(command);
+    return;
+  }
   switch (command) {
     case "-h":
     case "--help":
@@ -151,6 +161,30 @@ async function main(): Promise<void> {
       console.error(`Comando desconhecido: ${command}\n`);
       printHelp();
       process.exitCode = 1;
+  }
+}
+
+async function runHeadlessCommand(command: string): Promise<void> {
+  const config = loadConfig();
+  const transport: HeadlessTransport = command === "capabilities"
+    ? {
+        request: async () => {
+          throw new Error("A consulta de capacidades não acessa a API.");
+        },
+      }
+    : createHeadlessHttpTransport({
+        apiUrl: config.apiUrl,
+        token: await new LocalAccessToken(config.localAccessTokenPath).ensure(),
+      });
+  const args = process.argv.slice(3);
+  const result = await executeHeadlessCommand(command, args, transport, {
+    invocationCwd: process.env.THREADMARK_INVOKE_CWD ?? process.cwd(),
+  });
+  const serialized = JSON.stringify(result, null, args.includes("--json") ? undefined : 2);
+  if (result.ok) console.log(serialized);
+  else {
+    console.error(serialized);
+    process.exitCode = 2;
   }
 }
 
@@ -349,6 +383,7 @@ async function status(): Promise<void> {
         processRunning: Boolean(pid && isProcessRunning(pid)),
         whatsappEnabled: config.whatsappEnabled,
         agentEnabled: config.agentEnabled,
+        agentExecutor: config.agentExecutor,
         interface: config.webOrigin,
         api: config.apiUrl,
       },
@@ -380,11 +415,9 @@ async function chooseConfigurationSection(): Promise<ConfigurationSection> {
   console.log("\nConfigurar Threadmark\n");
   const choices: Array<{ key: string; section: ConfigurationSection; label: string }> = [
     { key: "1", section: "general", label: "Workspace e preferências" },
-    { key: "2", section: "ai", label: "Provedores e modelos de IA" },
-    { key: "3", section: "tools", label: "Ferramentas do Threadmark AI" },
-    { key: "4", section: "whatsapp", label: "WhatsApp e QR Code" },
-    { key: "5", section: "staff", label: "Equipe WhatsApp" },
-    { key: "6", section: "data", label: "Dados e backups" },
+    { key: "2", section: "whatsapp", label: "WhatsApp e QR Code" },
+    { key: "3", section: "staff", label: "Equipe WhatsApp" },
+    { key: "4", section: "data", label: "Dados e backups" },
   ];
   for (const choice of choices) console.log(`  ${choice.key}. ${choice.label}`);
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
@@ -399,14 +432,14 @@ async function chooseConfigurationSection(): Promise<ConfigurationSection> {
 }
 
 function parseConfigurationSection(value: string): ConfigurationSection {
+  if (["ai", "ia", "tools", "tool", "ferramentas"].includes(value)) {
+    throw new Error(
+      "Modelos, skills e ferramentas agora são configurados no ambiente do agente (por exemplo, Hermes).",
+    );
+  }
   const aliases: Record<string, ConfigurationSection> = {
     general: "general",
     geral: "general",
-    ai: "ai",
-    ia: "ai",
-    tools: "tools",
-    tool: "tools",
-    ferramentas: "tools",
     whatsapp: "whatsapp",
     team: "staff",
     staff: "staff",
@@ -418,7 +451,7 @@ function parseConfigurationSection(value: string): ConfigurationSection {
   const section = aliases[value];
   if (!section) {
     throw new Error(
-      "Seção inválida. Use general, ai, tools, whatsapp, team ou data.",
+      "Seção inválida. Use general, whatsapp, team ou data.",
     );
   }
   return section;
@@ -438,13 +471,10 @@ function configurationSectionLabel(section: ConfigurationSection): string {
 async function toolsCommand(): Promise<void> {
   const action = (process.argv[3] ?? "open").toLowerCase();
   if (action === "open" || action === "add") {
-    if (action === "add") {
-      console.log("O cadastro seguro de credenciais é concluído na interface local.");
-    }
-    const config = loadConfig();
-    const url = configurationUrl(config.webOrigin, "tools");
-    await openLocalInterface(url);
-    console.log(`Ferramentas abertas em ${url}`);
+    console.log(
+      "As ferramentas do agente são configuradas no Hermes. " +
+        "O Threadmark mantém este comando apenas para consultar ou desativar registros legados.",
+    );
     return;
   }
 
@@ -545,7 +575,7 @@ async function toolsCommand(): Promise<void> {
     return;
   }
   throw new Error(
-    "Use: threadmark tools open|list|add|discover|recover [--yes]|test <id>|disable <id>.",
+    "Use: threadmark tools list|discover|recover [--yes]|test <id>|disable <id>.",
   );
 }
 
@@ -597,7 +627,7 @@ async function doctor(): Promise<void> {
   const config = loadConfig();
   let database: Database.Database | null = null;
   let aiSettings: AiProviderSettingsService | null = null;
-  if (existsSync(config.databasePath)) {
+  if (config.agentExecutor === "internal" && existsSync(config.databasePath)) {
     try {
       database = new Database(config.databasePath, {
         readonly: true,
@@ -1060,19 +1090,27 @@ Operação:
   off | stop                  Encerra os serviços com segurança
   status                      Exibe o estado operacional
   open                        Abre a Web UI local
-  doctor [--json]             Verifica processo, API, Web, SQLite, WhatsApp, IA e disco
+  doctor [--json]             Verifica processo, API, Web, SQLite, WhatsApp e disco
 
 Configuração:
-  configure [seção]           Abre o assistente (general, ai, tools, whatsapp, team, data)
-  tools open|list|add         Gerencia ferramentas locais autorizadas
-  tools discover|recover     Revisa e recupera configurações antigas
-  tools test <id>             Testa uma ferramenta configurada
-  tools disable <id>          Desativa uma ferramenta
+  configure [seção]           Abre o assistente (general, whatsapp, team, data)
+  tools list                  Lista ferramentas legadas do Threadmark
+  tools discover|recover      Revisa e recupera configurações antigas
+  tools test|disable <id>     Testa ou desativa uma ferramenta legada
   service install             Inicia no login e recupera falhas no macOS
   service uninstall           Remove o serviço, preservando os dados
   service status              Mostra o estado do LaunchAgent
 
 Dados e suporte:
+  capabilities [--json]       Descreve a API headless e seus limites de segurança
+  agent triage-* [--json]     Entrega a fila automática a um executor Hermes
+  operators list [--json]     Lista identidades autorizáveis para auditoria
+  conversations ... [--json] Consulta conversas, mensagens e tickets vinculados
+  triage ... [--json]         Revisa ou aplica decisões de triagem
+  tickets ... [--json]        Consulta e opera tickets por contrato estável
+  categories ... [--json]     Consulta e mantém a taxonomia
+  clients list [--json]       Lista clientes do workspace
+  dashboard show [--json]     Consulta métricas operacionais
   backup [--full]             Cria backup rápido ou completo com anexos
   backup validate <id|path>   Valida manifesto, checksums e SQLite
   backups list [--fast]       Lista backups locais

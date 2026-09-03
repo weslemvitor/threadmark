@@ -161,3 +161,135 @@ test("API exige sessão, conclui bootstrap e aplica papéis sem confiar no naveg
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("API atribui mutações da CLI ao usuário delegado sem confiar em nomes livres", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "threadmark-agent-actor-"));
+  const database = createDatabase(":memory:");
+  try {
+    const store = new SupportStore(database);
+    const account = store.upsertAccount({
+      phoneNumber: "threadmark-test-account",
+      displayName: "Conta local",
+    });
+    const client = store.upsertClient({
+      name: "Cliente delegado",
+      slug: "cliente-delegado",
+      kind: "ecommerce",
+    });
+    const group = store.upsertGroup({
+      accountId: account.id,
+      clientId: client.id,
+      externalJid: "delegated@g.us",
+      subject: "Grupo delegado",
+    });
+    const participant = store.upsertParticipant({
+      externalJid: "delegated-test@s.whatsapp.net",
+      displayName: "Cliente",
+    });
+    const message = store.upsertMessage({
+      externalId: "delegated-message",
+      groupId: group.id,
+      senderId: participant.id,
+      occurredAt: "2026-09-02T12:00:00.000Z",
+      text: "Preciso de ajuda.",
+      messageType: "text",
+      triageKind: "demand",
+    });
+    const ticket = store.createTicket({
+      groupId: group.id,
+      sourceMessageId: message.id,
+      title: "Ajuda delegada",
+      summary: "Cliente pediu ajuda.",
+    });
+    const auth = new LocalAuthService(database);
+    const challenges = new SetupChallengeService(database);
+    const localAccessToken = new LocalAccessToken(path.join(root, "local.token"));
+    const app = createApiApp(store, undefined, undefined, {
+      auth,
+      setupChallenges: challenges,
+      localAccessToken,
+      localSettings: new LocalSettingsFile(path.join(root, "settings.json")),
+      aiSettings: new AiProviderSettingsService(
+        database,
+        new LocalSecretVault(path.join(root, "secrets")),
+      ),
+    });
+    const challenge = challenges.issue();
+    const setup = await app.request("/api/setup/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bootstrapToken: challenge.token,
+        workspaceName: "Atendimento",
+        organizationName: "Empresa",
+        timezone: "America/Sao_Paulo",
+        login: "operador",
+        displayName: "Pessoa Operadora",
+        password: "senha-local-forte-123",
+      }),
+    });
+    const setupBody = (await setup.json()) as { user: { id: string } };
+    const machineToken = await localAccessToken.ensure();
+
+    const localClaim = await app.request("/api/agent/triage/jobs/claim", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ leaseSeconds: 60 }),
+    });
+    assert.equal(localClaim.status, 403);
+
+    const delegatedClaim = await app.request("/api/agent/triage/jobs/claim", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        "content-type": "application/json",
+        "x-threadmark-actor-id": setupBody.user.id,
+        "x-threadmark-agent-client": "hermes",
+      },
+      body: JSON.stringify({ leaseSeconds: 60 }),
+    });
+    assert.equal(delegatedClaim.status, 200);
+    assert.deepEqual(await delegatedClaim.json(), { job: null });
+
+    const updated = await app.request(`/api/tickets/${ticket.id}/status`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        "content-type": "application/json",
+        "x-threadmark-actor-id": setupBody.user.id,
+        "x-threadmark-agent-client": "hermes",
+      },
+      body: JSON.stringify({ status: "in_progress" }),
+    });
+    assert.equal(updated.status, 200);
+    const detail = (await updated.json()) as {
+      timeline: Array<{ type: string; eventType?: string; actor?: string }>;
+    };
+    assert.ok(
+      detail.timeline.some(
+        (item) =>
+          item.type === "event" &&
+          item.eventType === "status_changed" &&
+          item.actor === "Hermes · Pessoa Operadora",
+      ),
+    );
+
+    const forged = await app.request(`/api/tickets/${ticket.id}/status`, {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        "content-type": "application/json",
+        "x-threadmark-actor-id": "usuario-inexistente",
+        "x-threadmark-agent-client": "hermes",
+      },
+      body: JSON.stringify({ status: "waiting_customer" }),
+    });
+    assert.equal(forged.status, 404);
+  } finally {
+    database.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

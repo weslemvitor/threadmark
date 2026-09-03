@@ -166,6 +166,13 @@ async function probeAgent(
   if (!config.agentEnabled) {
     return skipped("agent", "Agente de IA", "Worker de IA desativado por configuração.");
   }
+  if (config.agentExecutor === "hermes") {
+    return skipped(
+      "agent",
+      "Executor externo",
+      "Triagem delegada ao Hermes; modelos e ferramentas são verificados no ambiente do agente.",
+    );
+  }
   if (settings === null) {
     return failed(
       "agent",

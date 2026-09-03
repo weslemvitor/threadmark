@@ -217,6 +217,52 @@ test("doctor testa somente os provedores selecionados pelos perfis ativos", asyn
   }
 });
 
+test("doctor não consulta provedores internos quando a triagem pertence ao Hermes", async () => {
+  const config = {
+    ...fixtureConfig("/tmp/threadmark-doctor-hermes"),
+    agentEnabled: true,
+    agentExecutor: "hermes" as const,
+  };
+  let settingsReads = 0;
+  let commandProbes = 0;
+  const report = await runDoctor(config, {
+    runtimeState: {
+      ...offlineRuntimeState(),
+      phase: "online",
+      pid: 12345,
+    },
+    processRunning: () => true,
+    fetcher: (async () =>
+      Response.json({ ok: true, service: "threadmark-api" })) as typeof fetch,
+    commandProbe: async () => {
+      commandProbes += 1;
+      return "não deveria executar";
+    },
+    aiSettings: {
+      getProfiles() {
+        settingsReads += 1;
+        return [];
+      },
+      listConnections: () => [],
+      async testConnection() {
+        throw new Error("não deveria executar");
+      },
+    },
+  });
+
+  assert.equal(settingsReads, 0);
+  assert.equal(commandProbes, 0);
+  assert.deepEqual(
+    report.probes.find((probe) => probe.id === "agent"),
+    {
+      id: "agent",
+      label: "Executor externo",
+      state: "skipped",
+      message: "Triagem delegada ao Hermes; modelos e ferramentas são verificados no ambiente do agente.",
+    },
+  );
+});
+
 test("shim global é executável e expõe help e versão", async () => {
   const root = path.resolve(import.meta.dirname, "..");
   const shim = path.join(root, "bin", "threadmark.mjs");
@@ -260,6 +306,7 @@ function fixtureConfig(projectRoot: string): SupportConfig {
     whatsappEnabled: false,
     startWeb: true,
     agentEnabled: false,
+    agentExecutor: "internal",
     agentConcurrency: 2,
     codexMcpToolLoopEnabled: true,
     triageAiEnabled: false,

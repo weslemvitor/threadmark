@@ -357,6 +357,18 @@ export class LocalAuthService {
       .all() as UserRow[]).map(userDto);
   }
 
+  /**
+   * Resolves the local user delegated by an authenticated machine client.
+   * Possession of the machine token is still required by the API middleware;
+   * this method only narrows that capability to an active workspace identity.
+   */
+  resolveMachineActor(userId: string): AuthUserDto {
+    if (typeof userId !== "string" || !userId.trim() || userId.length > 200) {
+      throw new AuthError("invalid_input", "Identidade delegada inválida.");
+    }
+    return this.requireActiveUserById(userId.trim());
+  }
+
   async createUser(
     token: string,
     input: CreateAuthUserInput,

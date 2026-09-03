@@ -291,6 +291,81 @@ test("configuração da triagem por IA permanece no SQLite", () => {
   assert.deepEqual(new SupportStore(current.database).getTriageAiSettings(), updated);
 });
 
+test("executor externo reivindica, renova e conclui uma triagem com auditoria Hermes", () => {
+  const current = fixture();
+  const messageId = addMessage(
+    current,
+    "external-triage-message",
+    "2026-09-02T12:00:00.000Z",
+    "O painel não apresenta os dados esperados.",
+  );
+  assert.equal(scheduler(current), 1);
+  const queued = current.store.getTriageAiQueueStatus();
+  assert.equal(queued.queued, 1);
+  assert.equal(queued.running, 0);
+  assert.ok(queued.revision);
+
+  const claimed = current.store.claimNextTriageAiJob(60_000);
+  assert.ok(claimed);
+  assert.equal(current.store.claimNextTriageAiJob(60_000), null);
+  assert.deepEqual(current.store.getTriageAiJobInput(claimed.id).candidateMessageIds, [
+    messageId,
+  ]);
+  assert.equal(current.store.renewTriageAiJobLease(claimed.id, 60_000), true);
+
+  assert.equal(
+    current.store.completeTriageAiJob(
+      claimed.id,
+      {
+        groups: [
+          {
+            messageIds: [messageId],
+            contextMessageIds: [],
+            kind: "demand",
+            suggestedAction: "create",
+            relatedTicketId: null,
+            relatedSuggestionId: null,
+            title: "Painel sem dados",
+            summary: "O cliente informou ausência dos dados esperados no painel.",
+            priority: "high",
+            affectedEcommerce: null,
+            categories: {
+              contactReason: [],
+              productArea: [],
+              platform: [],
+              symptom: [],
+            },
+            reason: "A mensagem descreve uma falha operacional verificável.",
+            confidence: 0.9,
+          },
+        ],
+      },
+      { actor: "Hermes · Pessoa Operadora", model: "modelo-externo" },
+    ),
+    1,
+  );
+
+  const audit = current.database
+    .prepare(
+      `SELECT event.actor, block.ai_model
+       FROM triage_block_events event
+       JOIN triage_blocks block ON block.id = event.block_id
+       WHERE event.event_type = 'suggestion_recorded'
+       ORDER BY event.occurred_at DESC, event.id DESC
+       LIMIT 1`,
+    )
+    .get() as { actor: string; ai_model: string };
+  assert.deepEqual(audit, {
+    actor: "Hermes · Pessoa Operadora",
+    ai_model: "modelo-externo",
+  });
+  assert.deepEqual(current.store.getTriageAiQueueStatus(), {
+    queued: 0,
+    running: 0,
+    revision: null,
+  });
+});
+
 test("scheduler espera o bloco ficar quieto, enfileira uma vez e deduplica", () => {
   const current = fixture();
   addMessage(
@@ -568,6 +643,76 @@ test("IA vincula automaticamente ao ticket apenas com contexto interno e alta co
       .get(response),
     { triage_kind: "context", triage_state: "context" },
   );
+});
+
+test("executor externo mantém vínculo de alta confiança como sugestão para revisão humana", () => {
+  const current = fixture();
+  const source = addMessage(
+    current,
+    "external-review-source",
+    "2026-07-17T13:00:00.000Z",
+    "Os totais do dashboard estão incorretos.",
+  );
+  const ticket = current.store.createTicket({
+    id: "external-review-ticket",
+    groupId: current.groupId,
+    sourceMessageId: source,
+    title: "Totais incorretos no dashboard",
+    summary: "Cliente relata divergência nos totais.",
+  });
+  const continuation = addMessage(
+    current,
+    "external-review-continuation",
+    "2026-07-17T13:05:00.000Z",
+    "O mesmo total continua incorreto.",
+  );
+
+  assert.equal(scheduler(current), 1);
+  const claimed = current.store.claimNextAgentJob();
+  assert.ok(claimed?.kind === "triage");
+  if (!claimed || claimed.kind !== "triage") assert.fail("Job não encontrado");
+
+  assert.equal(
+    current.store.completeTriageAiJob(
+      claimed.id,
+      {
+        groups: [{
+          messageIds: [continuation],
+          kind: "continuation",
+          suggestedAction: "attach",
+          relatedTicketId: ticket.id,
+          relatedSuggestionId: null,
+          title: "Continuação da divergência no dashboard",
+          summary: "O mesmo total continua incorreto.",
+          affectedEcommerce: null,
+          categories: {
+            contactReason: ["Problema"],
+            productArea: ["Dashboard"],
+            platform: [],
+            symptom: ["Dados incorretos"],
+          },
+          reason: "Continuação do mesmo assunto.",
+          confidence: 0.99,
+        }],
+      },
+      { actor: "Hermes · Pessoa Operadora", allowAutoAttach: false },
+    ),
+    1,
+  );
+
+  const linkedIds = (
+    current.database
+      .prepare(
+        `SELECT message_id FROM ticket_messages
+         WHERE ticket_id = ? ORDER BY message_id`,
+      )
+      .all(ticket.id) as Array<{ message_id: string }>
+  ).map((row) => row.message_id);
+  assert.deepEqual(linkedIds, [source]);
+  const suggestion = current.store.listConversationTriageBlocks(current.groupId).items[0];
+  assert.equal(suggestion?.suggestedAction, "attach");
+  assert.equal(suggestion?.suggestedTicketId, ticket.id);
+  assert.deepEqual(suggestion?.messageIds, [continuation]);
 });
 
 test("mudança explícita de assunto impede vínculo automático e mantém resposta da equipe para revisão", () => {

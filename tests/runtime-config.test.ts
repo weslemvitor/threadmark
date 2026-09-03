@@ -14,6 +14,13 @@ test("config mantem servico restrito ao localhost por padrao", () => {
   assert.equal(config.triageAiEnabled, true);
   assert.equal(config.triageAiModel, "gpt-5.4-mini");
   assert.equal(config.triageAiQuietMs, 180_000);
+  assert.equal(config.agentExecutor, "internal");
+});
+
+test("config permite delegar a execução de IA ao Hermes sem mudar o padrão", () => {
+  const config = loadConfig({ SUPPORT_AGENT_EXECUTOR: "hermes" });
+
+  assert.equal(config.agentExecutor, "hermes");
 });
 
 test("config normaliza grupos e equipe sem duplicatas", () => {

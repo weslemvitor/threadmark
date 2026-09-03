@@ -62,6 +62,7 @@ import {
   type AiTaskProfileDto,
 } from "./agent/provider-settings.js";
 import { InvestigationExecutionRegistry } from "./agent/investigation-execution-registry.js";
+import { triageAnalysisSchema } from "./agent/validation.js";
 import {
   InvestigationPackError,
   InvestigationPackService,
@@ -169,6 +170,13 @@ export interface StartApiServerOptions {
 
 type RequestIdentity =
   | { kind: "user"; user: AuthUserDto; sessionToken: string }
+  | {
+      kind: "agent";
+      user: AuthUserDto;
+      sessionToken: null;
+      clientId: "hermes" | "threadmark-cli";
+      clientLabel: "Hermes" | "Threadmark CLI";
+    }
   | {
       kind: "local";
       user: AuthUserDto;
@@ -383,6 +391,19 @@ const conversationSuggestionSettingsInputSchema = z
 const conversationClearPendingInputSchema = z
   .object({
     actor: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
+const externalTriageLeaseInputSchema = z
+  .object({
+    leaseSeconds: z.number().int().min(30).max(15 * 60).default(10 * 60),
+  })
+  .strict();
+
+const externalTriageCompleteInputSchema = z
+  .object({
+    analysis: triageAnalysisSchema,
+    model: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 
@@ -1135,6 +1156,19 @@ function requireLocalMachineIdentity(
   return identity;
 }
 
+function requireHermesAgentIdentity(
+  context: Context<ApiEnvironment>,
+): Extract<RequestIdentity, { kind: "agent" }> {
+  const identity = context.get("identity");
+  if (!identity || identity.kind !== "agent" || identity.clientId !== "hermes") {
+    throw new AuthError(
+      "forbidden",
+      "Esta operação exige uma identidade Hermes delegada e autenticada.",
+    );
+  }
+  return identity;
+}
+
 function requireRole(
   context: Context<ApiEnvironment>,
   roles: AuthRole[],
@@ -1157,6 +1191,9 @@ function actorFor(
   if (identity?.kind === "test") {
     return unauthenticatedFallback?.trim() || "Operador local";
   }
+  if (identity?.kind === "agent") {
+    return `${identity.clientLabel} · ${identity.user.displayName}`;
+  }
   return (
     identity?.user.displayName ??
     unauthenticatedFallback?.trim() ??
@@ -1172,7 +1209,10 @@ function investigationMessageActorFor(
     throw new AuthError("authentication_required", "Entre para continuar.");
   }
   return {
-    userId: identity.kind === "user" ? identity.user.id : null,
+    userId:
+      identity.kind === "user" || identity.kind === "agent"
+        ? identity.user.id
+        : null,
     role: identity.user.role,
   };
 }
@@ -1184,7 +1224,9 @@ function threadmarkAiOwnerUserIdFor(
   if (!identity) {
     throw new AuthError("authentication_required", "Entre para continuar.");
   }
-  return identity.kind === "user" ? identity.user.id : null;
+  return identity.kind === "user" || identity.kind === "agent"
+    ? identity.user.id
+    : null;
 }
 
 function requireTicketInvestigationThread(
@@ -1218,6 +1260,26 @@ function localMachineIdentity(): Extract<RequestIdentity, { kind: "local" }> {
       createdAt: now,
       updatedAt: now,
     },
+  };
+}
+
+function agentMachineIdentity(
+  auth: LocalAuthService,
+  userId: string,
+  clientValue: string | undefined,
+): Extract<RequestIdentity, { kind: "agent" }> {
+  const clientId = (clientValue?.trim().toLowerCase() || "threadmark-cli") as
+    | "hermes"
+    | "threadmark-cli";
+  if (clientId !== "hermes" && clientId !== "threadmark-cli") {
+    throw new AuthError("forbidden", "Cliente de agente não autorizado.");
+  }
+  return {
+    kind: "agent",
+    user: auth.resolveMachineActor(userId),
+    sessionToken: null,
+    clientId,
+    clientLabel: clientId === "hermes" ? "Hermes" : "Threadmark CLI",
   };
 }
 
@@ -1365,7 +1427,12 @@ function createApiAppInternal(
     cors({
       origin: config.webOrigin,
       allowMethods: ["GET", "PATCH", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-Threadmark-Actor-Id",
+        "X-Threadmark-Agent-Client",
+      ],
       exposeHeaders: ["Content-Disposition"],
       credentials: true,
     }),
@@ -1403,7 +1470,17 @@ function createApiAppInternal(
     if (authorization?.startsWith("Bearer ") && services.localAccessToken) {
       const token = authorization.slice("Bearer ".length).trim();
       if (await services.localAccessToken.verify(token)) {
-        context.set("identity", localMachineIdentity());
+        const delegatedActorId = context.req.header("X-Threadmark-Actor-Id")?.trim();
+        context.set(
+          "identity",
+          delegatedActorId
+            ? agentMachineIdentity(
+                auth,
+                delegatedActorId,
+                context.req.header("X-Threadmark-Agent-Client"),
+              )
+            : localMachineIdentity(),
+        );
         if (isMutation(context.req.method)) requireRole(context, ["owner", "admin", "operator"]);
         return next();
       }
@@ -1584,6 +1661,7 @@ function createApiAppInternal(
       ...store.getRuntimeStatus(),
       whatsappEnabled: config.whatsappEnabled,
       agentEnabled: config.agentEnabled,
+      agentExecutor: config.agentExecutor,
     };
     const runtime = runtimeState
       ? runtimeFromFile(await runtimeState.read(), fallback)
@@ -2238,6 +2316,58 @@ function createApiAppInternal(
     return context.json(
       await requireAutomations(services).testConnectedApp(context.req.param("id")),
     );
+  });
+
+  app.get("/api/agent/triage/jobs", (context) => {
+    return context.json(store.getTriageAiQueueStatus());
+  });
+
+  app.post("/api/agent/triage/jobs/claim", async (context) => {
+    requireHermesAgentIdentity(context);
+    const raw = await context.req.text();
+    const input = externalTriageLeaseInputSchema.parse(raw ? JSON.parse(raw) : {});
+    const job = store.claimNextTriageAiJob(input.leaseSeconds * 1_000);
+    return context.json({
+      job: job
+        ? {
+            ...job,
+            input: store.getTriageAiJobInput(job.id),
+          }
+        : null,
+    });
+  });
+
+  app.post("/api/agent/triage/jobs/:id/heartbeat", async (context) => {
+    requireHermesAgentIdentity(context);
+    const raw = await context.req.text();
+    const input = externalTriageLeaseInputSchema.parse(raw ? JSON.parse(raw) : {});
+    const renewed = store.renewTriageAiJobLease(
+      context.req.param("id"),
+      input.leaseSeconds * 1_000,
+    );
+    if (!renewed) {
+      throw new DomainError(
+        "Job de triagem em execução não encontrado",
+        "not_found",
+        404,
+      );
+    }
+    return context.json({ renewed: true as const });
+  });
+
+  app.post("/api/agent/triage/jobs/:id/complete", async (context) => {
+    requireHermesAgentIdentity(context);
+    const input = externalTriageCompleteInputSchema.parse(await context.req.json());
+    const appliedBlocks = store.completeTriageAiJob(
+      context.req.param("id"),
+      input.analysis,
+      {
+        actor: actorFor(context),
+        allowAutoAttach: false,
+        ...(input.model ? { model: input.model } : {}),
+      },
+    );
+    return context.json({ appliedBlocks });
   });
 
   app.get("/api/dashboard", (context) => {

@@ -6038,6 +6038,114 @@ export class SupportStore {
     };
   }
 
+  getTriageAiQueueStatus(): {
+    queued: number;
+    running: number;
+    revision: string | null;
+  } {
+    const row = this.database
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS queued,
+           SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running,
+           MAX(updated_at) AS revision
+         FROM triage_ai_jobs
+         WHERE state IN ('queued', 'running')`,
+      )
+      .get() as {
+        queued: number | null;
+        running: number | null;
+        revision: string | null;
+      };
+    return {
+      queued: row.queued ?? 0,
+      running: row.running ?? 0,
+      revision: row.revision,
+    };
+  }
+
+  claimNextTriageAiJob(
+    leaseMs = 10 * 60_000,
+  ): Extract<ClaimedAgentJob, { kind: "triage" }> | null {
+    if (!Number.isFinite(leaseMs) || leaseMs < 1_000) {
+      throw new ValidationError("Lease do job deve ser de pelo menos 1000ms");
+    }
+    const claimedAt = nowUtc();
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    return this.database.transaction(() => {
+      const candidate = this.database
+        .prepare(
+          `SELECT job.id
+           FROM triage_ai_jobs job
+           JOIN whatsapp_groups conversation ON conversation.id = job.group_id
+           JOIN clients client ON client.id = conversation.client_id
+           JOIN triage_ai_settings settings
+             ON settings.singleton = 1 AND settings.enabled = 1
+           WHERE client.ignored_at IS NULL
+             AND conversation.suggestions_muted_at IS NULL
+             AND (
+               job.state = 'queued'
+               OR (job.state = 'running' AND job.lease_expires_at IS NOT NULL AND job.lease_expires_at <= ?)
+             )
+           ORDER BY CASE job.state WHEN 'running' THEN 0 ELSE 1 END,
+                    job.requested_at, job.id
+           LIMIT 1`,
+        )
+        .get(claimedAt) as { id: string } | undefined;
+      if (!candidate) return null;
+      const row = this.database
+        .prepare(
+          `UPDATE triage_ai_jobs
+           SET state = 'running', started_at = COALESCE(started_at, ?),
+               claimed_at = ?, lease_expires_at = ?,
+               attempt_count = attempt_count + 1, error = NULL,
+               updated_at = ?
+           WHERE id = ?
+             AND (state = 'queued'
+               OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))
+           RETURNING id, group_id, model, attempt_count`,
+        )
+        .get(
+          claimedAt,
+          claimedAt,
+          leaseExpiresAt,
+          claimedAt,
+          candidate.id,
+          claimedAt,
+        ) as
+        | {
+            id: string;
+            group_id: string;
+            model: string;
+            attempt_count: number;
+          }
+        | undefined;
+      if (!row) return null;
+      return {
+        kind: "triage" as const,
+        id: row.id,
+        groupId: row.group_id,
+        model: row.model,
+        attemptCount: row.attempt_count,
+      };
+    })();
+  }
+
+  renewTriageAiJobLease(jobId: string, leaseMs = 10 * 60_000): boolean {
+    if (!Number.isFinite(leaseMs) || leaseMs < 1_000) {
+      throw new ValidationError("Lease do job deve ser de pelo menos 1000ms");
+    }
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    const result = this.database
+      .prepare(
+        `UPDATE triage_ai_jobs
+         SET lease_expires_at = ?, updated_at = ?
+         WHERE id = ? AND state = 'running'`,
+      )
+      .run(leaseExpiresAt, nowUtc(), jobId);
+    return result.changes === 1;
+  }
+
   getTriageAiJobCandidates(jobId: string): TriageCandidate[] {
     const ids = (
       this.database
@@ -6098,7 +6206,13 @@ export class SupportStore {
   completeTriageAiJob(
     jobId: string,
     analysis: TriageAnalysis,
-    options: { fallbackUsed?: boolean; error?: string | null } = {},
+    options: {
+      fallbackUsed?: boolean;
+      error?: string | null;
+      actor?: string;
+      model?: string;
+      allowAutoAttach?: boolean;
+    } = {},
   ): number {
     return this.database.transaction(() => {
       const job = this.database
@@ -6255,6 +6369,10 @@ export class SupportStore {
       }
 
       let appliedBlocks = 0;
+      const triageActor = options.fallbackUsed
+        ? "triage-fallback"
+        : options.actor?.trim() || "Agente de IA";
+      const triageModel = options.model?.trim() || job.model;
       const waitingMessageIds: string[] = [];
       const waitingReasons: string[] = [];
       for (const decision of analysis.groups) {
@@ -6310,7 +6428,7 @@ export class SupportStore {
             priority: decision.priority ?? "normal",
             affectedStoreId,
             confidence: decision.confidence,
-            actor: options.fallbackUsed ? "triage-fallback" : "Agente de IA",
+            actor: triageActor,
             reason: options.fallbackUsed ? "local_fallback" : "ai_semantic",
             suggestionGroupId: position
               ? blockId ?? undefined
@@ -6343,7 +6461,7 @@ export class SupportStore {
             options.fallbackUsed ? "local_fallback" : decision.reason,
             affectedStoreId,
             JSON.stringify(normalizedCategories),
-            job.model,
+            triageModel,
             job.prompt_version,
             jobId,
             options.fallbackUsed ? 1 : 0,
@@ -6354,13 +6472,14 @@ export class SupportStore {
           this.insertTriageBlockEvent({
             blockId,
             eventType: "suggestion_updated",
-            actor: options.fallbackUsed ? "triage-fallback" : "Agente de IA",
+            actor: triageActor,
             messageIds: decision.messageIds,
             data: { triageAiJobId: jobId },
             occurredAt: timestamp,
           });
         }
         const shouldAutoAttach =
+          options.allowAutoAttach !== false &&
           !options.fallbackUsed &&
           action === "attach" &&
           Boolean(suggestedTicketId) &&
@@ -6435,7 +6554,7 @@ export class SupportStore {
             job.group_id,
             JSON.stringify(uniqueWaitingMessageIds),
             reasons.join("\n").slice(0, 4_000),
-            job.model,
+            triageModel,
             job.prompt_version,
             timestamp,
             timestamp,
@@ -6449,7 +6568,7 @@ export class SupportStore {
       this.database
         .prepare(
           `UPDATE triage_ai_jobs
-           SET state = 'completed', result_json = ?, error = ?,
+           SET state = 'completed', result_json = ?, error = ?, model = ?,
                fallback_used = ?, finished_at = ?, claimed_at = NULL,
                lease_expires_at = NULL, updated_at = ?
            WHERE id = ?`,
@@ -6457,6 +6576,7 @@ export class SupportStore {
         .run(
           JSON.stringify(analysis),
           options.error?.slice(0, 16_000) ?? null,
+          triageModel,
           options.fallbackUsed ? 1 : 0,
           timestamp,
           timestamp,

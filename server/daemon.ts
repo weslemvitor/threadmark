@@ -208,64 +208,69 @@ async function main(): Promise<void> {
       onError: (error) => console.error("Falha ao preparar triagem", error),
     });
     backgroundTasks.push(triageScheduler.run(controller.signal));
-    const codexAgent = new CodexSupportAgent({
-      codexBin: config.codexBin,
-      cwd: config.projectRoot,
-      dataDir: path.join(config.dataDir, "agent-runs"),
-      attachmentsRoot: config.attachmentsDir,
-      mcpToolLoopEnabled: config.codexMcpToolLoopEnabled,
-      databasePath: config.databasePath,
-      supportDataDir: config.dataDir,
-    });
-    const deepTools = new DeepToolExecutor(
-      new LocalToolService(database, secretVault),
-      {
+    if (config.agentExecutor === "hermes") {
+      store.recoverRunningTriageAiJobs();
+      console.log("Triagem agentic delegada ao Hermes pela CLI headless.");
+    } else {
+      const codexAgent = new CodexSupportAgent({
+        codexBin: config.codexBin,
+        cwd: config.projectRoot,
+        dataDir: path.join(config.dataDir, "agent-runs"),
+        attachmentsRoot: config.attachmentsDir,
+        mcpToolLoopEnabled: config.codexMcpToolLoopEnabled,
+        databasePath: config.databasePath,
+        supportDataDir: config.dataDir,
+      });
+      const deepTools = new DeepToolExecutor(
+        new LocalToolService(database, secretVault),
+        {
+          database,
+          connectedApps: new ConnectedAppService(database, secretVault),
+          integrationVault: secretVault,
+        },
+      );
+      const agent = new ConfiguredSupportAgent(
         database,
-        connectedApps: new ConnectedAppService(database, secretVault),
-        integrationVault: secretVault,
-      },
-    );
-    const agent = new ConfiguredSupportAgent(
-      database,
-      providerSettings,
-      codexAgent,
-      deepTools,
-    );
-    const investigations = new InvestigationWorker(store, agent, {
-      executionRegistry: investigationExecutions,
-      concurrency: config.agentConcurrency,
-      onEvent(event) {
-        if (event.type === "failed") {
-          console.error(`Investigação ${event.jobId} falhou: ${event.error}`);
-        }
-        if (
-          (event.type === "completed" || event.type === "failed") &&
-          event.ticketId &&
-          (event.jobKind === "automatic" || event.jobKind === "thread_turn")
-        ) {
-          void Promise.resolve().then(() => {
-            const ticket = store.getTicketDetail(event.ticketId!);
-            const investigation = event.jobKind === "thread_turn"
-              ? "Investigação aprofundada"
-              : "Investigação automática";
-            return notifications.createForAll({
-              title: event.type === "completed"
-                ? `${investigation} concluída`
-                : `${investigation} falhou`,
-              body: `#${ticket.number} · ${ticket.client.name}\n${ticket.title}`,
-              targetUrl: `/tickets/${ticket.number}`,
-              sourceType: "investigation",
-              sourceId: event.jobId,
-              idempotencyKey: `investigation:${event.jobId}:${event.type}`,
-              tone: event.type === "failed" ? "urgent" : "success",
+        providerSettings,
+        codexAgent,
+        deepTools,
+      );
+      const investigations = new InvestigationWorker(store, agent, {
+        executionRegistry: investigationExecutions,
+        concurrency: config.agentConcurrency,
+        onEvent(event) {
+          if (event.type === "failed") {
+            console.error(`Investigação ${event.jobId} falhou: ${event.error}`);
+          }
+          if (
+            (event.type === "completed" || event.type === "failed") &&
+            event.ticketId &&
+            (event.jobKind === "automatic" || event.jobKind === "thread_turn")
+          ) {
+            void Promise.resolve().then(() => {
+              const ticket = store.getTicketDetail(event.ticketId!);
+              const investigation = event.jobKind === "thread_turn"
+                ? "Investigação aprofundada"
+                : "Investigação automática";
+              return notifications.createForAll({
+                title: event.type === "completed"
+                  ? `${investigation} concluída`
+                  : `${investigation} falhou`,
+                body: `#${ticket.number} · ${ticket.client.name}\n${ticket.title}`,
+                targetUrl: `/tickets/${ticket.number}`,
+                sourceType: "investigation",
+                sourceId: event.jobId,
+                idempotencyKey: `investigation:${event.jobId}:${event.type}`,
+                tone: event.type === "failed" ? "urgent" : "success",
+              });
+            }).catch((error) => {
+              console.error(`Falha ao notificar conclusão da investigação ${event.jobId}`, error);
             });
-          }).catch((error) => {
-            console.error(`Falha ao notificar conclusão da investigação ${event.jobId}`, error);
-          });
-        }
-      },
-    });
-    backgroundTasks.push(investigations.run(controller.signal));
+          }
+        },
+      });
+      backgroundTasks.push(investigations.run(controller.signal));
+    }
   } else {
     const triageWorker = new TriageWorker(store, {
       onError: (candidate, error) => {

@@ -22,6 +22,7 @@ const envSchema = z.object({
   SUPPORT_WHATSAPP_ENABLED: booleanEnvironment(true),
   SUPPORT_START_WEB: booleanEnvironment(true),
   SUPPORT_AGENT_ENABLED: booleanEnvironment(true),
+  SUPPORT_AGENT_EXECUTOR: z.enum(["internal", "hermes"]).default("internal"),
   SUPPORT_AGENT_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
   SUPPORT_CODEX_MCP_TOOL_LOOP_ENABLED: booleanEnvironment(true),
   SUPPORT_TRIAGE_AI_ENABLED: booleanEnvironment(true),
@@ -61,6 +62,7 @@ export interface SupportConfig {
   whatsappEnabled: boolean;
   startWeb: boolean;
   agentEnabled: boolean;
+  agentExecutor: "internal" | "hermes";
   agentConcurrency: number;
   codexMcpToolLoopEnabled: boolean;
   triageAiEnabled: boolean;
@@ -118,6 +120,7 @@ export function loadConfig(
     whatsappEnabled: env.SUPPORT_WHATSAPP_ENABLED,
     startWeb: env.SUPPORT_START_WEB,
     agentEnabled: env.SUPPORT_AGENT_ENABLED,
+    agentExecutor: env.SUPPORT_AGENT_EXECUTOR,
     agentConcurrency: env.SUPPORT_AGENT_CONCURRENCY,
     codexMcpToolLoopEnabled: env.SUPPORT_CODEX_MCP_TOOL_LOOP_ENABLED,
     triageAiEnabled: env.SUPPORT_TRIAGE_AI_ENABLED,

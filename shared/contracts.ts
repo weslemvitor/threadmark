@@ -1157,6 +1157,7 @@ export interface RuntimeStatusDto {
   lastError: string | null;
   whatsappEnabled?: boolean;
   agentEnabled?: boolean;
+  agentExecutor?: "internal" | "hermes";
 }
 
 export interface OperationalGroupDto {
