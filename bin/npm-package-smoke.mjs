@@ -19,6 +19,7 @@ try {
   await run(npmCommand(), [
     "pack",
     "--silent",
+    "--ignore-scripts",
     "--pack-destination",
     packageDirectory,
   ], {

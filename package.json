@@ -124,6 +124,7 @@
   "overrides": {
     "adm-zip": "0.6.0",
     "browserslist": "4.28.8",
+    "fast-uri": "3.1.6",
     "postcss": "8.5.24",
     "sharp": "0.35.3",
     "ws": "8.21.0"
