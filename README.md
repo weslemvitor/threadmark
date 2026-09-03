@@ -2,7 +2,9 @@
 
 Threadmark é uma central de suporte local-first que organiza conversas recebidas pelo WhatsApp em tickets e contexto operacional. Grupos e pessoas permanecem entidades nativas no Diretório. A captura é estritamente de entrada: o produto não possui composer, endpoint de envio nem automação de respostas no WhatsApp.
 
-A persistência operacional de mensagens, anexos, configurações e investigações fica na máquina do operador. Quando um provedor remoto de IA é configurado, o recorte sanitizado necessário à tarefa é enviado a esse provedor. Uma sugestão de resposta só pode ser copiada e enviada manualmente pela equipe no aplicativo oficial.
+O backend também oferece uma CLI headless versionada para agentes externos. Nessa arquitetura, o Threadmark continua sendo a fonte de verdade e a interface de organização do suporte; Hermes, Codex ou outro agente podem investigar com suas próprias skills e operar tickets pela CLI, sem receber acesso direto ao SQLite ou ao token da API.
+
+A persistência operacional de mensagens, anexos e tickets fica na máquina do operador. Modelos, skills, memória e ferramentas externas são configurados no agente escolhido, fora do Threadmark. Uma sugestão de resposta só pode ser enviada manualmente pela equipe no aplicativo oficial.
 
 ## Baixar o aplicativo
 
@@ -31,7 +33,7 @@ open -a Threadmark
 
 O comando `xattr` reduz uma proteção do macOS. Use-o somente depois de validar um instalador baixado da release oficial, nunca em uma cópia recebida por terceiros. Para consultar os arquivos publicados, notas da versão e checksum, abra a **[release v0.3.1](https://github.com/weslemvitor/threadmark/releases/tag/v0.3.1)**.
 
-Na primeira abertura, o assistente cria o administrador e o workspace locais. Em seguida, use **Configurações** para cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. Seus dados ficam em `~/Library/Application Support/Threadmark`, fora do aplicativo, e permanecem no Mac ao atualizar o `.app`. Consulte [UPGRADE.md](UPGRADE.md) antes de atualizar, restaurar ou desinstalar.
+Na primeira abertura, o assistente cria o administrador e o workspace locais. Em seguida, use **Configurações** para cadastrar a equipe e parear o WhatsApp por QR Code. Seus dados ficam em `~/Library/Application Support/Threadmark`, fora do aplicativo, e permanecem no Mac ao atualizar o `.app`. Consulte [UPGRADE.md](UPGRADE.md) antes de atualizar, restaurar ou desinstalar.
 
 Se você quer contribuir ou executar a versão mais recente diretamente do repositório, siga [Executar pelo código-fonte](#executar-pelo-código-fonte).
 
@@ -47,10 +49,10 @@ Se você quer contribuir ou executar a versão mais recente diretamente do repos
 - Seleção manual de mensagens para criar um ticket, anexar a um caso existente, guardar como contexto ou restaurar itens revisados.
 - Diretório local com grupos e pessoas sincronizados do WhatsApp.
 - Conversas, Kanban com contexto completo por card e arquivamento, Diretório, categorias e dashboard com período, responsável, comparação com o período anterior, eficiência operacional, envelhecimento do backlog e exportação filtrada.
-- Automações visuais com gatilhos de ticket, condições, esperas, aprovações humanas, ações internas e apps conectados.
+- Automações visuais internas com gatilhos de ticket, condições, esperas, aprovações humanas e ações do próprio Threadmark.
 - Imagens exibidas no chat, suporte local a documentos e PDFs e transcrição opcional de áudios no próprio computador.
-- Threadmark AI global em formato de chat, com histórico persistido, contexto da tela atual, evidências, sugestões de resposta e trabalho contínuo em segundo plano.
-- Broker de ferramentas tipadas, disponível somente no Threadmark AI e limitado às fontes e ações autorizadas pelo workspace. Fontes técnicas permanecem readonly; escritas internas e externas usam operações explícitas e confirmação atual.
+- CLI headless versionada para Hermes, Codex ou outro agente consultar conversas e operar tickets com contratos estáveis.
+- Triagem assíncrona delegável ao agente externo, com claim atômico, lease, schema validado e sugestões sempre revisáveis na interface.
 - SQLite como fonte de verdade e arquivos locais com permissões restritivas.
 
 ## Invariantes de segurança
@@ -60,7 +62,7 @@ Se você quer contribuir ou executar a versão mais recente diretamente do repos
 - Casos ambíguos permanecem em revisão; não são descartados silenciosamente.
 - Conteúdo de mensagens, anexos e documentos é tratado como não confiável pelo agente.
 - A triagem não executa shell, código, banco ou infraestrutura.
-- Ferramentas técnicas do Threadmark AI devem ser configuradas explicitamente e operar somente em leitura. A criação de ticket interno usa um rascunho persistido e uma confirmação posterior do operador.
+- Ferramentas técnicas pertencem ao ambiente do agente e devem aplicar readonly na própria credencial ou tool. Escritas no Threadmark passam somente pela CLI, exigem `--apply`, identidade ativa e validação do domínio.
 - Credenciais, sessão do WhatsApp, banco, anexos, logs, backups e chaves ficam fora do Git.
 
 Leia também a [política de segurança](SECURITY.md) e o guia de [privacidade e dados locais](docs/privacy.md).
@@ -75,21 +77,22 @@ Baileys inbound-only
   -> blocos sugeridos para revisão humana
   -> ticket confirmado como recorte de mensagens
   -> contexto completo aberto pelo card do Kanban
-  -> Threadmark AI global, opcional e persistente
-  -> Web UI local
+  -> Web UI local para revisão e organização
+  -> CLI headless para o Hermes
+      -> skills, modelos e ferramentas externas do agente
   -> cópia manual da resposta pelo operador
   -> resolução documentada no ticket
 ```
 
-A mesma Web UI é a interface operacional no navegador e no aplicativo desktop. A CLI permanece responsável pelo ciclo de vida e pelo diagnóstico, sem uma interface própria de terminal. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md), a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md) e a [ADR 0003](docs/decisions/0003-desktop-local-and-remote-workspaces.md).
+A mesma Web UI é a interface operacional no navegador e no aplicativo desktop. A CLI também expõe contratos de domínio para agentes externos, sem substituir a revisão visual. Obsidian e outras pastas de conhecimento são integrações opcionais, nunca o banco bruto de mensagens. Veja [docs/architecture.md](docs/architecture.md), a [ADR 0001](docs/decisions/0001-web-ui-and-obsidian.md), a [ADR 0003](docs/decisions/0003-desktop-local-and-remote-workspaces.md) e a [ADR 0004](docs/decisions/0004-headless-agent-cli.md).
 
-## Automações e apps conectados
+## Automações internas
 
-A área **Automações** oferece um editor visual baseado em nós. Um fluxo começa com um gatilho de ticket, pode aplicar condições, aguardar um período, exigir aprovação da equipe e então executar uma ação interna ou chamar um app conectado. Rascunhos incompletos podem ser salvos; a ativação só é permitida quando o grafo é válido, acíclico e sem junções ambíguas.
+A área **Automações** oferece um editor visual baseado em nós. Um fluxo começa com um gatilho de ticket, pode aplicar condições, aguardar um período, exigir aprovação da equipe e então executar uma ação interna. Rascunhos incompletos podem ser salvos; a ativação só é permitida quando o grafo é válido, acíclico e sem junções ambíguas.
 
 A disposição visual dos nós, o nome e a descrição são persistidos separadamente da definição funcional. Por isso, reorganizar o canvas ou editar esses metadados não desativa um fluxo ativo. Alterações em gatilhos, condições, conexões ou ações substituem a definição atual; um fluxo ativo permanece ativo e passa a usar a configuração nova nos próximos eventos, enquanto execuções já abertas preservam o snapshot com que começaram. O canvas exibe a configuração operacional principal de cada etapa, como `7 dias` ou `Arquivar ticket`.
 
-As primeiras conexões disponíveis são Slack por webhook e API HTTP personalizada. Credenciais ficam no cofre local cifrado e nunca retornam para a interface. O botão de teste do fluxo executa apenas a validação estrutural e mostra o resultado no próprio canvas, sem persistir uma execução, alterar tickets ou chamar serviços externos. Execuções reais são persistidas no SQLite, retomam após reinício e permitem pausa, cancelamento e decisão humana nas etapas de aprovação.
+O botão de teste do fluxo executa apenas a validação estrutural e mostra o resultado no próprio canvas, sem persistir uma execução nem alterar tickets. Execuções reais são persistidas no SQLite, retomam após reinício e permitem pausa, cancelamento e decisão humana nas etapas de aprovação. Integrações externas como GitHub, Linear, AWS e bancos pertencem ao ambiente do Hermes; conexões antigas permanecem preservadas apenas para que fluxos já existentes não sejam corrompidos durante a migração.
 
 Por segurança, o catálogo nunca oferece envio pelo WhatsApp. Automações também ignoram os eventos de ticket que elas próprias produziram, evitando ciclos involuntários. Na primeira inicialização do motor, o cursor começa no estado atual: eventos antigos não são reproduzidos em massa.
 
@@ -101,7 +104,7 @@ Este caminho é destinado a desenvolvimento, contribuição ou diagnóstico. Par
 
 - Node.js `>=22.13.0`.
 - Uma conta do WhatsApp autorizada para o pareamento.
-- Um provedor de IA configurado, caso deseje triagem e Threadmark AI.
+- Um agente externo configurado, caso deseje triagem semântica e investigação pelo terminal.
 
 O macOS é a única plataforma validada de ponta a ponta nesta versão. O serviço de inicialização automática usa LaunchAgent e é exclusivo do macOS. Linux e Windows ainda não são alvos oficialmente suportados; partes da aplicação podem funcionar, mas captura, notificações e ciclo de vida não possuem garantia ou matriz de testes nessas plataformas.
 
@@ -119,7 +122,31 @@ threadmark on
 
 O pacote não está publicado no registro npm. Não use `npm install -g threadmark`: o `npm link` acima registra o executável do clone atual. O tarball e a instalação global são validados pela CI para uma publicação futura, mas nenhum pacote será enviado ao registro sem uma release explícita. Para atualizar ou remover essa instalação, consulte [UPGRADE.md](UPGRADE.md).
 
-Abra [http://127.0.0.1:3000](http://127.0.0.1:3000). Em uma instalação nova, o assistente inicial cria o administrador local e identifica o workspace. Depois, a área **Configurações** permite cadastrar a equipe, escolher o provedor de IA e parear o WhatsApp por QR Code. O login é local; não existe conta hospedada pelo projeto. Use esse endereço exato para que a sessão permaneça no mesmo host da API local.
+Abra [http://127.0.0.1:3000](http://127.0.0.1:3000). Em uma instalação nova, o assistente inicial cria o administrador local e identifica o workspace. Depois, a área **Configurações** permite cadastrar a equipe e parear o WhatsApp por QR Code. O login é local; não existe conta hospedada pelo projeto. Use esse endereço exato para que a sessão permaneça no mesmo host da API local.
+
+### CLI headless para agentes
+
+O contrato instalado pode ser descoberto sem abrir o banco ou iniciar uma sessão de IA:
+
+```bash
+threadmark capabilities --json
+threadmark agent triage-status --json
+threadmark operators list --json
+threadmark tickets get '#123' --json
+threadmark conversations list --query 'nome do grupo' --json
+```
+
+Leituras são executadas diretamente. Escritas exigem o JSON da operação, `--apply` e um usuário ativo para auditoria:
+
+```bash
+threadmark tickets status '#123' \
+  --input /caminho/privado/status.json \
+  --apply --as operador-id --client hermes --json
+```
+
+Use arquivo com permissão privada ou stdin para conteúdo de atendimento. Não coloque mensagens, IDs reais, tokens ou payloads locais no repositório. A API registra a alteração com a origem do agente e continua aplicando papéis, validações, transições de status e idempotência do domínio. Consulte a [ADR 0004](docs/decisions/0004-headless-agent-cli.md) para o fluxo de migração.
+
+Por compatibilidade, uma instalação nova começa com `SUPPORT_AGENT_EXECUTOR=internal`. Depois de configurar um executor Hermes que reivindique, renove e conclua a fila de triagem pela CLI, altere essa opção local para `hermes`. Nesse modo o agendador continua produzindo jobs a partir das mensagens inbound, mas o Threadmark não executa modelos internamente nem disputa o mesmo job com o Hermes.
 
 ## Como o aplicativo para macOS funciona
 
@@ -148,7 +175,7 @@ npm run release:desktop
 
 Os artefatos ficam em `release/` e não entram no Git. Uma tag `vX.Y.Z` correspondente à versão de `package.json` aciona o workflow de Developer Preview, que repete essas validações antes de anexar o DMG e seu checksum à release. A configuração **Aplicativo** oferece os modos:
 
-- **Nesta máquina:** mantém SQLite, anexos, WhatsApp, automações e IA no Mac atual;
+- **Nesta máquina:** mantém SQLite, anexos, WhatsApp e automações internas no Mac atual;
 - **Servidor remoto:** conecta o aplicativo a uma origem HTTPS compatível, sem migrar ou apagar o workspace local.
 
 O cliente remoto é uma fundação para a edição hospedada. O servidor multiusuário empacotado, provisionamento de VPS, domínio, TLS e atualização remota serão entregues em uma fase própria; informar uma URL qualquer não transforma a instalação local atual em serviço hospedado.
@@ -166,7 +193,7 @@ SUPPORT_MONITORED_GROUPS=
 SUPPORT_STAFF_IDENTITIES=
 ```
 
-Não coloque tokens, senhas, pastas de código ou conexões técnicas no `.env.example`. Cadastre cada recurso em **Configurações → Ferramentas**; segredos são cifrados no cofre local e não entram no SQLite nem no Git. A interface mostra somente as ferramentas atualmente cadastradas. Instalações antigas que ainda possuem `SUPPORT_CODE_ROOTS` ou `SUPPORT_VAULT_DIR` podem migrá-las explicitamente pela CLI com `threadmark tools discover` e `threadmark tools recover`.
+Não coloque tokens, senhas, pastas de código ou conexões técnicas no `.env.example`. Configure esses recursos no perfil privado do Hermes ou do agente escolhido. Skills e credenciais específicas da organização não entram no SQLite nem no Git do Threadmark. Instalações antigas podem manter os registros legados preservados durante a migração, mas eles não são oferecidos na interface nova.
 
 ## Pareamento e grupos
 
@@ -175,7 +202,7 @@ Não coloque tokens, senhas, pastas de código ou conexões técnicas no `.env.e
 3. Aguarde a descoberta dos grupos.
 4. Escolha os grupos monitorados pela interface ou pelo comando `threadmark monitor <jid>`.
 5. Cadastre os números, JIDs ou LIDs da equipe para que suas mensagens sejam apenas contexto.
-6. Para medir uma possível revisão de mensagens já salvas, execute `threadmark rescan --days=30`. O comando mostra somente uma prévia: não altera mensagens, não reabre a fila e não chama a IA.
+6. Para medir uma possível revisão de mensagens já salvas, execute `threadmark rescan --days=30`. O comando mostra somente uma prévia: não altera mensagens, não reabre a fila e não chama nenhum modelo.
 
 Com a lista de grupos monitorados vazia, o sistema opera em modo descoberta: salva o que for recebido, mas não abre candidatos de ticket para os grupos.
 
@@ -191,73 +218,35 @@ O Diretório apresenta as identidades capturadas pelo WhatsApp:
 
 O Diretório não cria uma taxonomia comercial adicional. A organização operacional das demandas acontece nos tickets, categorias, responsáveis e prioridades.
 
-## IA e Threadmark AI
+## Hermes, skills e triagem
 
-O provedor/conexão e o modelo são escolhidos separadamente para cada tarefa em **Configurações → IA**: sugestões de ticket, Threadmark AI e geração de documentações. O Codex CLI integrado pode ser usado nas três; OpenAI, Anthropic, OpenRouter e Ollama também podem ser combinados por tarefa conforme a capacidade da conexão. O catálogo de modelos é carregado automaticamente, pode ser atualizado manualmente e sempre oferece uma opção para informar um identificador não listado. A barra fixa informa quando existem alterações não salvas e confirma o salvamento no SQLite. Cada sugestão, turno do assistente ou geração documental recebe um identificador e um estado persistido, evitando reprocessamento contínuo do mesmo conteúdo.
+O Threadmark não oferece mais chat de IA, seleção de modelo, cadastro de ferramentas, apps externos ou geração de documentação na interface. Essas responsabilidades pertencem ao Hermes — ou a outro agente compatível — junto das skills, memória pessoal, credenciais e integrações da organização. Isso evita misturar conhecimento privado de uma equipe com o produto que outras pessoas podem clonar.
 
-Nas sugestões de ticket, a janela de silêncio padrão é de três minutos e pode ser alterada na mesma tela. Cada nova mensagem externa reinicia a contagem; mensagens da equipe entram somente como contexto. A IA pode aguardar mais informações sem criar um card, atualizar uma sugestão pendente quando o assunto continua ou separar assuntos distintos. **Analisar agora** antecipa essa avaliação, mas não cria tickets automaticamente.
+O agente conversa com o usuário no terminal e usa `threadmark capabilities --json` para descobrir o contrato. Leituras não pedem confirmação adicional. Escritas usam operações de domínio específicas, `--apply` e uma identidade ativa; a API continua validando papel, IDs, transições e idempotência e registra a origem como Hermes. O agente nunca recebe o token local nem acesso direto ao SQLite.
 
-Ao resolver um ticket, a resolução é salva somente no atendimento. O encerramento não cria conteúdo reutilizável nem executa IA automaticamente. Quando o caso contém aprendizado potencial, o operador usa **Gerar conhecimento**. A IA primeiro extrai um objeto estruturado com fatos, evidências, inferências, hipóteses, confiança, público, tipo sugerido e lacunas. Soluções e procedimentos só são aceitos quando apontam para evidência operacional do próprio ticket ou da investigação auditada. Depois da revisão humana, um renderizador determinístico transforma o conhecimento em FAQ, passo a passo, troubleshooting, explicação, runbook interno ou conteúdo para cliente.
+A triagem automática continua aparecendo em **Conversas**. O scheduler do Threadmark cria jobs a partir das mensagens inbound; no modo `SUPPORT_AGENT_EXECUTOR=hermes`, um executor externo reivindica um job com lease, recebe somente o recorte limitado e devolve um JSON validado. O resultado é uma sugestão revisável: não cria ticket e não envia WhatsApp. O operador ainda pode separar assuntos, ajustar categorias, criar, anexar, ignorar ou manter mensagens como contexto.
 
-O conhecimento estruturado, suas versões e o feedback de revisão ficam no SQLite; o Markdown não é a fonte de verdade. A tela **Documentações** permite corrigir e aprovar o conhecimento, gerar e editar o documento, conferir suas evidências, copiar ou exportar em DOCX. O Threadmark não publica automaticamente no Intercom ou em outro serviço.
+Investigações profundas usam as ferramentas configuradas no próprio ambiente do Hermes, como Git, Linear, bancos readonly, logs e AWS. A segurança deve existir na credencial e na tool — por exemplo, um usuário PostgreSQL realmente readonly — e não apenas no prompt. Quando uma correção exigir alterar o Threadmark, o Hermes usa a CLI; ações em sistemas externos seguem as permissões e confirmações daquele ambiente.
 
-No Codex, sugestões e Threadmark AI rodam em uma execução efêmera sem rede livre, navegador, apps, plugins, MCP direto, memória ou HOME pessoal. A triagem recebe somente o contexto sanitizado e até cinco imagens preparadas. O assistente pode acessar apenas a codebase e as ferramentas locais explicitamente autorizadas, sempre em modo de leitura. Conexões MCP, quando configuradas, são executadas fora do modelo pelo broker local, que entrega somente ferramentas autorizadas e resultados limitados.
-
-No Threadmark AI, qualquer modelo selecionado pode **solicitar** uma operação tipada. O Threadmark valida o ID e a operação contra **Configurações → Ferramentas** e **Apps conectados**, executa fora do processo do modelo e devolve apenas um resultado limitado e sanitizado no turno seguinte. Tokens e senhas nunca entram no prompt. Isso permite combinar Codex, OpenAI, Anthropic, OpenRouter ou Ollama com as mesmas autorizações locais, sem dar shell ao modelo. O conector nativo do Intercom recebe apenas a região e um access token protegido no cofre local; ele pode pesquisar e ler conversas, consultar o autor associado ao token, listar coleções e criar artigos somente em rascunho após confirmação explícita. Para transformar uma conversa em ticket, a IA precisa montar uma prévia associada a um grupo existente; somente uma nova mensagem confirmando explicitamente cria o ticket no SQLite, de forma idempotente e sem alterar o Intercom.
-
-Proprietários e administradores também podem pedir ao Threadmark AI para criar ou editar automações. A IA consulta primeiro o catálogo e os IDs reais, persiste uma proposta e a apresenta sem alterar o fluxo atual. Uma mensagem posterior precisa confirmar a aplicação; fluxos novos continuam como rascunho. Ativar, pausar e excluir são confirmações separadas. O teste disponível nesse processo é um dry-run: valida nós, conexões, usuários e apps sem executar ações. Apps só podem entrar numa proposta quando estiverem ativos e explicitamente liberados para o Threadmark AI.
-
-O botão **Testar conexão** faz uma leitura real, mínima e readonly no recurso configurado — inclusive PostgreSQL, ClickHouse, CloudWatch e Vercel — e persiste o último resultado. Uma configuração bem formada nunca é apresentada como conexão válida sem esse probe.
-
-A triagem recebe apenas as mensagens candidatas, sugestões ainda abertas, anexos suportados e o contexto necessário da conversa. Ela pode separar assuntos, aguardar novas informações ou propor criar/anexar um ticket, mas não recebe precedentes resolvidos nem ferramentas técnicas. Áudios candidatos aguardam a transcrição local antes dessa avaliação.
-
-O Threadmark AI fica disponível globalmente no canto da aplicação e recebe um retrato persistido da tela atual. Ao ser aberto a partir de um ticket, grupo ou conversa, o contexto correspondente acompanha a mensagem; referências explícitas como `#123` também carregam o ticket indicado. Fechar o painel, trocar de página ou reiniciar a interface não cancela o trabalho: o job continua no servidor e pode ser interrompido somente pelo botão **Parar**, por conclusão ou por um bloqueio real. No Codex CLI local os turnos não possuem um timeout artificial; uma interrupção do daemon devolve o job à fila para retomada segura. Falhas transitórias recebem até três tentativas persistidas. Se o bloqueio permanecer, ele aparece no próprio chat e o operador pode solicitar outra tentativa sem perder a mensagem ou a auditoria já coletada.
-
-Além das ferramentas configuradas pelo operador, o assistente possui uma busca interna fixa, limitada e somente leitura no SQLite do próprio Threadmark. Ela localiza tickets, conversas, mensagens e resoluções por número, título, grupo, pessoa ou texto, sem permitir SQL arbitrário. Assim, uma pergunta global pode recuperar o atendimento correto mesmo quando o painel é aberto fora da tela daquele ticket.
-
-Cada operação e resultado é salvo imediatamente numa auditoria append-only no SQLite, antes da próxima rodada do modelo. Uma evidência técnica só é aceita quando sua origem corresponde à ferramenta realmente executada — código, PostgreSQL, ClickHouse, AWS ou deployment — e à referência persistida dessa execução. Assim, uma falha posterior não apaga o que já foi consultado, uma retomada não repete a mesma execução e o modelo não pode reclassificar arbitrariamente uma fonte. Mensagens, resumos duráveis, evidências, próximas ações e respostas sugeridas também permanecem persistidos. O assistente pode preparar uma ação e seus parâmetros, mas nenhuma mutação é executada sem confirmação explícita e auditável; o WhatsApp continua sem qualquer capacidade outbound.
-
-Ferramentas disponíveis nesta versão:
-
-- pasta de código e pasta de conhecimento: listar, buscar e ler arquivos dentro da raiz autorizada;
-- skill de depuração: leitura da metodologia, sem execução automática dos comandos descritos nela;
-- PostgreSQL e ClickHouse: descrição de esquema e consulta `SELECT/WITH`, com timeout e limite de linhas;
-- AWS CloudWatch: filtros de logs por prefixos autorizados e leitura de métricas;
-- Vercel: deployments e runtime logs do projeto configurado.
-
-Para PostgreSQL, use obrigatoriamente um usuário realmente readonly. O Threadmark inclui o cliente PostgreSQL no próprio pacote, portanto não exige a instalação do comando `psql`. O executor também aplica transação somente leitura, bloqueia instruções mutáveis e funções perigosas e limita a saída em streaming. No ClickHouse, table functions externas são recusadas. Esses controles não transformam uma credencial administrativa em uma credencial segura.
-
-Para o runner local do Codex, instale e autentique o CLI e deixe `CODEX_BIN=codex`. A interface lê o catálogo exposto pela própria CLI e permite usar o padrão da conta ou um modelo específico em cada tarefa. Outros conectores podem exigir uma chave cadastrada localmente. Nunca versionar chaves.
-
-“Codex local” significa que a CLI, a autenticação e a orquestração rodam na máquina. Ao usar modelos hospedados da OpenAI, o recorte sanitizado necessário à tarefa é enviado ao serviço da OpenAI; para inferência integralmente local, configure Ollama ou outro backend local compatível.
-
-### Transcrição local de áudios
-
-Em **Configurações → IA → Transcrição local de áudios**, escolha e baixe um dos modelos Whisper disponíveis. Essa função não usa Codex, Ollama nem uma API paga: o modelo é baixado uma vez e executado pelo próprio processo do Threadmark. A tela informa o espaço estimado em disco, o consumo estimado de RAM, o andamento do download e o estado da fila. O primeiro download exige acesso à internet; depois disso, a inferência funciona localmente.
-
-A transcrição vem desativada em instalações novas. Depois de instalar o modelo, ative o processamento de novos áudios. O texto aparece junto ao player nas conversas e nos tickets; resultados incertos ficam marcados para revisão. O arquivo original é preservado, e o modelo é descarregado da memória após um período sem uso.
-
-Áudios novos só alimentam a triagem depois que a transcrição termina. Para evitar custo inesperado e uma fila retroativa em massa, o histórico entra apenas por uma ação manual de até 100 áudios por vez. Transcrever histórico nunca reabre mensagens nem cria candidatos retroativos de ticket.
+Dados antigos do Threadmark AI, documentos e conexões permanecem no SQLite por compatibilidade e recuperação, mas não são apresentados na interface. A remoção física desses registros exige uma migração futura, explícita e acompanhada de backup.
 
 ## Uso diário
 
 ```bash
-threadmark on             # inicia API, Web UI, captura, triagem e worker
+threadmark on             # inicia API, Web UI, captura e scheduler local
 threadmark open           # abre a Web UI
 threadmark status         # mostra o estado local
-threadmark doctor         # verifica processo, API, Web, SQLite, WhatsApp, IA e disco
-threadmark tools open     # cadastra pastas, bancos e observabilidade autorizados
-threadmark tools list     # mostra as ferramentas locais sem revelar credenciais
-threadmark tools discover # revisa fontes encontradas na configuração antiga
-threadmark tools recover  # importa fontes antigas após confirmação explícita
-threadmark tools test ID  # executa um probe real, limitado e readonly
+threadmark doctor         # verifica processo, API, Web, SQLite, WhatsApp e disco
+threadmark capabilities --json
+threadmark tickets list --json
+threadmark agent triage-status --json
 threadmark off            # encerra os processos com segurança
 ```
 
 `npm link` registra o executável local `threadmark` sem copiar dados ou configurações.
-Use `threadmark configure` para escolher uma área de configuração, ou abra diretamente
-`threadmark configure ai`, `threadmark configure tools`, `threadmark configure whatsapp`
-e `threadmark configure team`.
+Use `threadmark configure` para escolher uma área operacional, ou abra diretamente
+`threadmark configure whatsapp` e `threadmark configure team`. Modelos, skills,
+ferramentas e integrações externas são configurados no Hermes.
 
 No macOS, o serviço opcional inicia após o login e recupera falhas do processo:
 
@@ -271,7 +260,7 @@ O watchdog interno recupera somente a Web UI com backoff quando ela cai; API, ca
 workers continuam ativos. O arquivo `logs/daemon.log` dentro de `SUPPORT_DATA_DIR` é rotacionado de forma conservadora
 ao atingir 5 MiB, mantendo cinco gerações.
 
-`threadmark on` confirma a identidade da API antes de abrir ou migrar o SQLite e só anuncia sucesso após API e assets Web estarem prontos. `threadmark off` solicita shutdown pela API com o token desta instalação; ele nunca encerra um PID apenas porque apareceu num arquivo antigo. O Doctor testa somente os provedores usados pelos perfis ativos.
+`threadmark on` confirma a identidade da API antes de abrir ou migrar o SQLite e só anuncia sucesso após API e assets Web estarem prontos. `threadmark off` solicita shutdown pela API com o token desta instalação; ele nunca encerra um PID apenas porque apareceu num arquivo antigo. O Doctor testa somente os componentes locais ativos; os modelos e as ferramentas externas são diagnosticados no ambiente do agente.
 
 ## Dados locais e backup
 
@@ -310,7 +299,7 @@ A interface e o comando informam o diretório exato gerado. Use o backup rápido
 
 Cada backup possui manifesto v2, checksums SHA-256 e verificação de integridade. O restore só roda com daemon e SQLite parados, prepara os dados em staging, salva o estado atual em um backup de segurança e tenta rollback se algo falhar. A limpeza por retenção ocorre somente depois do commit e nunca remove o estado restaurado se falhar. A retenção padrão mantém 7 rápidos, 4 completos, 3 de segurança e 5 pré-migração.
 
-Sessão do WhatsApp, chaves de IA, credenciais de ferramentas e o cache dos modelos de transcrição são deliberadamente excluídos dos backups; depois de restaurar em outra máquina, reconecte o WhatsApp, recadastre os segredos e baixe novamente o modelo desejado. Guarde backups em destino criptografado e nunca os envie em relatórios de bug.
+Sessão do WhatsApp, credenciais externas e caches de modelos são deliberadamente excluídos dos backups; depois de restaurar em outra máquina, reconecte o WhatsApp e restaure separadamente o perfil privado do agente. Guarde backups em destino criptografado e nunca os envie em relatórios de bug.
 
 ## Ambiente de demonstração
 
@@ -351,7 +340,8 @@ Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de enviar mudanças.
 - `server/db/`: schema e migrações SQLite.
 - `server/domain/`: tickets, Diretório, categorias, documentações e auditoria.
 - `server/triage/`: detecção conservadora de demandas.
-- `server/agent/`: prompts, provedores e worker do Threadmark AI.
+- `server/agent/`: executor interno legado e contratos compatíveis preservados durante a migração.
+- `server/headless/`: contrato CLI versionado usado por Hermes e outros agentes externos.
 - `server/transcription/`: catálogo, download, execução e fila local de transcrição.
 - `server/runtime/`: configuração, estado e settings locais.
 - `shared/`: contratos compartilhados pela API e UI.
