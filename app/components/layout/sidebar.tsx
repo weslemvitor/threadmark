@@ -1,7 +1,6 @@
 import {
   BarChart3,
   Bell,
-  BookOpenText,
   ChevronLeft,
   CircleGauge,
   LayoutDashboard,
@@ -41,7 +40,6 @@ const operationItems: NavItem[] = [
 const organizationItems: NavItem[] = [
   { id: "clients", label: "Diretório", icon: UsersRound },
   { id: "categories", label: "Categorias", icon: Tags },
-  { id: "documentation", label: "Documentações", icon: BookOpenText },
 ];
 
 const insightItems: NavItem[] = [

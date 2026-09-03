@@ -15,7 +15,6 @@ import {
   UserCheck,
   UserRoundCheck,
   UsersRound,
-  Webhook,
 } from "lucide-react";
 import { useMemo, useState, type ComponentType, type DragEvent } from "react";
 
@@ -33,7 +32,6 @@ import { cn } from "@/app/lib/utils";
 import {
   automationCategoryDescriptions,
   automationCategoryLabels,
-  type ConnectedAppSummary,
   type AutomationNodeCategory,
   type AutomationNodeDefinition,
 } from "../domain";
@@ -42,7 +40,6 @@ const categoryOrder: AutomationNodeCategory[] = [
   "trigger",
   "flow_control",
   "internal_action",
-  "connected_app",
 ];
 
 const icons: Record<string, ComponentType<{ size?: number }>> = {
@@ -59,23 +56,18 @@ const icons: Record<string, ComponentType<{ size?: number }>> = {
   "user-check": UserCheck,
   "user-round-check": UserRoundCheck,
   "users-round": UsersRound,
-  webhook: Webhook,
 };
 
 type NodeCatalogSheetProps = {
-  apps: ConnectedAppSummary[];
   catalog: AutomationNodeDefinition[];
   onAdd: (catalogId: string) => void;
-  onOpenApps: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
 };
 
 export function NodeCatalogSheet({
-  apps,
   catalog,
   onAdd,
-  onOpenApps,
   onOpenChange,
   open,
 }: NodeCatalogSheetProps) {
@@ -89,10 +81,6 @@ export function NodeCatalogSheet({
         .includes(normalized),
     );
   }, [catalog, query]);
-  const aiOnlyApps = apps.filter(
-    (app) => app.status === "active" && app.type === "intercom" && app.aiEnabled,
-  );
-
   function startDrag(event: DragEvent<HTMLButtonElement>, catalogId: string) {
     event.dataTransfer.setData("application/threadmark-automation-node", catalogId);
     event.dataTransfer.effectAllowed = "copy";
@@ -121,7 +109,7 @@ export function NodeCatalogSheet({
           <div className="grid gap-6 p-4">
             {categoryOrder.map((category) => {
               const items = filtered.filter((item) => item.category === category);
-              if (!items.length && category !== "connected_app") return null;
+              if (!items.length) return null;
               return (
                 <section className="grid gap-3" key={category}>
                   <div>
@@ -167,39 +155,6 @@ export function NodeCatalogSheet({
                         </Button>
                       );
                     })}
-                    {category === "connected_app" ? (
-                      <>
-                        {aiOnlyApps.map((app) => (
-                          <div className="col-span-full rounded-xl border bg-muted/30 p-3" key={app.id}>
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
-                                <Webhook size={16} />
-                              </span>
-                              <div className="min-w-0">
-                                <p className="truncate text-xs font-semibold">{app.name}</p>
-                                <p className="text-xs text-emerald-700">Conectado ao Threadmark AI</p>
-                              </div>
-                            </div>
-                            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                              O conector nativo do Intercom já pode ser usado no chat. Para transformá-lo em etapas automáticas, conecte um servidor MCP do app e autorize as ferramentas desejadas.
-                            </p>
-                          </div>
-                        ))}
-                        {!items.length ? (
-                          <div className="col-span-full rounded-xl border border-dashed p-4 text-center">
-                            <p className="text-xs font-medium">Nenhuma ação de app autorizada</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {aiOnlyApps.length
-                                ? "Nenhuma ferramenta deste app foi autorizada para automações."
-                                : "Conecte um servidor MCP e escolha quais ferramentas poderão virar etapas do fluxo."}
-                            </p>
-                            <Button className="mt-3" onClick={onOpenApps} size="sm" type="button" variant="outline">
-                              Gerenciar apps
-                            </Button>
-                          </div>
-                        ) : null}
-                      </>
-                    ) : null}
                   </div>
                 </section>
               );

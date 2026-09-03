@@ -7,13 +7,12 @@ import {
 } from "../app/lib/ai-task-capabilities.js";
 
 test("configurações fazem parte da navegação e preservam fronteira local-first", async () => {
-  const [sidebar, app, settings, api, aiSection, settingsSupport] = await Promise.all([
+  const [sidebar, app, settings, api, navigation] = await Promise.all([
     readFile(new URL("../app/components/layout/sidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/features/settings/components/settings-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../server/index.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/features/settings/components/sections/ai-section.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/features/settings/components/settings-support.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/navigation.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(sidebar, /id: "settings"/);
@@ -24,50 +23,9 @@ test("configurações fazem parte da navegação e preservam fronteira local-fir
   assert.match(settings, /renewWhatsappQr/);
   assert.match(settings, /Gerar QR code/);
   assert.match(settings, /Gerando QR code/);
-  assert.match(settings, /Testar e buscar modelos/);
-  assert.match(settings, /Testar Codex CLI/);
-  assert.match(settings, /Sugestões de ticket/);
-  assert.match(settings, /Janela de silêncio/);
-  assert.match(aiSection, /from "@\/app\/components\/ui\/input-group"/);
-  assert.match(aiSection, /<InputGroup className="mt-2">/);
-  assert.match(aiSection, /<InputGroupInput/);
-  assert.match(aiSection, /<InputGroupAddon align="inline-end">/);
-  assert.match(aiSection, /<InputGroupText className="text-xs">minutos/);
-  assert.doesNotMatch(aiSection, /bottom-\[11px\]|pr-20/);
-  assert.match(settings, /Nova mensagem externa reinicia a contagem/);
-  assert.match(settings, /Mensagens da equipe entram apenas como contexto/);
-  assert.match(settings, /min=\{0\.5\}/);
-  assert.match(settings, /max=\{30\}/);
-  assert.match(settings, /updateTriageAiSettings/);
-  assert.match(settings, /silenceWindowSeconds/);
-  assert.doesNotMatch(settings, /Análise automática/);
-  assert.match(settings, /Threadmark AI/);
-  assert.match(settingsSupport, /Threadmark AI · Respostas rápidas/);
-  assert.match(settingsSupport, /Threadmark AI · Investigações/);
-  assert.match(aiSection, /Como o Threadmark AI escolhe o modelo/);
-  assert.match(aiSection, /Cada modo usa exatamente a conexão e o modelo configurados abaixo/);
-  assert.match(settings, /Padrão da conta Codex/);
-  assert.match(settings, /Atualizar modelos/);
-  assert.match(aiSection, /className="absolute -top-1 right-0"/);
-  assert.match(aiSection, /className="block min-h-4 pr-36 leading-4"/);
-  assert.match(aiSection, /className="[^"]*text-muted-foreground[^"]*sm:mt-6/);
-  assert.match(settings, /Informar modelo manualmente/);
-  assert.match(settings, /Alterações não salvas/);
-  assert.match(settings, /Salvo agora/);
-  assert.match(settings, /const actionBarFloating = aiSettingsDirty \|\| savingProfiles/);
-  assert.match(settings, /fixed inset-x-3 bottom-3 z-\[80\]/);
-  assert.match(settings, /sm:w-\[min\(560px,calc\(100vw-2rem\)\)\]/);
-  assert.match(settings, /actionBarFloating \? "pb-28"/);
-  assert.doesNotMatch(settings, /sticky bottom-3 z-\[5\]/);
-  assert.doesNotMatch(aiSection, /primaryButtonClass|secondaryButtonClass|dangerButtonClass/);
-  assert.doesNotMatch(aiSection, /#[0-9a-fA-F]{3,8}/);
-  assert.match(aiSection, /size="default"[\s\S]*variant="default"/);
-  assert.match(aiSection, /size="sm"[\s\S]*variant="outline"/);
-  assert.match(settings, /beforeunload/);
-  assert.match(settings, /aria-live="polite"/);
-  assert.match(settings, /execução efêmera, isolada e somente leitura/);
-  assert.match(settings, /aria-labelledby=\{taskHeadingId\}/);
-  assert.match(settings, /flex-col-reverse gap-2 sm:flex-row/);
+  assert.doesNotMatch(settings, /id:\s*"ai"|id:\s*"tools"|<AiSection|<ToolsSettingsSection/);
+  assert.match(settings, /requestedTab === "ai" \|\| requestedTab === "tools"/);
+  assert.match(navigation, /value === "ai" \|\| value === "tools"/);
   assert.match(settings, /lastBackup\.directory/);
   assert.match(settings, /Armazenamento local/);
   assert.match(settings, /Total de dados locais/);

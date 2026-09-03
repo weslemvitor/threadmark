@@ -101,7 +101,6 @@ type ConversationsViewProps = {
   tickets: TicketSummary[];
   refreshVersion: number;
   onOpenTicket: (ticketId: string) => void;
-  onOpenAiSettings: () => void;
   onTicketsChanged: () => Promise<void>;
   onToast: (toast: { tone: ToastTone; message: string }) => void;
 };
@@ -225,7 +224,6 @@ export function ConversationsView({
   clients,
   tickets,
   refreshVersion,
-  onOpenAiSettings,
   onOpenTicket,
   onTicketsChanged,
   onToast,
@@ -1190,7 +1188,6 @@ export function ConversationsView({
           loadingBlockId={loadingBlockId}
           onAnalyzeNow={() => void analyzeConversationNow()}
           onIgnoreBlock={(block) => void ignoreSuggestedBlock(block)}
-          onOpenSettings={onOpenAiSettings}
           onSelectBlock={(block) => void selectSuggestedBlock(block)}
           selectedMessageIds={selectedMessageIds}
           settings={triageAiSettings}

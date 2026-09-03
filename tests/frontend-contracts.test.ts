@@ -44,15 +44,11 @@ test("janela aberta recarrega quando o servidor publica um novo build", async ()
   assert.match(app, /window\.location\.reload\(\)/);
 });
 
-test("ticket mostra resumo após resolução e delega a IA ao assistente global", async () => {
-  const [app, detail, assistant, resolution] = await Promise.all([
+test("ticket mostra resumo após resolução sem reintroduzir assistente embutido", async () => {
+  const [app, detail, resolution] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../app/features/threadmark-ai/threadmark-ai.tsx", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -68,9 +64,7 @@ test("ticket mostra resumo após resolução e delega a IA ao assistente global"
   assert.doesNotMatch(detail, /function InvestigationPanel|function CircleDataIcon/);
   assert.doesNotMatch(detail, /TicketAiGuidance|aria-label="Orientação da IA"/);
   assert.doesNotMatch(detail, /InvestigationRoom|Sala de investigação/);
-  assert.match(app, /<ThreadmarkAi[\s\S]*context=\{threadmarkAiContext\}[\s\S]*currentUserId=\{access\?\.user\.id/);
-  assert.match(assistant, /Abrir Threadmark AI/);
-  assert.match(assistant, /Nada é enviado ao WhatsApp/);
+  assert.doesNotMatch(app, /<ThreadmarkAi|threadmarkAiContext|onGenerateDocumentation=/);
   assert.match(resolution, /aria-label="Resumo do ticket"/);
   assert.match(resolution, /\{ticket\.summary\}/);
   assert.match(resolution, /\{resolution\.summary\}/);
@@ -334,10 +328,11 @@ test("visão de conversas mantém triagem supervisionada, global e responsiva", 
   assert.match(view, /getTriageAiSettings/);
   assert.doesNotMatch(view, /updateTriageAiSettings/);
   assert.doesNotMatch(view, /gpt-5\.4-mini|gpt-5\.4.*mais preciso/);
-  assert.match(view, /Configuração atual/);
-  assert.match(view, /Configurar IA/);
-  assert.match(view, /onOpenAiSettings/);
-  assert.match(app, /openSettingsTab\("ai"\)/);
+  assert.match(aiCard, /Triagem pelo agente/);
+  assert.match(aiCard, /O agente configurado analisa em segundo plano/);
+  assert.doesNotMatch(aiCard, /Configurar IA|onOpenSettings/);
+  assert.doesNotMatch(view, /onOpenAiSettings/);
+  assert.doesNotMatch(app, /openSettingsTab\("ai"\)/);
   assert.match(view, /suggestionAnalysis:\s*response\.suggestionAnalysis/);
   assert.match(view, /waiting_for_silence/);
   assert.match(view, /waiting_for_audio/);
@@ -495,40 +490,27 @@ test("imagens aparecem inline nas conversas, tickets e sala de investigação", 
   assert.match(preview, /flex w-full max-w-\[460px\] min-w-0/);
 });
 
-test("interface remove salas por ticket e centraliza a IA no assistente global", async () => {
-  const [app, detail, assistant, api, settings] = await Promise.all([
+test("interface delega o agente ao Hermes e preserva APIs durante a migração", async () => {
+  const [app, detail, api, settings] = await Promise.all([
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/features/tickets/components/ticket-detail.tsx", import.meta.url),
       "utf8",
     ),
-    readFile(new URL("../app/features/threadmark-ai/threadmark-ai.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/api.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/features/settings/components/settings-view.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(app, /ThreadmarkAi|SupportSearchOverlay/);
-  assert.match(app, /threadmarkAiContext/);
+  assert.match(app, /SupportSearchOverlay/);
+  assert.doesNotMatch(app, /ThreadmarkAi|threadmarkAiContext/);
   assert.doesNotMatch(app, /InvestigationRoom|openInvestigationThread|addInvestigationThreadMessage/);
   assert.doesNotMatch(app, /getInvestigationJobs|shouldNotifyInvestigationTransition|threadmark:automatic:/);
   assert.doesNotMatch(detail, /InvestigationPanel|Investigação assistida|Investigar novamente|TicketAiGuidance/);
   assert.doesNotMatch(detail, /InvestigationRoomLauncher|Abrir sala de investigação/);
   assert.match(detail, /<TicketResolutionSummary ticket=\{ticket\} \/>/);
-  assert.match(assistant, /Histórico persistido no SQLite/);
-  assert.match(assistant, /O agente continua trabalhando em segundo plano/);
-  assert.match(assistant, /playCompletionSound/);
-  assert.match(assistant, /animate-ping/);
-  assert.match(assistant, /Nova resposta/);
-  assert.match(assistant, /markThreadmarkAiThreadRead/);
-  assert.match(assistant, /min-w-0 max-w-full justify-start overflow-hidden/);
-  assert.match(assistant, /Anexar imagens/);
-  assert.match(assistant, /Autorizo o processamento destas imagens pelo provedor de IA configurado/);
-  assert.match(assistant, /THREADMARK_AI_IMAGE_MAX_COUNT/);
-  assert.match(assistant, /<InlineImageAttachment/);
-  assert.doesNotMatch(assistant, /AutomaticAnalysisCard|Análise automática anterior/);
   assert.doesNotMatch(api, /investigateTicket|getInvestigationJobs|\/api\/investigations/);
   assert.match(api, /\/api\/threadmark-ai\/threads/);
-  assert.doesNotMatch(settings, /id:\s*"automatic"/);
+  assert.doesNotMatch(settings, /id:\s*"ai"|id:\s*"tools"|<AiSection|<ToolsSettingsSection/);
 });
 
 
@@ -573,7 +555,7 @@ test("notificações internas possuem prévia no cabeçalho e a timeline mostra 
   assert.match(notifications, /markAllNotificationsRead/);
   assert.doesNotMatch(app, /Notification\.requestPermission|serviceWorker|toggleNotifications/);
   assert.doesNotMatch(app, /getInvestigationJobs|shouldNotifyInvestigationTransition|threadmark:automatic:/);
-  assert.match(app, /<ThreadmarkAi[\s\S]*context=\{threadmarkAiContext\}[\s\S]*currentUserId=\{access\?\.user\.id/);
+  assert.doesNotMatch(app, /<ThreadmarkAi|threadmarkAiContext/);
   assert.doesNotMatch(app, /new Notification\(/);
   assert.match(detail, /describeTimelineEvent\(item\)/);
   assert.doesNotMatch(detail, /O ticket recebeu uma atualização interna/);

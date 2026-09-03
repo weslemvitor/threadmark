@@ -4,7 +4,6 @@ export type ViewId =
   | "kanban"
   | "clients"
   | "categories"
-  | "documentation"
   | "automations"
   | "notifications"
   | "dashboard"
@@ -37,7 +36,6 @@ const VIEW_PATHS: Record<ViewId, string> = {
   kanban: "/kanban",
   clients: "/directory",
   categories: "/categories",
-  documentation: "/documentation",
   automations: "/automations",
   notifications: "/notifications",
   dashboard: "/dashboard",
@@ -58,6 +56,7 @@ function normalizePathname(pathname: string): string {
 
 function settingsTab(value: string | null | undefined): SettingsRouteTab {
   if (value === "team") return "staff";
+  if (value === "ai" || value === "tools") return "general";
   return value && SETTINGS_TAB_SET.has(value)
     ? (value as SettingsRouteTab)
     : "general";
@@ -76,7 +75,13 @@ export function buildThreadmarkPath({
     return `/tickets/${encodeURIComponent(String(ticketReference).replace(/^#/, ""))}`;
   }
   if (view === "inbox") return "/kanban";
-  if (view === "settings" && requestedSettingsTab && requestedSettingsTab !== "general") {
+  if (
+    view === "settings" &&
+    requestedSettingsTab &&
+    requestedSettingsTab !== "general" &&
+    requestedSettingsTab !== "ai" &&
+    requestedSettingsTab !== "tools"
+  ) {
     return `/settings/${requestedSettingsTab}`;
   }
   return VIEW_PATHS[view];
@@ -88,6 +93,15 @@ export function parseThreadmarkLocation(
 ): ThreadmarkNavigation {
   const normalizedPath = normalizePathname(pathname);
   const segments = normalizedPath.split("/").filter(Boolean);
+
+  if (normalizedPath === "/documentation") {
+    return {
+      view: "conversations",
+      ticketReference: null,
+      settingsTab: "general",
+      legacy: true,
+    };
+  }
 
   if (segments[0] === "tickets" && segments[1]) {
     return {
@@ -134,6 +148,14 @@ export function parseThreadmarkLocation(
       view: "settings",
       ticketReference: null,
       settingsTab: settingsTab(legacySettings),
+      legacy: true,
+    };
+  }
+  if (legacyView === "documentation") {
+    return {
+      view: "conversations",
+      ticketReference: null,
+      settingsTab: "general",
       legacy: true,
     };
   }

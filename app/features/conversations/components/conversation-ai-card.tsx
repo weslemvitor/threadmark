@@ -3,7 +3,6 @@ import {
   CheckCheck,
   Clock3,
   LoaderCircle,
-  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
@@ -17,17 +16,6 @@ import type {
   ConversationSuggestionAnalysisDto,
   TriageAiSettingsDto,
 } from "@/shared/contracts";
-
-const aiProviderLabels: Record<
-  NonNullable<TriageAiSettingsDto["providerId"]>,
-  string
-> = {
-  codex: "Codex local",
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  openrouter: "OpenRouter",
-  ollama: "Ollama",
-};
 
 const blockReasonLabels: Record<string, string> = {
   explicit_new_topic: "A mensagem indica um novo assunto",
@@ -83,7 +71,6 @@ export function ConversationAiCard({
   selectedMessageIds,
   loadingBlockId,
   actionBusy,
-  onOpenSettings,
   onAnalyzeNow,
   onSelectBlock,
   onIgnoreBlock,
@@ -101,7 +88,6 @@ export function ConversationAiCard({
   selectedMessageIds: Set<string>;
   loadingBlockId: string | null;
   actionBusy: boolean;
-  onOpenSettings: () => void;
   onAnalyzeNow: () => void;
   onSelectBlock: (block: ConversationTriageBlock) => void;
   onIgnoreBlock: (block: ConversationTriageBlock) => void;
@@ -123,53 +109,27 @@ export function ConversationAiCard({
       </div>
       <div
         aria-busy={settingsLoading}
-        className="mt-2.5 grid items-end gap-2 rounded-lg border border-primary/15 bg-primary/[0.035] p-2 max-[840px]:grid-cols-1 min-[841px]:grid-cols-[minmax(0,1fr)_auto]"
+        className="mt-2.5 grid gap-1 rounded-lg border border-primary/15 bg-primary/[0.035] p-2"
       >
-        <div className="grid min-w-0 gap-1">
-          <span className="text-xs font-semibold text-primary">
-            Configuração atual
-          </span>
-          <strong className="truncate text-xs leading-snug text-foreground">
-            {settings
-              ? `${
-                  settings.connectionLabel ??
-                  (settings.providerId
-                    ? aiProviderLabels[settings.providerId]
-                    : "Sem conexão")
-                } · ${
-                  settings.model === "default"
-                    ? "Padrão da conta"
-                    : settings.model
-                }`
-              : "Carregando modelo…"}
-          </strong>
-          <small
-            className={cn(
-              "w-fit rounded-full bg-muted px-1.5 py-0.5 text-2xs font-semibold text-muted-foreground",
-              settings?.enabled &&
-                "bg-emerald-100 text-emerald-800",
-            )}
-          >
-            {settings?.enabled ? "IA ativa" : "IA pausada"}
-          </small>
-        </div>
-        <Button
-          className="max-[840px]:w-full"
-          onClick={onOpenSettings}
-          size="sm"
-          type="button"
-          variant="outline"
+        <span className="text-xs font-semibold text-primary">
+          Triagem pelo agente
+        </span>
+        <strong className="text-xs leading-snug text-foreground">
+          O agente configurado analisa em segundo plano; a decisão final continua nesta tela.
+        </strong>
+        <small
+          className={cn(
+            "w-fit rounded-full bg-muted px-1.5 py-0.5 text-2xs font-semibold text-muted-foreground",
+            settings?.enabled && "bg-emerald-100 text-emerald-800",
+          )}
         >
-          <Settings2 size={13} /> Configurar IA
-        </Button>
-      </div>
-      {!settings ? (
-        <small className="mt-1.5 block text-xs leading-relaxed text-muted-foreground">
           {settingsLoading
-            ? "Carregando configuração da IA…"
-            : "Configuração da IA indisponível"}
+            ? "Verificando triagem…"
+            : settings?.enabled
+              ? "Triagem ativa"
+              : "Triagem pausada"}
         </small>
-      ) : null}
+      </div>
       {suggestionAnalysis &&
       suggestionStatus &&
       suggestionAnalysis.state !== "idle" &&

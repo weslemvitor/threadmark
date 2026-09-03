@@ -35,26 +35,21 @@ import {
   DialogTitle,
 } from "@/app/components/ui/dialog";
 import { Input } from "@/app/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs";
 import { Textarea } from "@/app/components/ui/textarea";
 import { cn } from "@/app/lib/utils";
 import {
   activateAutomation,
   createAutomation,
-  createConnectedApp,
   deleteAutomation,
-  deleteConnectedApp,
   getAutomation,
   listAutomations,
   listConnectedApps,
   listNotificationRecipients,
   pauseAutomation,
   testAutomation,
-  testConnectedApp,
   updateAutomation,
   updateAutomationLayout,
   updateAutomationMetadata,
-  updateConnectedApp,
 } from "../data";
 import {
   automationNodeCatalogId,
@@ -70,16 +65,13 @@ import {
   type AutomationNodeDto,
   type AutomationSummary,
   type ConnectedAppSummary,
-  type UpsertConnectedAppInput,
 } from "../domain";
 import type { TicketAssigneeDto } from "@/shared/contracts";
 import { AutomationCanvas } from "./automation-canvas";
 import { AutomationList } from "./automation-list";
-import { ConnectedAppsPanel } from "./connected-apps-panel";
 import { NodeCatalogSheet } from "./node-catalog-sheet";
 import { NodeConfigSheet } from "./node-config-sheet";
 
-type Section = "flows" | "apps";
 type Notice = { tone: "success" | "warning"; message: string } | null;
 
 const emptyDefinition: AutomationDefinition = { version: 1, nodes: [], edges: [] };
@@ -115,7 +107,6 @@ export function AutomationsView() {
   const layoutSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const layoutSequenceRef = useRef(0);
   const pendingLayoutSavesRef = useRef(0);
-  const [section, setSection] = useState<Section>("flows");
   const [items, setItems] = useState<AutomationSummary[]>([]);
   const [apps, setApps] = useState<ConnectedAppSummary[]>([]);
   const [notificationRecipients, setNotificationRecipients] = useState<TicketAssigneeDto[]>([]);
@@ -131,7 +122,6 @@ export function AutomationsView() {
   const [createDescription, setCreateDescription] = useState("");
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [appsLoading, setAppsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [layoutSaving, setLayoutSaving] = useState(false);
@@ -142,9 +132,7 @@ export function AutomationsView() {
   const [dryRunError, setDryRunError] = useState<string | null>(null);
   const [dryRunOpen, setDryRunOpen] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [appBusyId, setAppBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [appsError, setAppsError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
 
   const catalog = useMemo(
@@ -257,16 +245,11 @@ export function AutomationsView() {
   }, [showNotice]);
 
   const loadApps = useCallback(async () => {
-    setAppsLoading(true);
     try {
       const response = await listConnectedApps();
       setApps(response.items);
-      setAppsError(null);
-    } catch (loadError) {
+    } catch {
       setApps([]);
-      setAppsError(loadError instanceof Error ? loadError.message : "Não foi possível carregar os apps conectados.");
-    } finally {
-      setAppsLoading(false);
     }
   }, []);
 
@@ -619,54 +602,10 @@ export function AutomationsView() {
     }
   }
 
-  async function saveApp(input: UpsertConnectedAppInput, id?: string) {
-    try {
-      const updated = id
-        ? await updateConnectedApp(id, input)
-        : await createConnectedApp(input);
-      setApps((current) => id
-        ? current.map((app) => (app.id === updated.id ? updated : app))
-        : [updated, ...current]);
-      showNotice({ tone: "success", message: id ? "Conexão atualizada." : "App conectado com segurança." });
-    } catch (appError) {
-      showNotice({ tone: "warning", message: appError instanceof Error ? appError.message : "Não foi possível salvar o app." });
-      throw appError;
-    }
-  }
-
-  async function testApp(app: ConnectedAppSummary) {
-    setAppBusyId(app.id);
-    try {
-      const result = await testConnectedApp(app.id);
-      showNotice({ tone: result.ok ? "success" : "warning", message: result.message });
-      await loadApps();
-    } catch (appError) {
-      showNotice({ tone: "warning", message: appError instanceof Error ? appError.message : "O teste falhou." });
-    } finally {
-      setAppBusyId(null);
-    }
-  }
-
-  async function removeApp(app: ConnectedAppSummary) {
-    setAppBusyId(app.id);
-    try {
-      await deleteConnectedApp(app.id);
-      setApps((current) => current.filter((item) => item.id !== app.id));
-      showNotice({ tone: "success", message: "Conexão excluída." });
-    } catch (appError) {
-      showNotice({ tone: "warning", message: appError instanceof Error ? appError.message : "Não foi possível excluir o app." });
-    } finally {
-      setAppBusyId(null);
-    }
-  }
-
   return (
-    <Tabs className="min-h-full min-w-0 gap-0 overflow-x-hidden" onValueChange={(value) => setSection(value as Section)} value={section}>
+    <div className="min-h-full min-w-0 overflow-x-hidden">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b bg-card px-4 py-2.5">
-        <TabsList className="max-w-full overflow-x-auto">
-          <TabsTrigger value="flows"><Workflow size={14} /> Fluxos</TabsTrigger>
-          <TabsTrigger value="apps">Apps conectados <Badge variant="secondary">{apps.length}</Badge></TabsTrigger>
-        </TabsList>
+        <div className="flex items-center gap-2 text-sm font-semibold"><Workflow size={15} /> Fluxos internos</div>
         {notice ? (
           <div className={cn("flex min-w-0 items-center gap-2 text-xs", notice.tone === "success" ? "text-emerald-700" : "text-amber-700")} role="status">
             {notice.tone === "success" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
@@ -675,7 +614,7 @@ export function AutomationsView() {
         ) : null}
       </div>
 
-      <TabsContent className="m-0 min-h-0 min-w-0" value="flows">
+      <div className="min-h-0 min-w-0">
         {error ? (
           <div className="mx-4 mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             <AlertTriangle size={15} /> <span className="min-w-0 flex-1 break-words">{error}</span>
@@ -787,16 +726,10 @@ export function AutomationsView() {
             ) : null}
           </Card>
         </div>
-      </TabsContent>
-
-      <TabsContent className="m-0 min-w-0" value="apps">
-        <ConnectedAppsPanel apps={apps} busyId={appBusyId} error={appsError} loading={appsLoading} onDelete={removeApp} onRetry={() => void loadApps()} onSave={saveApp} onTest={testApp} />
-      </TabsContent>
+      </div>
       <NodeCatalogSheet
-        apps={apps}
-        catalog={catalog}
+        catalog={catalog.filter((item) => item.category !== "connected_app")}
         onAdd={addNode}
-        onOpenApps={() => { setCatalogOpen(false); setSection("apps"); }}
         onOpenChange={setCatalogOpen}
         open={catalogOpen}
       />
@@ -839,6 +772,6 @@ export function AutomationsView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Tabs>
+    </div>
   );
 }

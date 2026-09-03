@@ -25,14 +25,14 @@ test("a antiga listagem de tickets retorna ao Kanban", () => {
   });
 });
 
-test("ticket e seção de configurações recebem URLs compartilháveis", () => {
+test("ticket recebe URL compartilhável e rotas antigas do agente voltam ao geral", () => {
   assert.equal(
     buildThreadmarkPath({ view: "inbox", ticketReference: "51" }),
     "/tickets/51",
   );
   assert.equal(
     buildThreadmarkPath({ view: "settings", settingsTab: "ai" }),
-    "/settings/ai",
+    "/settings",
   );
 
   assert.deepEqual(parseThreadmarkLocation("/tickets/51"), {
@@ -44,8 +44,14 @@ test("ticket e seção de configurações recebem URLs compartilháveis", () => 
   assert.deepEqual(parseThreadmarkLocation("/settings/tools"), {
     view: "settings",
     ticketReference: null,
-    settingsTab: "tools",
+    settingsTab: "general",
     legacy: false,
+  });
+  assert.deepEqual(parseThreadmarkLocation("/documentation"), {
+    view: "conversations",
+    ticketReference: null,
+    settingsTab: "general",
+    legacy: true,
   });
 });
 
@@ -59,7 +65,13 @@ test("links antigos por query continuam abrindo e são marcados para canonicaliz
   assert.deepEqual(parseThreadmarkLocation("/", "?settings=tools"), {
     view: "settings",
     ticketReference: null,
-    settingsTab: "tools",
+    settingsTab: "general",
+    legacy: true,
+  });
+  assert.deepEqual(parseThreadmarkLocation("/", "?view=documentation"), {
+    view: "conversations",
+    ticketReference: null,
+    settingsTab: "general",
     legacy: true,
   });
 });

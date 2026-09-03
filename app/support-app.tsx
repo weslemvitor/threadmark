@@ -26,7 +26,6 @@ import {
   getTicket,
   getTicketAssignees,
   getTickets,
-  queueTicketDocumentation,
   upsertTicketProductForwarding,
   updateTicketInternalNote,
   updateTicketMetadata,
@@ -112,9 +111,6 @@ const TicketDetailPanel = dynamic(
 const ManualTicketDialog = dynamic(
   () => import("./features/tickets").then((module) => module.ManualTicketDialog),
 );
-const ThreadmarkAi = dynamic(
-  () => import("./features/threadmark-ai").then((module) => module.ThreadmarkAi),
-);
 const ProductForwardingDialog = dynamic(
   () => import("./features/tickets").then((module) => module.ProductForwardingDialog),
 );
@@ -136,10 +132,6 @@ const CategoriesView = dynamic(
 const SettingsView = dynamic(
   () => import("./features/settings").then((module) => module.SettingsView),
   { loading: () => <FeatureLoading label="Carregando configurações…" /> },
-);
-const DocumentationView = dynamic(
-  () => import("./features/documentation").then((module) => module.DocumentationView),
-  { loading: () => <FeatureLoading label="Carregando documentações…" /> },
 );
 const AutomationsView = dynamic(
   () => import("./features/automations").then((module) => module.AutomationsView),
@@ -171,13 +163,9 @@ const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
     title: "Categorias de atendimento",
     subtitle: "Entenda motivos, produtos, sintomas e causas recorrentes",
   },
-  documentation: {
-    title: "Documentações",
-    subtitle: "Rascunhos gerados a partir de tickets resolvidos e revisados por você",
-  },
   automations: {
     title: "Automações",
-    subtitle: "Crie fluxos internos e conecte apps com execução local auditável",
+    subtitle: "Crie fluxos internos com execução local auditável",
   },
   notifications: {
     title: "Notificações",
@@ -189,7 +177,7 @@ const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
   },
   settings: {
     title: "Configurações",
-    subtitle: "Workspace, equipe, conexões e dados desta instalação",
+    subtitle: "Workspace, equipe e dados desta instalação",
   },
 };
 
@@ -258,7 +246,6 @@ export function SupportApp({
   const [categoryMutationTicketId, setCategoryMutationTicketId] = useState<
     string | null
   >(null);
-  const [generatingDocumentationTicketId, setGeneratingDocumentationTicketId] = useState<string | null>(null);
   const [deletingTicketId, setDeletingTicketId] = useState<string | null>(null);
   const [manualTicketRequestId, setManualTicketRequestId] = useState<string | null>(null);
   const [creatingManualTicket, setCreatingManualTicket] = useState(false);
@@ -1536,22 +1523,6 @@ export function SupportApp({
     }
   }, [ticketDetails, tickets]);
 
-  const handleGenerateDocumentation = useCallback(async (ticketId: string) => {
-    setGeneratingDocumentationTicketId(ticketId);
-    try {
-      await queueTicketDocumentation(ticketId);
-      showToast({ tone: "success", message: "Extração de conhecimento adicionada à fila." });
-      navigateToView("documentation");
-    } catch (error) {
-      showToast({
-        tone: "warning",
-        message: error instanceof Error ? error.message : "Não foi possível extrair o conhecimento.",
-      });
-    } finally {
-      setGeneratingDocumentationTicketId(null);
-    }
-  }, [navigateToView, showToast]);
-
   const openSettingsTab = useCallback((tab: SettingsTab) => {
     navigateToView("settings", { settingsTab: tab });
   }, [navigateToView]);
@@ -1583,33 +1554,12 @@ export function SupportApp({
   }, [dismissNotificationPreview, navigateToView, openNotificationTarget]);
 
   const currentPage = pageContent[activeView];
-  const threadmarkAiContext = useMemo(
-    () => ({
-      route: buildThreadmarkPath({
-        view: activeView,
-        ticketReference:
-          activeView === "inbox" && selectedTicket
-            ? String(selectedTicket.number)
-            : null,
-        settingsTab: settingsInitialTab,
-      }),
-      label: selectedTicket
-        ? `Ticket #${selectedTicket.number} · ${selectedTicket.title}`
-        : currentPage.title,
-      ticketId: selectedTicket?.id ?? null,
-      ticketNumber: selectedTicket?.number ?? null,
-      groupId: selectedTicket?.group.id ?? null,
-      groupName: selectedTicket?.group.subject ?? null,
-    }),
-    [activeView, currentPage.title, selectedTicket, settingsInitialTab],
-  );
   const pageView = useMemo(() => {
     switch (activeView) {
       case "conversations":
         return (
           <ConversationsView
             clients={clients}
-            onOpenAiSettings={() => openSettingsTab("ai")}
             onOpenTicket={openTicket}
             onTicketsChanged={refreshTicketCollections}
             onToast={showToast}
@@ -1639,7 +1589,6 @@ export function SupportApp({
               onDeleteNote={handleDeleteTicketNote}
               onOpenCategoryCatalog={() => navigateToView("categories")}
               onOpenProductForwarding={openProductForwarding}
-              onGenerateDocumentation={handleGenerateDocumentation}
               onRefresh={refreshTicket}
               onStatusChange={handleStatusChange}
               onUpdateNote={handleUpdateTicketNote}
@@ -1656,7 +1605,6 @@ export function SupportApp({
               updatingMetadata={updatingTicketMetadata}
               updatingAssignee={assigningTicketId === selectedTicket?.id}
               updatingStatus={updatingStatus}
-              generatingDocumentation={generatingDocumentationTicketId === selectedTicket?.id}
             />
           </div>
         );
@@ -1694,8 +1642,6 @@ export function SupportApp({
             onDelete={handleDeleteCategory}
           />
         );
-      case "documentation":
-        return <DocumentationView />;
       case "automations":
         return <AutomationsView />;
       case "notifications":
@@ -1752,7 +1698,6 @@ export function SupportApp({
     handleDetachTicketMessage,
     handleAttachCategory,
     handleDetachCategory,
-    handleGenerateDocumentation,
     handleDeleteTicketNote,
     handleStatusChange,
     handleUpdateTicketMetadata,
@@ -1778,7 +1723,6 @@ export function SupportApp({
     ticketNoteMutation,
     updatingTicketMetadata,
     updatingStatus,
-    generatingDocumentationTicketId,
     workspaceTimeZone,
   ]);
 
@@ -1914,11 +1858,6 @@ export function SupportApp({
           returnFocusRef={productForwardingReturnFocusRef}
         />
       ) : null}
-      <ThreadmarkAi
-        context={threadmarkAiContext}
-        currentUserId={access?.user.id ?? null}
-        key={access?.user.id ?? "anonymous"}
-      />
       {roomSearchOpen ? (
         <SupportSearchOverlay
           onClose={() => setRoomSearchOpen(false)}

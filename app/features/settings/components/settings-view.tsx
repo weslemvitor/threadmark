@@ -1,13 +1,10 @@
 "use client";
 
-import { Bot, Database, HardDrive, Laptop, LoaderCircle, Menu, QrCode, RefreshCw, Settings2, ShieldCheck, UserRound, UsersRound, Wrench, type LucideIcon } from "lucide-react";
+import { Database, HardDrive, Laptop, LoaderCircle, Menu, QrCode, RefreshCw, Settings2, ShieldCheck, UserRound, UsersRound, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { getAiConnections, getAiTaskProfiles, getInvestigationPacks, getLocalTools, getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type AiConnection, type AiTaskProfile, type InvestigationPackDto, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings, type LocalToolDto } from "@/app/lib/settings";
-import { getTriageAiSettings } from "@/app/lib/api";
+import { getSettingsUsers, getStaffSettings, getWhatsappQr, getWhatsappRuntime, getWorkspaceSettings, type SettingsRole, type SettingsUser, type StaffSettings, type WhatsappQrState, type WorkspaceSettings } from "@/app/lib/settings";
 import type { RuntimeState } from "@/app/lib/types";
 import type { SettingsRouteTab } from "@/app/lib/navigation";
-import type { TriageAiSettingsDto } from "@/shared/contracts";
-import { ToolsSettingsSection } from "./tools-settings-section";
 import { Badge } from "@/app/components/ui/badge";
 import { Button } from "@/app/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/app/components/ui/tabs";
@@ -15,7 +12,6 @@ import { GeneralSection } from "./sections/general-section";
 import { UsersSection } from "./sections/users-section";
 import { StaffSection } from "./sections/staff-section";
 import { WhatsappSection } from "./sections/whatsapp-section";
-import { AiSection } from "./sections/ai-section";
 import { DataSection } from "./sections/data-section";
 import { SecuritySection } from "./sections/security-section";
 import { DesktopSection } from "./sections/desktop-section";
@@ -48,8 +44,6 @@ const TABS: TabDefinition[] = [
   { id: "users", label: "Usuários", icon: UsersRound },
   { id: "staff", label: "Equipe WhatsApp", icon: UserRound },
   { id: "whatsapp", label: "WhatsApp", icon: QrCode },
-  { id: "ai", label: "IA", icon: Bot },
-  { id: "tools", label: "Ferramentas", icon: Wrench },
   { id: "data", label: "Dados", icon: Database },
   { id: "desktop", label: "Aplicativo", icon: Laptop },
   { id: "security", label: "Segurança", icon: ShieldCheck },
@@ -68,18 +62,15 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [uncontrolledTab, setUncontrolledTab] =
     useState<SettingsTab>(initialTab);
-  const activeTab = onTabChange ? initialTab : uncontrolledTab;
+  const requestedTab = onTabChange ? initialTab : uncontrolledTab;
+  const activeTab = requestedTab === "ai" || requestedTab === "tools"
+    ? "general"
+    : requestedTab;
   const [workspace, setWorkspace] = useState<WorkspaceSettings | null>(null);
   const [users, setUsers] = useState<SettingsUser[]>([]);
   const [staff, setStaff] = useState<StaffSettings>(EMPTY_STAFF);
   const [runtime, setRuntime] = useState<RuntimeState | null>(null);
   const [qr, setQr] = useState<WhatsappQrState | null>(null);
-  const [connections, setConnections] = useState<AiConnection[]>([]);
-  const [taskProfiles, setTaskProfiles] = useState<AiTaskProfile[]>([]);
-  const [triageAiSettings, setTriageAiSettings] =
-    useState<TriageAiSettingsDto | null>(null);
-  const [tools, setTools] = useState<LocalToolDto[]>([]);
-  const [investigationPacks, setInvestigationPacks] = useState<InvestigationPackDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -87,7 +78,6 @@ export function SettingsView({
     tone: "success" | "error";
     message: string;
   } | null>(null);
-  const [aiProfilesDirty, setAiProfilesDirty] = useState(false);
   const desktopAvailable = useSyncExternalStore(
     subscribeToDesktopBridge,
     () => Boolean(getThreadmarkDesktopBridge()),
@@ -109,50 +99,24 @@ export function SettingsView({
         ? [
             getSettingsUsers(),
             getStaffSettings(),
-            getAiConnections(),
-            getAiTaskProfiles(),
-            getLocalTools(),
-            getInvestigationPacks(),
           ]
         : [
             Promise.resolve([] as SettingsUser[]),
             Promise.resolve(EMPTY_STAFF),
-            Promise.resolve([] as AiConnection[]),
-            Promise.resolve([] as AiTaskProfile[]),
-            Promise.resolve([] as LocalToolDto[]),
-            Promise.resolve({ items: [] as InvestigationPackDto[], active: null }),
           ];
 
       const results = await Promise.allSettled([
         getWorkspaceSettings(),
         getWhatsappRuntime(),
-        getTriageAiSettings(),
         ...privilegedRequests,
       ]);
 
-      const [workspaceResult, runtimeResult, triageSettingsResult, usersResult, staffResult, connectionsResult, profilesResult, toolsResult, packsResult] =
+      const [workspaceResult, runtimeResult, usersResult, staffResult] =
         results;
       if (workspaceResult.status === "fulfilled") setWorkspace(workspaceResult.value);
       if (runtimeResult.status === "fulfilled") setRuntime(runtimeResult.value);
-      if (triageSettingsResult.status === "fulfilled") {
-        setTriageAiSettings(triageSettingsResult.value);
-      }
       if (usersResult.status === "fulfilled") setUsers(usersResult.value as SettingsUser[]);
       if (staffResult.status === "fulfilled") setStaff(staffResult.value as StaffSettings);
-      if (connectionsResult.status === "fulfilled") {
-        setConnections(connectionsResult.value as AiConnection[]);
-      }
-      if (profilesResult.status === "fulfilled") {
-        setTaskProfiles(profilesResult.value as AiTaskProfile[]);
-      }
-      if (toolsResult.status === "fulfilled") {
-        setTools(toolsResult.value as LocalToolDto[]);
-      }
-      if (packsResult.status === "fulfilled") {
-        setInvestigationPacks(
-          (packsResult.value as { items: InvestigationPackDto[] }).items,
-        );
-      }
 
       const failure = results.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",
@@ -191,27 +155,7 @@ export function SettingsView({
     };
   }, [activeTab, canManage, runtime?.qrAvailable, runtime?.whatsappConnected]);
 
-  useEffect(() => {
-    if (!aiProfilesDirty) return;
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warnBeforeUnload);
-    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [aiProfilesDirty]);
-
   function selectTab(nextTab: SettingsTab) {
-    if (
-      activeTab === "ai" &&
-      nextTab !== "ai" &&
-      aiProfilesDirty &&
-      !window.confirm(
-        "Existem alterações de IA ainda não salvas. Deseja sair e descartá-las?",
-      )
-    ) {
-      return;
-    }
     if (onTabChange) onTabChange(nextTab);
     else setUncontrolledTab(nextTab);
     setFeedback(null);
@@ -254,7 +198,7 @@ export function SettingsView({
               </span>
               <div>
                 <h1 className="text-xl font-semibold tracking-tight text-foreground">Configurações</h1>
-                <p className="mt-0.5 text-sm text-muted-foreground">Workspace, equipe, conexões e dados desta instalação.</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">Workspace, equipe e dados desta instalação.</p>
               </div>
             </div>
             </div>
@@ -369,30 +313,6 @@ export function SettingsView({
               onRuntimeChange={setRuntime}
               qr={qr}
               runtime={runtime}
-            />
-          ) : null}
-          {activeTab === "ai" ? (
-            <AiSection
-              canManage={canManage}
-              connections={connections}
-              key={triageAiSettings?.updatedAt ?? "triage-settings-loading"}
-              onConnectionsChange={setConnections}
-              onDirtyChange={setAiProfilesDirty}
-              onFeedback={showFeedback}
-              onProfilesChange={setTaskProfiles}
-              onTriageSettingsChange={setTriageAiSettings}
-              profiles={taskProfiles}
-              triageSettings={triageAiSettings}
-            />
-          ) : null}
-          {activeTab === "tools" ? (
-            <ToolsSettingsSection
-              canManage={canManage}
-              onChange={setTools}
-              onFeedback={showFeedback}
-              onPacksChange={setInvestigationPacks}
-              packs={investigationPacks}
-              tools={tools}
             />
           ) : null}
           {activeTab === "data" ? (
