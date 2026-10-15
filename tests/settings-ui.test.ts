@@ -3,10 +3,11 @@ import test from "node:test";
 import { readFrontendFile as readFile } from "./helpers/frontend-source.js";
 
 test("configurações fazem parte da navegação e preservam fronteira local-first", async () => {
-  const [sidebar, app, settings, api, navigation] = await Promise.all([
+  const [sidebar, app, settings, general, api, navigation] = await Promise.all([
     readFile(new URL("../app/components/layout/sidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/support-app.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/features/settings/components/settings-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/features/settings/components/sections/general-section.tsx", import.meta.url), "utf8"),
     readFile(new URL("../server/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/navigation.ts", import.meta.url), "utf8"),
   ]);
@@ -28,6 +29,12 @@ test("configurações fazem parte da navegação e preservam fronteira local-fir
   assert.match(settings, /SQLite \+ WAL\/SHM/);
   assert.match(settings, /Outros dados locais/);
   assert.match(settings, /Atualizar uso/);
+  assert.match(general, /Seu horário de trabalho/);
+  assert.match(general, /Todos os dias/);
+  assert.match(general, /Horário de trabalho desativado/);
+  assert.match(general, /type="time"/);
+  assert.match(general, /Adicionar período/);
+  assert.match(general, /workSchedule/);
   assert.match(api, /\/api\/settings\/backup/);
   assert.match(api, /\/api\/settings\/storage/);
   assert.doesNotMatch(settings, /Codex CLI fica reservado/);

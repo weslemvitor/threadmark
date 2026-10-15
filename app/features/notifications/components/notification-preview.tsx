@@ -28,6 +28,7 @@ const PREVIEW_LIMIT = 5;
 
 type NotificationPreviewProps = {
   unread: number;
+  onOpenPreview: () => void;
   onOpenAll: () => void;
   onOpenTarget: (targetUrl: string) => void;
   onUnreadChange: (count: number) => void;
@@ -35,6 +36,7 @@ type NotificationPreviewProps = {
 
 export function NotificationPreview({
   unread,
+  onOpenPreview,
   onOpenAll,
   onOpenTarget,
   onUnreadChange,
@@ -43,6 +45,11 @@ export function NotificationPreview({
   const [items, setItems] = useState<NotificationDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) onOpenPreview();
+  }, [onOpenPreview]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -98,7 +105,7 @@ export function NotificationPreview({
     : "Abrir prévia de notificações";
 
   return (
-    <Popover onOpenChange={setOpen} open={open}>
+    <Popover onOpenChange={handleOpenChange} open={open}>
       <PopoverTrigger asChild>
         <Button
           aria-label={notificationLabel}

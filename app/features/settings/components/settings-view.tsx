@@ -265,7 +265,7 @@ export function SettingsView({
           {activeTab === "general" ? (
             <GeneralSection
               canManage={canManage}
-              key={`${workspace?.organizationName ?? ""}:${workspace?.workspaceName ?? ""}:${workspace?.timezone ?? ""}`}
+              key={`${workspace?.organizationName ?? ""}:${workspace?.workspaceName ?? ""}:${workspace?.timezone ?? ""}:${workspace ? JSON.stringify(workspace.workSchedule) : ""}`}
               onChange={(nextWorkspace) => {
                 setWorkspace(nextWorkspace);
                 onWorkspaceChange?.(nextWorkspace);
