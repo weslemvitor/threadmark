@@ -70,7 +70,7 @@ test("Kanban separa tickets ativos dos arquivados sem contaminar a carga global"
   assert.match(view, /void loadArchived\(true, nextQuery\)/);
   assert.match(view, /Pesquisando em todos os arquivados/);
   assert.match(view, /em todos os tickets arquivados/);
-  assert.match(view, /label: "Cancelados"/);
+  assert.match(view, /label: "Cancelado"/);
   assert.match(view, /statuses: \["cancelled"\]/);
   assert.match(view, /bg-linear-to-br from-primary\/13 via-card to-primary\/\[6\.5%\]/);
   assert.match(view, /visibleCancelledTickets/);
@@ -269,7 +269,7 @@ test("controles e grade de arquivados se adaptam a telas estreitas", async () =>
 
   assert.match(view, /flex min-w-0 flex-wrap items-center gap-2/);
   assert.match(view, /grid-cols-\[repeat\(auto-fill,minmax\(245px,1fr\)\)\]/);
-  assert.match(view, /grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5/);
+  assert.match(view, /grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6/);
   assert.doesNotMatch(view, /min-w-\[920px\]/);
   assert.match(card, /selected && "border-primary\/70 bg-primary\/5 ring-2 ring-primary\/10"/);
   assert.match(card, /aria-pressed=\{selectable \? selected : undefined\}/);

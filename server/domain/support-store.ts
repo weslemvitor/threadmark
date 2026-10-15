@@ -521,7 +521,7 @@ interface ConversationActionMessageRow {
 const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
   new: "Novo",
   triage: "Em triagem",
-  in_progress: "Em andamento",
+  in_progress: "Em atendimento",
   waiting_customer: "Aguardando cliente",
   blocked: "Bloqueado",
   resolved: "Resolvido",

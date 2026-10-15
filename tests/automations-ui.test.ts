@@ -147,7 +147,7 @@ test("nós exibem a configuração operacional mais importante no canvas", () =>
       },
       defaultAutomationNodeCatalog.find((item) => item.id === "flow.condition")!,
     ),
-    "Status · É igual a · Em revisão",
+    "Status · É igual a · Em triagem",
   );
 });
 

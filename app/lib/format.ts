@@ -8,8 +8,8 @@ import { DASHBOARD_TIME_ZONE } from "../../shared/contracts.js";
 
 export const statusLabels: Record<TicketStatus, string> = {
   new: "Novo",
-  triage: "Em revisão",
-  in_progress: "Em andamento",
+  triage: "Em triagem",
+  in_progress: "Em atendimento",
   waiting_customer: "Aguardando resposta",
   blocked: "Aguardando interno",
   resolved: "Resolvido",

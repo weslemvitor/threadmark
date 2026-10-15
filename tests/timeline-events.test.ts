@@ -27,7 +27,7 @@ function event(overrides: Partial<TimelineEventDto>): TimelineEventDto {
 test("timeline descreve mudanças de status e ações do Codex", () => {
   assert.equal(
     describeTimelineEvent(event({ fromStatus: "triage", toStatus: "in_progress" })),
-    "Status alterado de Em revisão para Em andamento",
+    "Status alterado de Em triagem para Em atendimento",
   );
   assert.equal(
     describeTimelineEvent(

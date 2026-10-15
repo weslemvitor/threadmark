@@ -55,68 +55,18 @@ import {
   type KanbanCategoryFilters,
 } from "../domain/kanban-category-filters";
 import { getKanbanTicketTimestamp } from "../domain/kanban-ticket";
-
-type KanbanColumn = {
-  id: string;
-  label: string;
-  description: string;
-  statuses: TicketStatus[];
-  targetStatus: TicketStatus;
-  accent: string;
-};
+import { kanbanColumns as columns } from "../domain/kanban-columns";
 
 type KanbanMode = KanbanTab;
 
 const KANBAN_PAGE_SIZE = 5;
-
-const columns: KanbanColumn[] = [
-  {
-    id: "todo",
-    label: "A revisar",
-    description: "Novas demandas e triagem",
-    statuses: ["new", "triage"],
-    targetStatus: "triage",
-    accent: "violet",
-  },
-  {
-    id: "progress",
-    label: "Em andamento",
-    description: "Investigação ou resposta",
-    statuses: ["in_progress"],
-    targetStatus: "in_progress",
-    accent: "blue",
-  },
-  {
-    id: "waiting",
-    label: "Aguardando",
-    description: "Solicitante ou time interno",
-    statuses: ["waiting_customer", "blocked"],
-    targetStatus: "waiting_customer",
-    accent: "amber",
-  },
-  {
-    id: "done",
-    label: "Resolvidos",
-    description: "Solução confirmada",
-    statuses: ["resolved"],
-    targetStatus: "resolved",
-    accent: "green",
-  },
-  {
-    id: "cancelled",
-    label: "Cancelados",
-    description: "Encerrados sem resolução",
-    statuses: ["cancelled"],
-    targetStatus: "cancelled",
-    accent: "rose",
-  },
-];
 
 const initialColumnLimits = Object.fromEntries(
   columns.map((column) => [column.id, KANBAN_PAGE_SIZE]),
 ) as Record<string, number>;
 
 const columnAccentClasses: Record<string, string> = {
+  slate: "bg-slate-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-slate-500)_20%,transparent)]",
   violet: "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_20%,transparent)]",
   blue: "bg-blue-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-blue-500)_20%,transparent)]",
   amber: "bg-amber-500 shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-amber-500)_20%,transparent)]",
@@ -902,7 +852,7 @@ export function KanbanView({
       {mode === "active" ? (
         <div
           aria-labelledby="kanban-active-tab"
-          className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5"
+          className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6"
           id="kanban-active-panel"
           role="tabpanel"
         >
