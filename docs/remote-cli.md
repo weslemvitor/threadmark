@@ -6,17 +6,63 @@ Nenhum destino armazena senha ou token em `remotes.json`. Destinos HTTPS guardam
 
 ## HTTPS direto
 
-Crie uma credencial em **Configurações → Segurança → CLI e Hermes**. Selecione `Hermes` para crons/agentes e `CLI manual` para uso interativo; o cliente escolhido fica vinculado à credencial. Usuários ativos com papel `owner`, `admin` ou `operator` podem criar e revogar somente as próprias credenciais. O token é exibido uma única vez e o servidor persiste somente seu hash. A credencial fica vinculada ao usuário que a criou, possui escopo `headless`, expiração obrigatória e revogação individual. Desativar o usuário ou alterar seu papel revoga definitivamente suas credenciais.
+### 1. Instale a CLI no computador do agente
+
+Se o Threadmark está na VPS e o Codex roda no seu Mac, instale e autentique a CLI no Mac. Nesta versão, o login HTTPS depende do macOS Keychain.
+
+Com Git e Node.js 22.13 ou superior instalados:
+
+```sh
+git clone https://github.com/weslemvitor/threadmark.git
+cd threadmark
+npm install
+npm run package:build
+npm link
+threadmark --version
+```
+
+Se `threadmark --version` já funciona, siga para a criação da credencial.
+
+### 2. Crie a credencial
+
+Crie uma credencial em **Configurações → Segurança → CLI**. Selecione `CLI` para uso pela linha de comando, inclusive com Codex e outros agentes. A opção `Hermes` mantém a compatibilidade com integrações que usam esse cliente; nesses casos, inclua `--client hermes` nas operações headless. O cliente escolhido fica vinculado à credencial. Usuários ativos com papel `owner`, `admin` ou `operator` podem criar e revogar somente as próprias credenciais. O token é exibido uma única vez e o servidor persiste somente seu hash. A credencial fica vinculada ao usuário que a criou, possui escopo `headless`, expiração obrigatória e revogação individual. Desativar o usuário ou alterar seu papel revoga definitivamente suas credenciais.
+
+### 3. Cadastre a instalação e faça login
 
 Cadastre o domínio e salve o token no Keychain:
 
 ```sh
 threadmark remote add production --url https://threadmark.exemplo.com
 threadmark remote login production
-threadmark remote status production --json
 ```
 
 `remote login` abre duas solicitações seguras do macOS Keychain; cole o mesmo token emitido pela interface nas duas para confirmar. O token não é passado em argumentos de processo, não entra em variáveis de ambiente e não é gravado no cadastro remoto. A referência do Keychain combina o nome e a URL canônica do remoto, evitando reutilizar o token se o mesmo nome for recadastrado para outro servidor.
+
+### 4. Teste a conexão
+
+```sh
+threadmark remote status production --json
+threadmark --remote production capabilities --json
+threadmark --remote production tickets list --json
+```
+
+O status deve identificar sua credencial e seu usuário. Os próximos comandos retornam as capacidades e a lista de tickets. Uma lista vazia também é uma resposta válida. Para credenciais Hermes, acrescente `--client hermes` aos dois comandos headless.
+
+### 5. Use pelo Codex ou outro agente
+
+Abra um chat local no mesmo computador, com acesso ao terminal, e envie:
+
+```text
+Use a CLI Threadmark instalada neste computador para acessar o remoto production.
+Use sempre o prefixo threadmark --remote production e a saída --json.
+Consulte as capacidades disponíveis e liste os tickets que precisam de atenção.
+Faça somente consultas nesta etapa; peça minha autorização antes de alterar dados.
+Se a conexão falhar, informe o erro e não use uma instância local como alternativa.
+```
+
+Para uma credencial Hermes, instrua o agente a incluir `--client hermes` nas operações headless. Se o agente não encontrar o executável, informe o caminho retornado por `command -v threadmark` no seu terminal. O agente precisa executar a CLI com acesso ao mesmo cadastro remoto e ao Keychain do usuário que fez o login.
+
+### Revogação e limites de acesso
 
 Para revogar a credencial no servidor e removê-la do Keychain:
 
