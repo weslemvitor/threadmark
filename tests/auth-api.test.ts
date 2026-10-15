@@ -265,7 +265,7 @@ test("API atribui mutações da CLI ao usuário delegado sem confiar em nomes li
         (item) =>
           item.type === "event" &&
           item.eventType === "status_changed" &&
-          item.actor === "Hermes · Pessoa Operadora",
+          item.actor === "Threadmark CLI · Pessoa Operadora",
       ),
     );
 

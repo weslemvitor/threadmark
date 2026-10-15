@@ -25,7 +25,9 @@ Se `threadmark --version` já funciona, siga para a criação da credencial.
 
 ### 2. Crie a credencial
 
-Crie uma credencial em **Configurações → Segurança → CLI**. Selecione `CLI` para uso pela linha de comando, inclusive com Codex e outros agentes. A opção `Hermes` mantém a compatibilidade com integrações que usam esse cliente; nesses casos, inclua `--client hermes` nas operações headless. O cliente escolhido fica vinculado à credencial. Usuários ativos com papel `owner`, `admin` ou `operator` podem criar e revogar somente as próprias credenciais. O token é exibido uma única vez e o servidor persiste somente seu hash. A credencial fica vinculada ao usuário que a criou, possui escopo `headless`, expiração obrigatória e revogação individual. Desativar o usuário ou alterar seu papel revoga definitivamente suas credenciais.
+Crie uma credencial em **Configurações → Segurança → CLI**. A mesma CLI atende uso manual, Codex, Hermes e outros agentes, sem escolher um cliente ao gerar o token ou executar comandos. Usuários ativos com papel `owner`, `admin` ou `operator` podem criar e revogar somente as próprias credenciais. O token é exibido uma única vez e o servidor persiste somente seu hash. A credencial fica vinculada ao usuário que a criou, possui escopo `headless`, expiração obrigatória e revogação individual. Desativar o usuário ou alterar seu papel revoga definitivamente suas credenciais.
+
+O guia de conexão aparece abaixo do token, somente após a criação bem-sucedida. Credenciais antigas continuam válidas até expirar ou serem revogadas. O campo legado `clientId` e a opção `--client` são aceitos por compatibilidade, mas não escolhem identidade ou permissões por agente.
 
 ### 3. Cadastre a instalação e faça login
 
@@ -46,7 +48,7 @@ threadmark --remote production capabilities --json
 threadmark --remote production tickets list --json
 ```
 
-O status deve identificar sua credencial e seu usuário. Os próximos comandos retornam as capacidades e a lista de tickets. Uma lista vazia também é uma resposta válida. Para credenciais Hermes, acrescente `--client hermes` aos dois comandos headless.
+O status deve identificar sua credencial e seu usuário. Os próximos comandos retornam as capacidades e a lista de tickets. Uma lista vazia também é uma resposta válida.
 
 ### 5. Use pelo Codex ou outro agente
 
@@ -60,7 +62,7 @@ Faça somente consultas nesta etapa; peça minha autorização antes de alterar 
 Se a conexão falhar, informe o erro e não use uma instância local como alternativa.
 ```
 
-Para uma credencial Hermes, instrua o agente a incluir `--client hermes` nas operações headless. Se o agente não encontrar o executável, informe o caminho retornado por `command -v threadmark` no seu terminal. O agente precisa executar a CLI com acesso ao mesmo cadastro remoto e ao Keychain do usuário que fez o login.
+Se o agente não encontrar o executável, informe o caminho retornado por `command -v threadmark` no seu terminal. O agente precisa executar a CLI com acesso ao mesmo cadastro remoto e ao Keychain do usuário que fez o login.
 
 ### Revogação e limites de acesso
 
@@ -70,7 +72,7 @@ Para revogar a credencial no servidor e removê-la do Keychain:
 threadmark remote logout production --json
 ```
 
-A API aceita essa credencial somente nos pares de método e rota usados pela família headless. Ela não autoriza runtime, shutdown, usuários, configurações, backup ou acesso ao banco. A identidade delegada de uma escrita deve ser o mesmo usuário vinculado à credencial. Cada credencial também fica vinculada ao cliente autorizado (`hermes` ou `threadmark-cli`); um cabeçalho diferente é rejeitado e não pode elevar permissões.
+A API aceita essa credencial somente nos pares de método e rota usados pela família headless. Ela não autoriza runtime, shutdown, usuários, configurações, backup ou acesso ao banco. A identidade delegada de uma escrita deve ser o mesmo usuário vinculado à credencial. A identidade e as permissões são as do usuário vinculado ao token, independentemente do agente que executa a CLI.
 
 HTTP sem TLS é recusado, exceto em loopback (`localhost`, `127.0.0.1` ou `::1`) para desenvolvimento local. A URL deve apontar para a origem, sem caminho adicional, query string, fragmento ou credenciais.
 
@@ -124,10 +126,10 @@ O seletor remoto deve ser o prefixo único da chamada:
 threadmark --remote production tickets list --json
 threadmark --remote production conversations list --limit 25 --json
 threadmark --remote production tickets status ticket-123 \
-  --input update.json --apply --as "Pessoa Operadora" --client hermes --json
+  --input update.json --apply --as "Pessoa Operadora" --json
 ```
 
-A última chamada lê `update.json` no computador que invocou a CLI e o encaminha pela entrada padrão ao container como `--input -`; o caminho local nunca é enviado ao host remoto. A entrada é limitada a 64 KiB. `--input -` encaminha a entrada padrão local diretamente. Escritas continuam exigindo `--apply`, `--as` e, quando aplicável, `--client`; a instância remota mantém a mesma resolução de ator e auditoria headless.
+A última chamada lê `update.json` no computador que invocou a CLI e o encaminha pela entrada padrão ao container como `--input -`; o caminho local nunca é enviado ao host remoto. A entrada é limitada a 64 KiB. `--input -` encaminha a entrada padrão local diretamente. Escritas continuam exigindo `--apply`, `--as`; a instância remota mantém a mesma resolução de ator e auditoria headless.
 
 São aceitas as famílias headless: `capabilities`, `operators`, `conversations`, `triage`, `tickets`, `categories`, `clients`, `dashboard` e `agent`. A CLI rejeita explicitamente comandos de ciclo de vida ou dados locais, como `on`, `off`, `start`, `stop`, `restore`, `service`, `backup`, `backups`, `configure` e similares. Não há fallback automático para a instância local quando um remoto não existe ou falha.
 

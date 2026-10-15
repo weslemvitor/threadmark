@@ -36,9 +36,9 @@ SUPPORT_TRIAGE_AI_QUIET_MS=180000
 
 `SUPPORT_PUBLIC_ORIGIN` é obrigatória no deploy e deve corresponder exatamente à origem HTTPS, sem barra final. Ela controla CORS, proteção de origem e o atributo `Secure` do cookie. A origem interna da Web, hosts, portas e `SUPPORT_DATA_DIR` já são definidos pela imagem e não devem ser sobrescritos no Coolify.
 
-A fila de triagem é consumida pelo Hermes externo. Sem ele conectado, os jobs permanecem disponíveis, sem iniciar Codex ou outro modelo dentro do container. Os demais workers continuam no daemon. `SUPPORT_TRIAGE_AI_ENABLED=false` habilita somente o classificador determinístico local; não há executor interno para instalar.
+A fila de triagem é consumida por um agente externo pela CLI. Sem um agente conectado, os jobs permanecem disponíveis, sem iniciar Codex ou outro modelo dentro do container. Os demais workers continuam no daemon. `SUPPORT_TRIAGE_AI_ENABLED=false` habilita somente o classificador determinístico local; não há executor interno para instalar.
 
-Para conectar a CLI ou o Hermes sem acesso SSH, crie uma credencial em **Configurações → Segurança → CLI e Hermes**, cadastre o domínio público com `threadmark remote add NAME --url HTTPS_URL` e salve o token no macOS Keychain com `threadmark remote login NAME`. A API restringe essa credencial às operações headless e o servidor persiste somente seu hash.
+Para conectar a CLI sem acesso SSH, crie uma credencial em **Configurações → Segurança → CLI**, cadastre o domínio público com `threadmark remote add NAME --url HTTPS_URL` e salve o token no macOS Keychain com `threadmark remote login NAME`. A mesma credencial atende uso manual e qualquer agente externo. A API restringe essa credencial às operações headless e o servidor persiste somente seu hash.
 
 Não coloque tokens em build arguments nem em variáveis `NEXT_PUBLIC_*`.
 

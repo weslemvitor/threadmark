@@ -766,7 +766,7 @@ async function chooseConfigurationSection(): Promise<ConfigurationSection> {
 function parseConfigurationSection(value: string): ConfigurationSection {
   if (["ai", "ia", "tools", "tool", "ferramentas"].includes(value)) {
     throw new Error(
-      "Modelos, skills e ferramentas agora são configurados no ambiente do agente (por exemplo, Hermes).",
+      "Modelos, skills e ferramentas agora são configurados no ambiente do agente externo.",
     );
   }
   const aliases: Record<string, ConfigurationSection> = {
@@ -1232,7 +1232,7 @@ Dados e suporte:
   --remote NAME <comando-headless> [opções]
                               Executa a família headless por HTTPS ou SSH cadastrado
   capabilities [--json]       Descreve a API headless e seus limites de segurança
-  agent triage-* [--json]     Entrega a fila automática a um executor Hermes
+  agent triage-* [--json]     Entrega a fila automática a um agente externo
   operators list [--json]     Lista identidades autorizáveis para auditoria
   conversations ... [--json] Consulta conversas, mensagens e tickets vinculados
   triage ... [--json]         Revisa ou aplica decisões de triagem

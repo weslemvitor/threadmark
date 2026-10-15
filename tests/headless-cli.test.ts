@@ -125,7 +125,7 @@ test("CLI headless recusa qualquer escrita sem autorização e ator explícitos"
   assert.equal(withoutActor.error.code, "actor_required");
 });
 
-test("CLI headless cria ticket de conversa com JSON validado, idempotência e identidade Hermes", async () => {
+test("CLI headless cria ticket de conversa com JSON validado, idempotência e identidade CLI", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "threadmark-headless-"));
   try {
     const inputPath = path.join(directory, "ticket.json");
@@ -169,7 +169,7 @@ test("CLI headless cria ticket de conversa com JSON validado, idempotência e id
     assert.deepEqual(result.meta, {
       readOnly: false,
       actorId: "user-operator",
-      clientId: "hermes",
+      clientId: "threadmark-cli",
     });
     assert.equal(current.requests.length, 2);
     assert.deepEqual(current.requests[1], {
@@ -177,7 +177,7 @@ test("CLI headless cria ticket de conversa com JSON validado, idempotência e id
       input: {
         method: "POST",
         actorId: "user-operator",
-        clientId: "hermes",
+        clientId: "threadmark-cli",
         body: {
           clientRequestId: "hermes-loja-exemplo-20260902",
           messageIds: ["message-1", "message-2"],
@@ -274,7 +274,7 @@ test("CLI headless importa mensagens externas em ticket existente", async () => 
       input: {
         method: "POST",
         actorId: "user-operator",
-        clientId: "hermes",
+        clientId: "threadmark-cli",
         body,
       },
     });
@@ -312,7 +312,7 @@ test("CLI headless remove nota interna de um ticket com auditoria", async () => 
     input: {
       method: "DELETE",
       actorId: "user-operator",
-      clientId: "hermes",
+      clientId: "threadmark-cli",
     },
   });
 });
@@ -336,7 +336,7 @@ test("CLI headless expõe a fila de triagem sem alterar estado", async () => {
   assert.equal(current.requests[0]!.route, "/api/agent/triage/jobs");
 });
 
-test("CLI headless reivindica job externo somente como Hermes identificado", async () => {
+test("CLI headless reivindica job externo com identidade CLI sem selecionar agente", async () => {
   const current = recordingTransport((route) => {
     if (route === "/api/ticket-assignees") {
       return [{ id: "user-operator", displayName: "Pessoa Operadora", role: "owner" }];
@@ -353,8 +353,6 @@ test("CLI headless reivindica job externo somente como Hermes identificado", asy
       "--apply",
       "--as",
       "Pessoa Operadora",
-      "--client",
-      "hermes",
     ],
     current.transport,
   );
@@ -366,7 +364,7 @@ test("CLI headless reivindica job externo somente como Hermes identificado", asy
       method: "POST",
       body: { leaseSeconds: 120 },
       actorId: "user-operator",
-      clientId: "hermes",
+      clientId: "threadmark-cli",
     },
   });
 });

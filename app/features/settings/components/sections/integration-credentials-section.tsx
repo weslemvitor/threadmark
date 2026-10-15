@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/app/components/ui/button";
 import { Input } from "@/app/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/app/components/ui/select";
 import {
   createIntegrationCredential,
   getIntegrationCredentials,
@@ -30,11 +29,9 @@ export function IntegrationCredentialsSection({
 }) {
   const [credentials, setCredentials] = useState<IntegrationCredential[]>([]);
   const [name, setName] = useState("CLI no meu computador");
-  const [clientId, setClientId] = useState<"hermes" | "threadmark-cli">("threadmark-cli");
   const [expiresOn, setExpiresOn] = useState(defaultExpiryDate());
   const [issuedToken, setIssuedToken] = useState<{
     credentialId: string;
-    clientId: IntegrationCredential["clientId"];
     token: string;
   } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,7 +66,6 @@ export function IntegrationCredentialsSection({
     try {
       const issued = await createIntegrationCredential({
         name,
-        clientId,
         expiresAt: expiresOn ? `${expiresOn}T23:59:59.000Z` : null,
       });
       setCredentials((current) => [
@@ -78,7 +74,6 @@ export function IntegrationCredentialsSection({
       ]);
       setIssuedToken({
         credentialId: issued.credential.id,
-        clientId: issued.credential.clientId,
         token: issued.token,
       });
       setReferenceTime(Date.now());
@@ -128,7 +123,7 @@ export function IntegrationCredentialsSection({
       title="CLI"
     >
       <div className="space-y-5">
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_170px_180px_auto] md:items-end">
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_180px_auto] md:items-end">
           <Field label="Nome da credencial">
             <Input
               className={inputClass}
@@ -138,21 +133,6 @@ export function IntegrationCredentialsSection({
               placeholder="Ex.: Codex no meu computador"
               value={name}
             />
-          </Field>
-          <Field label="Cliente autorizado">
-            <Select
-              disabled={!canManage}
-              onValueChange={(value) => setClientId(value as "hermes" | "threadmark-cli")}
-              value={clientId}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="threadmark-cli">CLI</SelectItem>
-                <SelectItem value="hermes">Hermes</SelectItem>
-              </SelectContent>
-            </Select>
           </Field>
           <Field label="Expira em">
             <Input
@@ -173,7 +153,7 @@ export function IntegrationCredentialsSection({
           </Button>
         </div>
         <p className="text-xs leading-5 text-muted-foreground">
-          Escolha CLI para usar com Codex ou outros agentes. Após criar a credencial, você verá o token e as instruções de conexão.
+          Use a mesma CLI com Codex ou qualquer outro agente. Após criar a credencial, você verá o token e as instruções de conexão.
         </p>
 
         {issuedToken ? (
@@ -194,7 +174,7 @@ export function IntegrationCredentialsSection({
                 </Button>
               </div>
             </Notice>
-            <CliSetupGuide clientId={issuedToken.clientId} onFeedback={onFeedback} />
+            <CliSetupGuide onFeedback={onFeedback} />
           </div>
         ) : null}
 
@@ -231,7 +211,7 @@ export function IntegrationCredentialsSection({
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {credential.clientId === "hermes" ? "Hermes" : "CLI"} · Expira em {formatDate(credential.expiresAt)}
+                        CLI · Expira em {formatDate(credential.expiresAt)}
                         {credential.lastUsedAt ? ` · Último uso ${formatDate(credential.lastUsedAt)}` : " · Ainda não utilizada"}
                       </p>
                     </div>

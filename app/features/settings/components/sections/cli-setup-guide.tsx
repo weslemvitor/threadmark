@@ -19,26 +19,22 @@ const getOrigin = () => window.location.origin;
 const getServerOrigin = () => "";
 
 export function CliSetupGuide({
-  clientId,
   onFeedback,
 }: {
-  clientId: "hermes" | "threadmark-cli";
   onFeedback(tone: "success" | "error", message: string): void;
 }) {
   const origin = useSyncExternalStore(subscribeToOrigin, getOrigin, getServerOrigin);
-  const clientOption = clientId === "hermes" ? " --client hermes" : "";
   const connectionCommand = origin
     ? `threadmark remote add production --url '${origin.replaceAll("'", "'\\''")}'`
     : "";
   const testCommand = [
     "threadmark remote status production --json",
-    `threadmark --remote production capabilities${clientOption} --json`,
-    `threadmark --remote production tickets list${clientOption} --json`,
+    "threadmark --remote production capabilities --json",
+    "threadmark --remote production tickets list --json",
   ].join("\n");
   const agentPrompt = [
     "Use a CLI Threadmark instalada neste computador para acessar o remoto production.",
     "Use sempre o prefixo threadmark --remote production e a saída --json.",
-    ...(clientId === "hermes" ? ["Inclua --client hermes nas operações headless para corresponder à credencial."] : []),
     "Consulte as capacidades disponíveis e liste os tickets que precisam de atenção.",
     "Faça somente consultas nesta etapa; peça minha autorização antes de alterar dados.",
     "Se a conexão falhar, informe o erro e não use uma instância local como alternativa.",
@@ -98,7 +94,7 @@ export function CliSetupGuide({
         <SetupStep number={3} title="Confira a conexão">
           {command("Teste da conexão", testCommand)}
           <p className="mt-3">O status deve mostrar sua credencial e seu usuário. Os próximos comandos retornam as capacidades e a lista de tickets; uma lista vazia também é uma resposta válida.</p>
-          <p className="mt-2">Se houver erro de conexão ou autenticação, confira o endereço HTTPS, a validade da credencial e se o cliente selecionado corresponde à credencial usada.</p>
+          <p className="mt-2">Se houver erro de conexão ou autenticação, confira o endereço HTTPS e a validade da credencial.</p>
         </SetupStep>
         <SetupStep number={4} title="Use com o Codex ou outro agente">
           <p>Abra um chat local no mesmo computador, com acesso ao terminal, e envie esta instrução:</p>

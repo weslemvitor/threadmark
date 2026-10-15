@@ -73,7 +73,7 @@ export type HeadlessResult<T = unknown> =
   | HeadlessSuccess<T>
   | HeadlessFailure;
 
-export type AgentClientId = "hermes" | "threadmark-cli";
+export type AgentClientId = "threadmark-cli";
 
 interface ParsedArguments {
   positionals: string[];
@@ -832,7 +832,7 @@ async function requireMutationIdentity(
   const actorId = await resolveActorId(actorReference, transport);
   return {
     actorId,
-    clientId: parseClientId(option(args, "client") ?? process.env.THREADMARK_AGENT_CLIENT),
+    clientId: "threadmark-cli",
   };
 }
 
@@ -1047,12 +1047,6 @@ function parseIntegerOption(
     throw usageError(`--${name} deve ser um número inteiro.`);
   }
   return parsed;
-}
-
-function parseClientId(value: string | undefined): AgentClientId {
-  const normalized = value?.trim().toLowerCase() || "threadmark-cli";
-  if (normalized === "hermes" || normalized === "threadmark-cli") return normalized;
-  throw usageError("--client deve ser hermes ou threadmark-cli.");
 }
 
 function appendIfPresent(params: URLSearchParams, key: string, value?: string): void {

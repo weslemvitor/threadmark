@@ -122,8 +122,8 @@ type RequestIdentity =
       kind: "agent";
       user: AuthUserDto;
       sessionToken: null;
-      clientId: "hermes" | "threadmark-cli";
-      clientLabel: "Hermes" | "Threadmark CLI";
+      clientId: "threadmark-cli";
+      clientLabel: "Threadmark CLI";
       integrationCredentialId: string | null;
     }
   | {
@@ -162,7 +162,8 @@ const SESSION_COOKIE = "threadmark_session";
 const integrationCredentialInputSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
-    clientId: z.enum(["hermes", "threadmark-cli"]),
+    // Aceita o campo de clientes antigos, sem usá-lo para definir acesso.
+    clientId: z.string().trim().max(200).optional(),
     expiresAt: z.string().datetime({ offset: true }),
   })
   .strict();
@@ -834,14 +835,14 @@ function requireLocalMachineIdentity(
   return identity;
 }
 
-function requireHermesAgentIdentity(
+function requireAgentIdentity(
   context: Context<ApiEnvironment>,
 ): Extract<RequestIdentity, { kind: "agent" }> {
   const identity = context.get("identity");
-  if (!identity || identity.kind !== "agent" || identity.clientId !== "hermes") {
+  if (!identity || identity.kind !== "agent") {
     throw new AuthError(
       "forbidden",
-      "Esta operação exige uma identidade Hermes delegada e autenticada.",
+      "Esta operação exige uma identidade CLI delegada e autenticada.",
     );
   }
   return identity;
@@ -914,21 +915,14 @@ function localMachineIdentity(): Extract<RequestIdentity, { kind: "local" }> {
 function agentMachineIdentity(
   auth: LocalAuthService,
   userId: string,
-  clientValue: string | undefined,
   integrationCredentialId: string | null = null,
 ): Extract<RequestIdentity, { kind: "agent" }> {
-  const clientId = (clientValue?.trim().toLowerCase() || "threadmark-cli") as
-    | "hermes"
-    | "threadmark-cli";
-  if (clientId !== "hermes" && clientId !== "threadmark-cli") {
-    throw new AuthError("forbidden", "Cliente de agente não autorizado.");
-  }
   return {
     kind: "agent",
     user: auth.resolveMachineActor(userId),
     sessionToken: null,
-    clientId,
-    clientLabel: clientId === "hermes" ? "Hermes" : "Threadmark CLI",
+    clientId: "threadmark-cli",
+    clientLabel: "Threadmark CLI",
     integrationCredentialId,
   };
 }
@@ -1158,7 +1152,6 @@ function createApiAppInternal(
             ? agentMachineIdentity(
                 auth,
                 delegatedActorId,
-                context.req.header("X-Threadmark-Agent-Client"),
               )
             : localMachineIdentity(),
         );
@@ -1191,21 +1184,11 @@ function createApiAppInternal(
           "A credencial de integração não pode atuar como outro usuário.",
         );
       }
-      const requestedClientId = context.req.header("X-Threadmark-Agent-Client")
-        ?.trim()
-        .toLowerCase();
-      if (requestedClientId && requestedClientId !== credential.clientId) {
-        throw new AuthError(
-          "forbidden",
-          "A credencial de integração não permite este cliente.",
-        );
-      }
       context.set(
         "identity",
         agentMachineIdentity(
           auth,
           credential.userId,
-          credential.clientId,
           credential.id,
         ),
       );
@@ -1954,7 +1937,7 @@ function createApiAppInternal(
   });
 
   app.post("/api/agent/triage/jobs/claim", async (context) => {
-    requireHermesAgentIdentity(context);
+    requireAgentIdentity(context);
     const raw = await context.req.text();
     const input = externalTriageLeaseInputSchema.parse(raw ? JSON.parse(raw) : {});
     const job = store.claimNextTriageAiJob(input.leaseSeconds * 1_000);
@@ -1969,7 +1952,7 @@ function createApiAppInternal(
   });
 
   app.post("/api/agent/triage/jobs/:id/heartbeat", async (context) => {
-    requireHermesAgentIdentity(context);
+    requireAgentIdentity(context);
     const raw = await context.req.text();
     const input = externalTriageLeaseInputSchema.parse(raw ? JSON.parse(raw) : {});
     const renewed = store.renewTriageAiJobLease(
@@ -1987,7 +1970,7 @@ function createApiAppInternal(
   });
 
   app.post("/api/agent/triage/jobs/:id/complete", async (context) => {
-    requireHermesAgentIdentity(context);
+    requireAgentIdentity(context);
     const input = externalTriageCompleteInputSchema.parse(await context.req.json());
     const appliedBlocks = store.completeTriageAiJob(
       context.req.param("id"),

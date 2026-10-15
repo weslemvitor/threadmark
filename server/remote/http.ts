@@ -8,13 +8,15 @@ import {
 import { z } from "zod";
 
 const REMOTE_HTTP_TIMEOUT_MS = 20_000;
+// Normaliza respostas de servidores antigos para a identidade única da CLI.
+const cliClientSchema = z.string().min(1).transform(() => "threadmark-cli" as const);
 const remoteCredentialStatusSchema = z.object({
   credential: z.object({
     id: z.string().min(1),
     userId: z.string().min(1),
     name: z.string().min(1),
     scope: z.literal("headless"),
-    clientId: z.enum(["hermes", "threadmark-cli"]),
+    clientId: cliClientSchema,
     expiresAt: z.string().datetime({ offset: true }),
     lastUsedAt: z.string().datetime({ offset: true }).nullable(),
     revokedAt: z.string().datetime({ offset: true }).nullable(),
@@ -27,7 +29,7 @@ const remoteCredentialStatusSchema = z.object({
     role: z.enum(["owner", "admin", "operator", "viewer"]),
     active: z.literal(true),
   }).strict(),
-  clientId: z.enum(["hermes", "threadmark-cli"]),
+  clientId: cliClientSchema,
   headlessSchemaVersion: z.literal(HEADLESS_SCHEMA_VERSION),
 }).strict().superRefine((status, context) => {
   if (status.credential.userId !== status.user.id) {
@@ -35,13 +37,6 @@ const remoteCredentialStatusSchema = z.object({
       code: "custom",
       message: "A credencial remota não corresponde ao usuário autenticado.",
       path: ["credential", "userId"],
-    });
-  }
-  if (status.credential.clientId !== status.clientId) {
-    context.addIssue({
-      code: "custom",
-      message: "O cliente remoto não corresponde à credencial autenticada.",
-      path: ["clientId"],
     });
   }
   if (Date.parse(status.credential.expiresAt) <= Date.now()) {
@@ -59,7 +54,7 @@ export interface RemoteCredentialStatus {
     userId: string;
     name: string;
     scope: "headless";
-    clientId: "hermes" | "threadmark-cli";
+    clientId: "threadmark-cli";
     expiresAt: string;
     lastUsedAt: string | null;
     revokedAt: string | null;
@@ -72,7 +67,7 @@ export interface RemoteCredentialStatus {
     role: "owner" | "admin" | "operator" | "viewer";
     active: true;
   };
-  clientId: "hermes" | "threadmark-cli";
+  clientId: "threadmark-cli";
   headlessSchemaVersion: string;
 }
 

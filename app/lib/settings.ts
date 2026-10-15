@@ -50,7 +50,7 @@ export interface IntegrationCredential {
   userId: string;
   name: string;
   scope: "headless";
-  clientId: "hermes" | "threadmark-cli";
+  clientId: "threadmark-cli";
   expiresAt: string | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -226,7 +226,7 @@ function normalizeIntegrationCredential(value: unknown): IntegrationCredential {
     userId: stringValue(object.userId),
     name: stringValue(object.name),
     scope: "headless",
-    clientId: object.clientId === "hermes" ? "hermes" : "threadmark-cli",
+    clientId: "threadmark-cli",
     expiresAt: nullableString(object.expiresAt),
     lastUsedAt: nullableString(object.lastUsedAt),
     revokedAt: nullableString(object.revokedAt),
@@ -404,7 +404,6 @@ export async function getIntegrationCredentials(): Promise<IntegrationCredential
 
 export async function createIntegrationCredential(input: {
   name: string;
-  clientId: "hermes" | "threadmark-cli";
   expiresAt: string | null;
 }): Promise<IssuedIntegrationCredential> {
   const payload = asObject(

@@ -8,7 +8,7 @@ export interface IntegrationCredentialDto {
   userId: string;
   name: string;
   scope: "headless";
-  clientId: "hermes" | "threadmark-cli";
+  clientId: "threadmark-cli";
   expiresAt: string | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -52,14 +52,13 @@ export class IntegrationCredentialService {
     userId: string,
     input: {
       name: string;
-      clientId: "hermes" | "threadmark-cli";
+      clientId?: string;
       expiresAt: string | null;
     },
   ): IssuedIntegrationCredential {
     const normalizedUserId = requiredValue(userId, "Usuário inválido.", 200);
     this.requireActiveUser(normalizedUserId);
     const name = requiredValue(input.name, "Informe um nome para a credencial.", 100);
-    const clientId = integrationClientId(input.clientId);
     const nowDate = this.now();
     const expiresAt = futureExpirationDate(input.expiresAt, nowDate);
     const token = `tmk_${randomBytes(32).toString("base64url")}`;
@@ -73,7 +72,7 @@ export class IntegrationCredentialService {
            last_used_at, revoked_at, created_at, updated_at
          ) VALUES (?, ?, ?, ?, 'headless', ?, ?, NULL, NULL, ?, ?)`,
       )
-      .run(id, normalizedUserId, name, digest(token), clientId, expiresAt, now, now);
+      .run(id, normalizedUserId, name, digest(token), "threadmark-cli", expiresAt, now, now);
 
     return {
       credential: this.requireCredential(normalizedUserId, id),
@@ -181,7 +180,7 @@ function credentialDto(row: IntegrationCredentialRow): IntegrationCredentialDto 
     userId: row.user_id,
     name: row.name,
     scope: row.scope,
-    clientId: row.client_id,
+    clientId: "threadmark-cli",
     expiresAt: row.expires_at,
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
@@ -211,11 +210,6 @@ function futureExpirationDate(value: string | null, now: Date): string {
     throw new AuthError("invalid_input", "A expiração da credencial deve ser futura.");
   }
   return expiration.toISOString();
-}
-
-function integrationClientId(value: string): "hermes" | "threadmark-cli" {
-  if (value === "hermes" || value === "threadmark-cli") return value;
-  throw new AuthError("invalid_input", "Cliente da credencial inválido.");
 }
 
 function digest(value: string): string {

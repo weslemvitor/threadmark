@@ -25,8 +25,7 @@ test("API emite credencial headless, limita rotas e permite revogação", async 
       method: "POST",
       headers: { cookie, "content-type": "application/json" },
       body: JSON.stringify({
-        name: "Hermes no Mac",
-        clientId: "hermes",
+        name: "CLI no Mac",
         expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1_000).toISOString(),
       }),
     });
@@ -34,11 +33,12 @@ test("API emite credencial headless, limita rotas e permite revogação", async 
     assert.equal(issuedResponse.headers.get("cache-control"), "no-store");
     const issued = (await issuedResponse.json()) as {
       token: string;
-      credential: { id: string; userId: string; scope: string };
+      credential: { id: string; userId: string; scope: string; clientId: string };
     };
     assert.match(issued.token, /^tmk_/);
     assert.equal(issued.credential.userId, setup.user.id);
     assert.equal(issued.credential.scope, "headless");
+    assert.equal(issued.credential.clientId, "threadmark-cli");
 
     const listedResponse = await app.request("/api/integration-credentials", {
       headers: { cookie },
@@ -50,7 +50,6 @@ test("API emite credencial headless, limita rotas e permite revogação", async 
 
     const integrationHeaders = {
       authorization: `Bearer ${issued.token}`,
-      "x-threadmark-agent-client": "hermes",
     };
     const allowed = await app.request("/api/ticket-assignees", {
       headers: integrationHeaders,
@@ -103,13 +102,22 @@ test("API emite credencial headless, limita rotas e permite revogação", async 
       },
     });
     assert.equal(mismatchedActor.status, 403);
-    const mismatchedClient = await app.request("/api/ticket-assignees", {
-      headers: {
-        authorization: integrationHeaders.authorization,
-        "x-threadmark-agent-client": "threadmark-cli",
-      },
+    database.prepare("UPDATE integration_credentials SET client_id = 'hermes' WHERE id = ?")
+      .run(issued.credential.id);
+    for (const client of ["threadmark-cli", "hermes", "codex"]) {
+      const sameCredential = await app.request("/api/ticket-assignees", {
+        headers: { ...integrationHeaders, "x-threadmark-agent-client": client },
+      });
+      assert.equal(sameCredential.status, 200, client);
+    }
+
+    const claim = await app.request("/api/agent/triage/jobs/claim", {
+      method: "POST",
+      headers: { ...integrationHeaders, "content-type": "application/json" },
+      body: "{}",
     });
-    assert.equal(mismatchedClient.status, 403);
+    assert.equal(claim.status, 200);
+    assert.deepEqual(await claim.json(), { job: null });
 
     const revoked = await app.request("/api/integration-credentials/current", {
       method: "DELETE",

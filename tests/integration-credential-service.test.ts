@@ -84,6 +84,27 @@ test("credencial revogada ou expirada deixa de autenticar", async () => {
   assert.ok(credentials.list(user.id).find((item) => item.id === active.credential.id)?.revokedAt);
 });
 
+test("credenciais novas e antigas usam a mesma identidade CLI sem renovar o token", async () => {
+  const { database, user, credentials } = await fixture();
+  const issued = credentials.create(user.id, {
+    name: "CLI",
+    expiresAt: "2026-12-24T15:00:00.000Z",
+  });
+  assert.equal(issued.credential.clientId, "threadmark-cli");
+
+  database.prepare("UPDATE integration_credentials SET client_id = 'hermes' WHERE id = ?")
+    .run(issued.credential.id);
+  assert.equal(credentials.authenticate(issued.token).clientId, "threadmark-cli");
+  assert.equal(credentials.list(user.id)[0]?.clientId, "threadmark-cli");
+
+  const legacyRequest = credentials.create(user.id, {
+    name: "Cliente antigo",
+    clientId: "hermes",
+    expiresAt: "2026-12-24T15:00:00.000Z",
+  });
+  assert.equal(legacyRequest.credential.clientId, "threadmark-cli");
+});
+
 test("um usuário não pode listar nem revogar credenciais de outro usuário", async () => {
   const { user, credentials } = await fixture();
   const issued = credentials.create(user.id, {
