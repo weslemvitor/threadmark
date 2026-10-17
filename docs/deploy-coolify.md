@@ -32,6 +32,7 @@ SUPPORT_START_WEB=true
 SUPPORT_TRIAGE_AI_ENABLED=true
 SUPPORT_TRIAGE_AI_MODEL=gpt-5.4-mini
 SUPPORT_TRIAGE_AI_QUIET_MS=180000
+SUPPORT_AUDIO_TRANSCRIPTION_TIMEOUT_MS=600000
 ```
 
 `SUPPORT_PUBLIC_ORIGIN` é obrigatória no deploy e deve corresponder exatamente à origem HTTPS, sem barra final. Ela controla CORS, proteção de origem e o atributo `Secure` do cookie. A origem interna da Web, hosts, portas e `SUPPORT_DATA_DIR` já são definidos pela imagem e não devem ser sobrescritos no Coolify.
