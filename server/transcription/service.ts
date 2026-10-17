@@ -13,13 +13,12 @@ import {
   modelCacheKey,
   requireTranscriptionModel,
 } from "./catalog.js";
-import {
-  TransformersAudioTranscriptionEngine,
-  type AudioTranscriptionEngine,
-} from "./engine.js";
+import type { AudioTranscriptionEngine } from "./engine.js";
+import { ProcessAudioTranscriptionEngine } from "./process-engine.js";
 
 const IDLE_UNLOAD_MS = 2 * 60_000;
 const POLL_INTERVAL_MS = 1_500;
+const MAX_TRANSCRIPTION_ATTEMPTS = 3;
 
 type RuntimeState = AudioTranscriptionSettingsDto["runtime"]["state"];
 
@@ -66,6 +65,8 @@ export class AudioTranscriptionService {
   private runtimeError: string | null = null;
   private unloadTimer: NodeJS.Timeout | null = null;
   private readonly installations = new Map<string, Promise<void>>();
+  private stopping = false;
+  private activeJob: Promise<void> | null = null;
 
   constructor(
     private readonly database: SupportDatabase,
@@ -73,9 +74,19 @@ export class AudioTranscriptionService {
   ) {
     this.engine =
       options.engine ??
-      new TransformersAudioTranscriptionEngine(options.modelsDirectory);
+      new ProcessAudioTranscriptionEngine(options.modelsDirectory);
     this.idleUnloadMs = options.idleUnloadMs ?? IDLE_UNLOAD_MS;
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
+    const now = new Date().toISOString();
+    this.database
+      .prepare(
+        `UPDATE audio_transcriptions
+         SET status = 'failed',
+             error = 'Limite de 3 tentativas atingido após interrupções; tente novamente manualmente',
+             completed_at = ?, updated_at = ?
+         WHERE status IN ('processing', 'queued') AND attempts >= ?`,
+      )
+      .run(now, now, MAX_TRANSCRIPTION_ATTEMPTS);
     this.database
       .prepare(
         `UPDATE audio_transcriptions
@@ -83,7 +94,7 @@ export class AudioTranscriptionService {
              error = 'Execução interrompida; aguardando retomada', updated_at = ?
          WHERE status = 'processing'`,
       )
-      .run(new Date().toISOString());
+      .run(now);
     this.database
       .prepare(
         `UPDATE local_transcription_models
@@ -367,7 +378,7 @@ export class AudioTranscriptionService {
             `UPDATE audio_transcriptions
              SET status = 'queued', source = 'manual_history', model_id = ?,
                  language = ?, text = NULL, confidence = NULL, error = NULL,
-                 started_at = NULL, completed_at = NULL, requested_at = ?,
+                 started_at = NULL, completed_at = NULL, attempts = 0, requested_at = ?,
                  updated_at = ?
              WHERE attachment_id = ? AND status IN ('failed', 'review')`,
           )
@@ -418,7 +429,7 @@ export class AudioTranscriptionService {
           `UPDATE audio_transcriptions
            SET status = 'queued', model_id = ?, language = ?, text = NULL,
                confidence = NULL, error = NULL, started_at = NULL,
-               completed_at = NULL, requested_at = ?, updated_at = ?
+               completed_at = NULL, attempts = 0, requested_at = ?, updated_at = ?
            WHERE attachment_id = ? AND status IN ('failed', 'review')`,
         )
         .run(settings.model_id, settings.language, now, now, attachmentId).changes,
@@ -426,39 +437,51 @@ export class AudioTranscriptionService {
   }
 
   async run(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      try {
-        const settings = this.settingsRow();
-        if (
-          this.installations.size === 0 &&
-          Boolean(settings.enabled) &&
-          this.isModelInstalled(settings.model_id)
-        ) {
-          const job = this.claimNext();
-          if (job) {
-            await this.process(job);
-            continue;
+    const onAbort = () => { void this.unload().catch((error) => this.options.onError?.(error)); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      while (!signal.aborted && !this.stopping) {
+        try {
+          const settings = this.settingsRow();
+          if (
+            this.installations.size === 0 &&
+            Boolean(settings.enabled) &&
+            this.isModelInstalled(settings.model_id)
+          ) {
+            const job = this.claimNext();
+            if (job) {
+              this.activeJob = this.process(job, signal);
+              await this.activeJob;
+              this.activeJob = null;
+              continue;
+            }
           }
+        } catch (error) {
+          this.options.onError?.(error);
         }
-      } catch (error) {
-        this.options.onError?.(error);
+        await abortableDelay(this.pollIntervalMs, signal);
       }
-      await abortableDelay(this.pollIntervalMs, signal);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      await this.unload();
     }
-    await this.unload();
   }
 
   async stop(): Promise<void> {
-    await Promise.allSettled(this.installations.values());
+    this.stopping = true;
     await this.unload();
+    await Promise.allSettled([...this.installations.values(), ...(this.activeJob ? [this.activeJob] : [])]);
   }
 
-  private async process(job: ClaimedTranscription): Promise<void> {
+  private async process(job: ClaimedTranscription, signal: AbortSignal): Promise<void> {
     const model = requireTranscriptionModel(job.modelId);
     try {
       this.cancelScheduledUnload();
       this.setRuntime("loading", model.id, null);
       await this.engine.loadModel(model, { localFilesOnly: true });
+      if (signal.aborted || this.stopping || !this.settingsRow().enabled) {
+        throw new Error("Execução da transcrição local interrompida");
+      }
       this.setRuntime("processing", model.id, null);
       const result = await this.engine.transcribe({
         localPath: job.localPath,
@@ -489,6 +512,10 @@ export class AudioTranscriptionService {
       })();
       this.setRuntime("ready", model.id, null);
     } catch (error) {
+      if (signal.aborted || this.stopping || !this.settingsRow().enabled) {
+        this.recoverInterruptedJob(job.attachmentId);
+        return;
+      }
       const message = errorMessage(error);
       const now = new Date().toISOString();
       this.database
@@ -501,8 +528,23 @@ export class AudioTranscriptionService {
       this.setRuntime("error", this.activeModelId, message);
       this.options.onError?.(error);
     } finally {
-      this.scheduleUnload();
+      if (!signal.aborted && !this.stopping) this.scheduleUnload();
     }
+  }
+
+  private recoverInterruptedJob(attachmentId: string): void {
+    const now = new Date().toISOString();
+    this.database.prepare(
+      `UPDATE audio_transcriptions
+       SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'queued' END,
+           error = CASE WHEN attempts >= ?
+             THEN 'Limite de 3 tentativas atingido após interrupções; tente novamente manualmente'
+             ELSE 'Execução interrompida; aguardando retomada' END,
+           started_at = CASE WHEN attempts >= ? THEN started_at ELSE NULL END,
+           completed_at = CASE WHEN attempts >= ? THEN ? ELSE NULL END, updated_at = ?
+       WHERE attachment_id = ? AND status = 'processing'`,
+    ).run(MAX_TRANSCRIPTION_ATTEMPTS, MAX_TRANSCRIPTION_ATTEMPTS,
+      MAX_TRANSCRIPTION_ATTEMPTS, MAX_TRANSCRIPTION_ATTEMPTS, now, now, attachmentId);
   }
 
   private claimNext(): ClaimedTranscription | null {
@@ -515,10 +557,11 @@ export class AudioTranscriptionService {
            FROM audio_transcriptions transcription
            JOIN attachments attachment ON attachment.id = transcription.attachment_id
            WHERE transcription.status = 'queued' AND attachment.available = 1
+             AND transcription.attempts < ?
            ORDER BY transcription.requested_at, transcription.attachment_id
            LIMIT 1`,
         )
-        .get() as
+        .get(MAX_TRANSCRIPTION_ATTEMPTS) as
         | {
             attachment_id: string;
             message_id: string;

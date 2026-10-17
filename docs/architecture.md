@@ -43,6 +43,10 @@ O banco, WAL/SHM, anexos, autenticação do WhatsApp, segredos e logs ficam sob 
 
 Áudios OGG/Opus podem ser transcritos por um worker local opcional. O arquivo original é preservado, e o cache do modelo local fica no diretório privado de dados.
 
+O modelo e a inferência rodam em um processo filho dedicado. Cada carregamento local ou transcrição tem prazo de 10 minutos, configurável por `SUPPORT_AUDIO_TRANSCRIPTION_TIMEOUT_MS` (inteiro positivo em milissegundos); a instalação inicial tem prazo de 30 minutos. O prazo é total por operação, não é renovado por callbacks de progresso. Ao expirar, o daemon encerra o processo e aguarda sua saída antes de registrar o áudio como `failed` e seguir para o próximo. O original permanece disponível para reprodução e tentativa manual. Erros e quedas do processo também ficam registrados no áudio; uma nova operação cria outro processo quando necessário.
+
+O encerramento do daemon interrompe a inferência sem esperar esse prazo. Um áudio interrompido pode ser retomado até completar três tentativas entre reinicializações; depois fica como `failed` e deixa de entrar automaticamente na fila. Uma ação manual de tentar novamente inicia um novo orçamento de tentativas. Falhas por timeout não são repetidas automaticamente. O modelo continua sendo liberado após dois minutos sem uso.
+
 ## Fronteira headless
 
 A CLI nunca orienta o agente a consultar ou alterar o SQLite diretamente. `threadmark capabilities --json` publica um contrato versionado com operações, limites e requisitos de autorização.
