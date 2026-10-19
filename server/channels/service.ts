@@ -34,7 +34,10 @@ export class ChannelService {
   }
 
   list(): ChannelConnection[] {
-    return (this.database.prepare("SELECT * FROM channel_connections ORDER BY name COLLATE NOCASE, id").all() as ConnectionRow[])
+    // Migrated connections preserve ticket history, but are not configurable inbound channels.
+    return (this.database.prepare(`SELECT * FROM channel_connections
+      WHERE id NOT GLOB 'legacy:connection:*'
+      ORDER BY name COLLATE NOCASE, id`).all() as ConnectionRow[])
       .map((row) => this.dto(row));
   }
   get(id: string): ChannelConnection { return this.dto(this.row(id)); }
