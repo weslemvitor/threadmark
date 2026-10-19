@@ -1,0 +1,3 @@
+# Synthetic HMAC fixture in the initial channel commit; never used by a real connection.
+# This fingerprint excludes only that historical finding, not the file or rule.
+54b4d2301e6034550d8a5dd58833099333b42546:tests/channels.test.ts:generic-api-key:22
