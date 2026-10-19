@@ -68,7 +68,7 @@ export function createSqliteInboundSink(
     const rows = options.store.database
       .prepare(
         `SELECT external_jid, triage_enabled_at, triage_watermark_at
-         FROM whatsapp_groups`,
+         FROM conversations`,
       )
       .all() as Array<{
       external_jid: string;
@@ -600,7 +600,7 @@ export function createSqliteInboundSink(
       if (event.type === "history_sync" && event.status === "complete") {
         options.store.database
           .prepare(
-            `UPDATE whatsapp_groups
+            `UPDATE conversations
              SET history_complete = 1, updated_at = ?
              WHERE history_complete = 0`,
           )
@@ -883,13 +883,13 @@ function findExistingGroup(
               c.manual_override AS client_manual_override,
               c.identification_pending AS client_identification_pending,
               EXISTS (
-                SELECT 1 FROM whatsapp_groups client_group
+                SELECT 1 FROM conversations client_group
                 WHERE client_group.client_id = c.id
                   AND client_group.external_jid LIKE '%@g.us'
               ) AS client_has_group_conversation,
               g.subject,
               g.history_oldest_at, g.history_newest_at, g.history_complete
-       FROM whatsapp_groups g
+       FROM conversations g
        JOIN clients c ON c.id = g.client_id
        WHERE g.external_jid = ?`,
     )
@@ -1050,7 +1050,7 @@ function requeueMessageAfterAnalysableMedia(
        WHERE id = ?
          AND triage_state = 'ignored'
          AND NOT EXISTS (
-           SELECT 1 FROM whatsapp_groups conversation
+           SELECT 1 FROM conversations conversation
            WHERE conversation.id = messages.group_id
              AND conversation.suggestions_muted_at IS NOT NULL
          )

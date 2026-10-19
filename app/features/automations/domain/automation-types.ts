@@ -160,7 +160,7 @@ export type AutomationNodeDefinition = {
   baseConfig?: AutomationNodeConfig;
 };
 
-export type ConnectedAppType = "slack_webhook" | "intercom" | "custom_http" | "mcp_remote";
+export type ConnectedAppType = "slack_webhook" | "custom_http" | "mcp_remote";
 export type ConnectedAppStatus = "active" | "disabled" | "error";
 
 export type ConnectedAppSummary = {

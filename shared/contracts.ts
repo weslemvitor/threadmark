@@ -1,3 +1,4 @@
+import type { ChannelSource, ChannelAttachment } from "./channels.js";
 export const TICKET_STATUSES = [
   "new",
   "triage",
@@ -143,6 +144,7 @@ export interface UpdateTicketAssigneeInput {
 }
 
 export interface TicketSummaryDto {
+  channel?: ChannelSource;
   id: string;
   number: number;
   title: string;
@@ -274,6 +276,7 @@ export interface AudioTranscriptionSettingsDto {
 export type ConversationScope = "group" | "direct";
 
 export interface ConversationSummaryDto {
+  channel?: ChannelSource;
   id: string;
   subject: string;
   externalJid: string;
@@ -370,6 +373,9 @@ export interface ConversationReactionUpdateDto {
 }
 
 export interface ConversationMessageDto {
+  channel?: ChannelSource;
+  externalAttachments?: ChannelAttachment[];
+  deletedAt?: string | null;
   id: string;
   externalId: string;
   occurredAt: string;
@@ -531,6 +537,9 @@ export interface MergeTicketsResponse {
 }
 
 export interface TimelineMessageDto {
+  channel?: ChannelSource;
+  externalAttachments?: ChannelAttachment[];
+  deletedAt?: string | null;
   type: "message";
   id: string;
   externalId: string;

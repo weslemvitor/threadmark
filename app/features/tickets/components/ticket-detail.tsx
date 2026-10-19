@@ -552,7 +552,7 @@ export function TicketDetail({
           >
             <div className="sticky top-0 z-3 flex min-h-8 items-center justify-center gap-2 border-b border-border bg-card/95 px-3.5 py-1.5 text-xs text-muted-foreground backdrop-blur">
               <ShieldCheck size={15} />
-              <span>Conversa capturada do WhatsApp em modo somente leitura</span>
+              <span>Conversa capturada em modo somente leitura</span>
               <Paperclip size={14} />
             </div>
             <TicketConversation

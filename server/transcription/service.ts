@@ -567,7 +567,7 @@ export class AudioTranscriptionService {
            )
            AND EXISTS (
              SELECT 1
-             FROM whatsapp_groups conversation
+             FROM conversations conversation
              JOIN clients client ON client.id = conversation.client_id
              WHERE conversation.id = messages.group_id
                AND conversation.suggestions_muted_at IS NULL

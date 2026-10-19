@@ -1,3 +1,4 @@
+import { ExternalChannelAttachments } from "@/app/components/shared/external-channel-attachments";
 import {
   AlertCircle,
   Check,
@@ -200,9 +201,10 @@ function MessageItem({
             {message.text}
           </p>
         ) : null}
+        <ExternalChannelAttachments attachments={message.externalAttachments}/>
         {message.attachments.length ? (
           <div className="mt-2 grid gap-2">
-            {message.attachments.map((attachment) => (
+      {message.attachments.map((attachment) => (
               <AttachmentCard attachment={attachment} key={attachment.id} />
             ))}
           </div>

@@ -94,7 +94,7 @@ export function previewHistoryRescan(
          )
          AND EXISTS (
            SELECT 1
-           FROM whatsapp_groups g
+           FROM conversations g
            WHERE g.id = m.group_id
              AND g.suggestions_muted_at IS NULL
              ${groupScope}

@@ -36,7 +36,7 @@ mas não é persistido, não chama conectores e não altera tickets.
 ## Apps conectados
 
 - `GET /api/automation-apps` — lista conexões sem devolver segredos
-- `POST /api/automation-apps` — cria Intercom nativo, Slack, API personalizada ou servidor MCP remoto
+- `POST /api/automation-apps` — cria uma conexão HTTP, webhook de notificação ou servidor MCP remoto
 - `PATCH /api/automation-apps/:id` — atualiza configuração e permissões de automação; segredo vazio mantém o atual
 - `POST /api/automation-apps/:id/test` — testa sem revelar a credencial
 - `DELETE /api/automation-apps/:id` — remove após validação de vínculos
@@ -55,10 +55,7 @@ O editor cria um nó para cada ferramenta autorizada em automações e transform
 seu JSON Schema em campos configuráveis. Ferramentas que exigem confirmação só
 permitem ativar o fluxo quando existe uma etapa de aprovação anterior.
 
-Conexões nativas antigas do Intercom permanecem compatíveis com o armazenamento,
-mas não oferecem uma ação no motor de automações nem um agente de chat. Para
-automatizar ferramentas do Intercom, use um servidor MCP compatível com
-permissões explícitas por operação.
+Conexões antigas específicas de fornecedores são migradas para HTTP genérico e ficam pausadas para revisão, preservando configurações e referências aos segredos. A validação de conexões HTTP não consulta endpoints específicos de fornecedores. Canais de coleta possuem contrato próprio, documentado em `docs/channels.md`.
 
 O WhatsApp não é exposto como ação neste catálogo.
 

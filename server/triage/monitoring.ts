@@ -11,7 +11,7 @@ export function updateConversationMonitoring(
   if (!enabled) {
     return database
       .prepare(
-        `UPDATE whatsapp_groups
+        `UPDATE conversations
          SET monitored = 0, updated_at = ?
          WHERE external_jid IN (${placeholders})`,
       )
@@ -20,7 +20,7 @@ export function updateConversationMonitoring(
 
   return database
     .prepare(
-      `UPDATE whatsapp_groups AS conversation
+      `UPDATE conversations AS conversation
        SET monitored = 1,
            triage_enabled_at = COALESCE(
              conversation.triage_enabled_at,

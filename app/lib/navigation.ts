@@ -14,6 +14,7 @@ export const SETTINGS_ROUTE_TABS = [
   "users",
   "staff",
   "whatsapp",
+  "channels",
   "ai",
   "tools",
   "data",

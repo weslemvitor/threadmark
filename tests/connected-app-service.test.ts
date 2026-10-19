@@ -8,61 +8,20 @@ import { createDatabase } from "../server/db/index.js";
 import { ConnectedAppService } from "../server/integrations/index.js";
 import { LocalSecretVault } from "../server/runtime/secret-vault.js";
 
-test("Intercom exige token e testa conversas, autor e coleções sem executar mutação", async () => {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-intercom-app-"));
+test("conexão HTTP livre não detecta fornecedores nem consulta endpoints específicos", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "threadmark-generic-app-"));
   const database = createDatabase(":memory:");
   const vault = new LocalSecretVault(path.join(temporary, "secrets"));
-  const requests: Array<{ method: string; path: string; authorization: string | null }> = [];
-  const service = new ConnectedAppService(
-    database,
-    vault,
-    async (input, init) => {
-      const url = new URL(String(input));
-      requests.push({
-        method: init?.method ?? "GET",
-        path: `${url.pathname}${url.search}`,
-        authorization: new Headers(init?.headers).get("authorization"),
-      });
-      return Response.json({ ok: true });
-    },
-    async () => [{ address: "93.184.216.34" }],
-  );
-
+  let requests = 0;
+  const service = new ConnectedAppService(database, vault, async () => {requests += 1; return Response.json({});},async()=>[{address:"93.184.216.34"}]);
   try {
-    await assert.rejects(
-      service.create({
-        type: "intercom",
-        name: "Intercom",
-        enabled: true,
-        endpoint: "https://api.intercom.io/",
-      }, "Operador"),
-      /access token/i,
-    );
-    const app = await service.create({
-      type: "intercom",
-      name: "Intercom",
-      enabled: true,
-      endpoint: "https://api.intercom.io/articles",
-      secret: "token-de-teste",
-    }, "Operador");
-
-    assert.equal(app.type, "intercom");
-    assert.equal(app.endpointPreview, "https://api.intercom.io/");
-    assert.equal(app.secretConfigured, true);
-    assert.doesNotMatch(JSON.stringify(app), /token-de-teste/);
+    const app = await service.create({type:"custom_http", name:"Canal de exemplo",endpoint:"https://api.example.com/messages",secret:"token-de-teste"},"Operador");
+    assert.equal(app.endpointPreview,"https://api.example.com/messages");
+    assert.doesNotMatch(JSON.stringify(app),/token-de-teste/);
     const result = await service.validateConnection(app.id);
-    assert.match(result.message, /conversas, autor e coleções/i);
-    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
-      ["GET", "/conversations?per_page=1"],
-      ["GET", "/me"],
-      ["GET", "/help_center/collections?per_page=1"],
-    ]);
-    assert.equal(requests.every((request) => request.authorization === "Bearer token-de-teste"), true);
-    assert.equal(requests.some((request) => request.method !== "GET"), false);
-  } finally {
-    database.close();
-    await rm(temporary, { recursive: true, force: true });
-  }
+    assert.match(result.message,/nenhuma ação externa/);
+    assert.equal(requests,0);
+  } finally {database.close();await rm(temporary,{recursive:true,force:true});}
 });
 
 test("MCP remoto descobre ferramentas e exige autorização para automações", async () => {

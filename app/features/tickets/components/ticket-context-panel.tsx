@@ -9,6 +9,7 @@ export function ContextPanel({ ticket }: { ticket: TicketDetailType }) {
     <section className="border-b border-border px-3.5 py-4">
       <h3 className="text-sm font-semibold text-foreground">Contexto do atendimento</h3>
       <dl className="mt-3 divide-y divide-border">
+        {ticket.channel ? <div className="grid gap-2 py-2.5 text-sm"><dt className="text-muted-foreground">Canal</dt><dd>{ticket.channel.name}{ticket.channel.externalUrl ? <a className="ml-2 text-primary underline" href={ticket.channel.externalUrl} target="_blank" rel="noopener noreferrer">Abrir na origem</a> : null}</dd></div> : null}
         <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-3 py-2.5 first:pt-0">
           <dt className="flex items-center gap-2 text-xs text-muted-foreground"><UserRound size={14} /> Solicitante</dt>
           <dd className={`min-w-0 text-right text-sm font-semibold ${requester ? "text-foreground" : "text-amber-700"}`}>
@@ -17,13 +18,13 @@ export function ContextPanel({ ticket }: { ticket: TicketDetailType }) {
               {requester?.phone && requester.phone !== requester.name
                 ? requester.phone
                 : requester
-                  ? "Contato identificado pelo WhatsApp"
+                  ? ticket.channel ? `Contato identificado em ${ticket.channel.name}` : "Contato identificado pelo WhatsApp"
                   : "Aguardando identificação do remetente"}
             </span>
           </dd>
         </div>
         <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-3 py-2.5">
-          <dt className="flex items-center gap-2 text-xs text-muted-foreground"><MessageSquareText size={14} /> Grupo</dt>
+          <dt className="flex items-center gap-2 text-xs text-muted-foreground"><MessageSquareText size={14} /> {ticket.channel ? "Conversa" : "Grupo"}</dt>
           <dd className="min-w-0 break-words text-right text-sm font-semibold text-foreground">
             {ticket.group.subject}
             <span className="mt-0.5 block text-xs font-normal text-muted-foreground">

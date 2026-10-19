@@ -1,3 +1,4 @@
+import { ChannelFilter } from "@/app/components/shared/channel-filter";
 import {
   Archive,
   ArchiveRestore,
@@ -133,6 +134,7 @@ export function KanbanView({
 }) {
   const [mode, setMode] = useState<KanbanMode>("active");
   const [query, setQuery] = useState("");
+  const [channelFilter, setChannelFilter] = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [categoryFilters, setCategoryFilters] = useState<KanbanCategoryFilters>(
     {},
@@ -205,15 +207,15 @@ export function KanbanView({
   }, [categories, filterFacets]);
   const matchesCategories = useCallback(
     (ticket: TicketSummary) =>
-      matchesKanbanCategoryFilters(ticket, categoryFilters),
-    [categoryFilters],
+      matchesKanbanCategoryFilters(ticket, categoryFilters) && (channelFilter === "all" || (channelFilter === "whatsapp" ? !ticket.channel : ticket.channel?.id === channelFilter)),
+    [categoryFilters, channelFilter],
   );
   const hasActiveFilters =
     Boolean(query.trim()) ||
-    assigneeFilter !== "all" ||
+    channelFilter !== "all" || assigneeFilter !== "all" ||
     hasKanbanCategoryFilters(categoryFilters);
   const hasSelectableFilters =
-    assigneeFilter !== "all" || hasKanbanCategoryFilters(categoryFilters);
+    channelFilter !== "all" || assigneeFilter !== "all" || hasKanbanCategoryFilters(categoryFilters);
   const filteredActiveTickets = useMemo(
     () => activeTickets.filter(
       (ticket) =>
@@ -363,7 +365,7 @@ export function KanbanView({
     return () => window.clearTimeout(timer);
   }, [loadResolved, tickets]);
 
-  async function loadArchived(reset: boolean, requestedQuery = archivedQueryRef.current) {
+  async function loadArchived(reset: boolean, requestedQuery = archivedQueryRef.current, requestedChannel = channelFilter) {
     if (archivedLoading && !reset) return;
     const requestId = archivedRequestRef.current + 1;
     archivedRequestRef.current = requestId;
@@ -377,6 +379,7 @@ export function KanbanView({
         offset,
         limit: normalizedQuery ? 200 : KANBAN_PAGE_SIZE,
         query: normalizedQuery,
+        connectionId: requestedChannel === "all" ? undefined : requestedChannel,
       });
       if (archivedRequestRef.current !== requestId) return;
       setArchivedTickets((current) => reset
@@ -399,6 +402,12 @@ export function KanbanView({
         setArchivedLoading(false);
       }
     }
+  }
+
+  function updateChannelFilter(value: string) {
+    setChannelFilter(value);setSelectedIds(new Set());setColumnLimits(initialColumnLimits);
+    archivedRequestRef.current+=1;setArchivedLoaded(false);
+    if(mode === "archived")void loadArchived(true,query,value);
   }
 
   function updateQuery(nextQuery: string) {
@@ -444,6 +453,7 @@ export function KanbanView({
   function clearKanbanFilters() {
     setQuery("");
     setAssigneeFilter("all");
+    setChannelFilter("all");
     setCategoryFilters({});
     resetFilterSideEffects();
     setSelectedIds(new Set());
@@ -475,6 +485,7 @@ export function KanbanView({
     setSelectionNotice(null);
     if (nextMode === "archived") {
       setAssigneeFilter("all");
+    setChannelFilter("all");
       setCategoryFilters({});
     }
     if (
@@ -722,8 +733,10 @@ export function KanbanView({
                   ))}
                 </SelectContent>
               </Select>
+              <ChannelFilter value={channelFilter} onValueChange={updateChannelFilter}/>
               {filterFacets.map((facet) => (
-                <Select
+
+              <Select
                   key={facet}
                   onValueChange={(value) => updateCategoryFilter(facet, value)}
                   value={categoryFilters[facet] ?? "all"}
@@ -1000,6 +1013,7 @@ export function KanbanView({
             <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Archive size={18} /></span>
             <div className="flex min-w-0 flex-1 flex-col">
               <h2 className="text-sm font-semibold text-foreground">Tickets arquivados</h2>
+              <ChannelFilter value={channelFilter} onValueChange={updateChannelFilter}/>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Continuam salvos por completo e voltam ao estado anterior: Resolvido ou Cancelado.</p>
             </div>
             {archivedLoaded ? <b className="whitespace-nowrap rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">{archivedTotal} no total</b> : null}

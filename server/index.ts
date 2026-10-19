@@ -1,3 +1,5 @@
+import { ChannelService } from "./channels/service.js";
+import { readChannelBody } from "./channels/http.js";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, relative, resolve } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
@@ -144,6 +146,7 @@ type ApiEnvironment = {
 };
 
 interface ApiServices {
+  channels?: ChannelService;
   auth?: LocalAuthService;
   setupChallenges?: SetupChallengeService;
   localAccessToken?: LocalAccessToken;
@@ -225,7 +228,7 @@ const ticketInternalNoteInputSchema = z
 
 const externalTicketMessagesInputSchema = z
   .object({
-    sourceType: z.literal("intercom_conversation"),
+    sourceType: z.string().trim().min(1).max(100),
     sourceConversationId: z.string().trim().min(1).max(200),
     messages: z
       .array(
@@ -931,6 +934,11 @@ function isHeadlessIntegrationRoute(method: string, pathname: string): boolean {
   const routes: Array<{ method: string; path: RegExp }> = [
     { method: "GET", path: /^\/api\/ticket-assignees$/ },
     { method: "GET", path: /^\/api\/clients$/ },
+    { method: "GET", path: /^\/api\/channels$/ },
+    { method: "POST", path: /^\/api\/channels$/ },
+    { method: "PATCH", path: /^\/api\/channels\/[^/]+$/ },
+    { method: "POST", path: /^\/api\/channels\/[^/]+\/preview$/ },
+    { method: "PATCH", path: /^\/api\/channels\/[^/]+\/status$/ },
     { method: "GET", path: /^\/api\/categories$/ },
     { method: "POST", path: /^\/api\/categories$/ },
     { method: "DELETE", path: /^\/api\/categories\/[^/]+$/ },
@@ -1096,6 +1104,7 @@ function createApiAppInternal(
   const config = loadConfig();
   const directory = new DirectoryStore(store.database);
   const integrationCredentials = new IntegrationCredentialService(store.database);
+  const channels = services.channels ?? new ChannelService(store, new LocalSecretVault(pathForSecrets(config.dataDir)));
 
   app.use(
     "/api/*",
@@ -1116,6 +1125,8 @@ function createApiAppInternal(
   app.use("/api/*", async (context, next) => {
     context.set("identity", null);
     if (context.req.method === "OPTIONS") return next();
+    // A channel credential only authorizes its exact ingestion route, never management/session routes.
+    if (context.req.method === "POST" && /^\/api\/channels\/[^/]+\/events$/.test(new URL(context.req.url).pathname)) return next();
 
     const origin = context.req.header("Origin");
     if (
@@ -1708,6 +1719,47 @@ function createApiAppInternal(
     });
   });
 
+  app.get("/api/channels", (context) => context.json({ items: channels.list() }));
+  app.post("/api/channels", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(await channels.create(await context.req.json(), actorFor(context)), 201);
+  });
+  app.patch("/api/channels/:id", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json(await channels.update(context.req.param("id"), await context.req.json()));
+  });
+  app.post("/api/channels/:id/preview", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json({ event: channels.preview(context.req.param("id"), JSON.parse(await readChannelBody(context.req.raw))) });
+  });
+  app.patch("/api/channels/:id/status", async (context) => {
+    requireRole(context, ["owner", "admin"]);
+    const input = z.object({ status: z.enum(["draft", "active", "paused"]) }).strict().parse(await context.req.json());
+    return context.json(channels.setStatus(context.req.param("id"), input.status));
+  });
+  app.post("/api/channels/:id/rotate-token", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json({ token: channels.rotateToken(context.req.param("id")) });
+  });
+  app.get("/api/channels/:id/events", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    return context.json({ items: channels.events(context.req.param("id")) });
+  });
+  app.post("/api/channels/:id/events/:eventId/retry", (context) => {
+    requireRole(context, ["owner", "admin"]);
+    channels.retry(context.req.param("id"), context.req.param("eventId"));
+    return context.json({ accepted: true }, 202);
+  });
+  app.post("/api/channels/:id/events", async (context) => {
+    const id = context.req.param("id");
+    const raw = await readChannelBody(context.req.raw);
+    await channels.authenticate(id, context.req.raw.headers, raw);
+    if (!(context.req.header("Content-Type") ?? "").toLowerCase().startsWith("application/json")) {
+      throw new DomainError("Utilize Content-Type application/json.", "channel_content_type", 415);
+    }
+    return context.json(channels.receive(id, JSON.parse(raw)), 202);
+  });
+
   app.get("/api/settings/storage", async (context) => {
     requireRole(context, ["owner", "admin"]);
     try {
@@ -2037,6 +2089,7 @@ function createApiAppInternal(
         cursor: url.searchParams.get("cursor") || undefined,
         attention,
         scope,
+        connectionId: url.searchParams.get("connectionId") || undefined,
         query: url.searchParams.get("q") || undefined,
       }),
     );
@@ -2227,6 +2280,7 @@ function createApiAppInternal(
       store.listTickets({
         statuses,
         clientId: url.searchParams.get("clientId") || undefined,
+        connectionId: url.searchParams.get("connectionId") || undefined,
         query: url.searchParams.get("q") || undefined,
         includeArchived,
         productForwardingKind,
@@ -2613,7 +2667,9 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
     console.log("Código de configuração inicial (válido por 30 minutos):");
     console.log(issued.token);
   }
+  const channels = new ChannelService(store, secretVault);
   const app = createApiApp(store, runtimeState, options.qrReader, {
+    channels,
     auth: authService,
     setupChallenges,
     localAccessToken:
@@ -2645,8 +2701,12 @@ export function startApiServer(options: StartApiServerOptions = {}): ServerType 
   const port = options.port ?? config.apiPort;
   const server = serve({ fetch: app.fetch, hostname: host, port });
   automationRuntime.start();
+  const channelTimer = setInterval(() => channels.processPending(), 1_000);
+  channelTimer.unref();
+  channels.processPending();
 
   server.once("close", () => {
+    clearInterval(channelTimer);
     void automationRuntime.stop().finally(() => {
       if (ownsDatabase && database) database.close();
     });

@@ -126,9 +126,9 @@ export function ConversationChat({
               <p className="mt-1 flex min-w-0 items-center gap-1.5 truncate text-xs text-muted-foreground">
                 {selectedDetail.conversation.client.name}
                 <span>·</span>
-                {selectedDetail.conversation.scope === "group"
+                {selectedDetail.conversation.channel?.name ?? (selectedDetail.conversation.scope === "group"
                   ? "Grupo do WhatsApp"
-                  : "Conversa privada"}
+                  : "Conversa privada")}
               </p>
             </div>
             <span className="flex flex-col items-center text-xs text-muted-foreground max-[760px]:hidden">
@@ -202,8 +202,7 @@ export function ConversationChat({
               <div className="mx-auto mb-4 flex w-fit max-w-[90%] items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50/90 px-2.5 py-2 text-xs text-emerald-700 max-[760px]:max-w-full">
                 <ShieldCheck size={15} />
                 <span>
-                  Histórico capturado do WhatsApp. Esta tela não possui envio de
-                  mensagens.
+                  Histórico capturado {selectedDetail.conversation.channel ? `de ${selectedDetail.conversation.channel.name}` : "do WhatsApp"}. Esta tela não possui envio de mensagens.
                 </span>
               </div>
               {selectedDetail.messages.map((message, index) => {

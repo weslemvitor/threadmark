@@ -875,7 +875,7 @@ function listGroups(): void {
         `SELECT g.subject, g.external_jid AS jid, g.monitored,
                 COUNT(DISTINCT m.id) AS messages,
                 MAX(m.occurred_at) AS last_message_at
-         FROM whatsapp_groups g
+         FROM conversations g
          LEFT JOIN messages m ON m.group_id = g.id
          GROUP BY g.id
          ORDER BY g.monitored DESC, last_message_at DESC, g.subject`,
@@ -1234,9 +1234,12 @@ Dados e suporte:
   capabilities [--json]       Descreve a API headless e seus limites de segurança
   agent triage-* [--json]     Entrega a fila automática a um agente externo
   operators list [--json]     Lista identidades autorizáveis para auditoria
+  channels ... [--json]       Lista, cadastra, configura, testa, ativa ou pausa canais
   conversations ... [--json] Consulta conversas, mensagens e tickets vinculados
+    list --channel <id|nome|whatsapp|all> Filtra conversas pelo canal
   triage ... [--json]         Revisa ou aplica decisões de triagem
   tickets ... [--json]        Consulta e opera tickets por contrato estável
+    list --channel <id|nome|whatsapp|all> Filtra tickets pelo canal
   categories ... [--json]     Consulta e mantém a taxonomia
   clients list [--json]       Lista clientes do workspace
   dashboard show [--json]     Consulta métricas operacionais

@@ -1,3 +1,4 @@
+import { ExternalChannelAttachments } from "@/app/components/shared/external-channel-attachments";
 import { Check, FileText, TicketCheck } from "lucide-react";
 
 import {
@@ -27,7 +28,7 @@ const stateLabels: Record<ConversationTriageState, string> = {
 };
 
 export function messageIsSelectable(message: ConversationMessage): boolean {
-  return Boolean(message.id);
+  return Boolean(message.id) && !message.deletedAt;
 }
 
 export function applyReactionUpdates(
@@ -215,6 +216,7 @@ export function ConversationMessageBubble({
             {message.text}
           </p>
         ) : null}
+        <ExternalChannelAttachments attachments={message.externalAttachments}/>
         {message.attachments.length ? (
           <div className="mt-2 grid gap-1.5">
             {message.attachments.map((attachment) => (

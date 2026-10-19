@@ -1,3 +1,4 @@
+import type { ChannelConnection, ChannelWriteInput, ChannelMessageEvent, ChannelEventRecord } from "../../shared/channels";
 import type {
   ClientSummary,
   DashboardData,
@@ -57,6 +58,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -125,7 +127,7 @@ export async function markAllNotificationsRead(): Promise<NotificationReadRespon
 async function apiResponseError(response: Response): Promise<ApiError> {
   if (response.status === 401) notifySessionExpired();
   const payload = (await response.json().catch(() => null)) as {
-    error?: string | { message?: string };
+    error?: string | { message?: string; details?: unknown };
     message?: string;
   } | null;
   return new ApiError(
@@ -133,6 +135,7 @@ async function apiResponseError(response: Response): Promise<ApiError> {
       (typeof payload?.error === "string" ? payload.error : payload?.error?.message) ??
       `A API respondeu com ${response.status}.`,
     response.status,
+    typeof payload?.error === "object" ? payload.error.details : undefined,
   );
 }
 
@@ -326,7 +329,7 @@ export async function createManualTicket(
 }
 
 export async function getArchivedTickets(
-  options: { offset?: number; limit?: number; query?: string } = {},
+  options: { offset?: number; limit?: number; query?: string; connectionId?: string } = {},
 ): Promise<TicketListResponse> {
   const params = new URLSearchParams({
     status: "archived",
@@ -337,6 +340,7 @@ export async function getArchivedTickets(
   });
   const query = options.query?.trim();
   if (query) params.set("q", query);
+  if (options.connectionId) params.set("connectionId", options.connectionId);
   return request<TicketListResponse>(`/api/tickets?${params}`);
 }
 
@@ -373,6 +377,7 @@ export async function getConversations(
     limit?: number;
     query?: string;
     scope?: "group" | "direct";
+    connectionId?: string;
     attention?: "pending" | "all";
   } = {},
 ): Promise<ConversationListResponse> {
@@ -380,6 +385,7 @@ export async function getConversations(
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.query?.trim()) params.set("q", options.query.trim());
   if (options.scope) params.set("scope", options.scope);
+  if (options.connectionId) params.set("connectionId", options.connectionId);
   if (options.attention) params.set("attention", options.attention);
   return request<ConversationListResponse>(`/api/conversations?${params}`);
 }
@@ -633,4 +639,29 @@ export async function updateTicketStatus(
         : {}),
     }),
   });
+}
+
+export async function getChannels(): Promise<ChannelConnection[]> {
+  return (await request<{items:ChannelConnection[]}>("/api/channels")).items;
+}
+export function createChannel(input: ChannelWriteInput) {
+  return request<{connection:ChannelConnection;token:string|null}>("/api/channels",{method:"POST",body:JSON.stringify(input)});
+}
+export function updateChannel(id: string,input: ChannelWriteInput) {
+  return request<ChannelConnection>(`/api/channels/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify(input)});
+}
+export function previewChannel(id: string,payload: unknown) {
+  return request<{event:ChannelMessageEvent}>(`/api/channels/${encodeURIComponent(id)}/preview`,{method:"POST",body:JSON.stringify(payload)});
+}
+export function setChannelStatus(id: string,status: ChannelConnection["status"]) {
+  return request<ChannelConnection>(`/api/channels/${encodeURIComponent(id)}/status`,{method:"PATCH",body:JSON.stringify({status})});
+}
+export function rotateChannelToken(id: string) {
+  return request<{token:string}>(`/api/channels/${encodeURIComponent(id)}/rotate-token`,{method:"POST"});
+}
+export async function getChannelEvents(id: string) {
+  return (await request<{items:ChannelEventRecord[]}>(`/api/channels/${encodeURIComponent(id)}/events`)).items;
+}
+export function retryChannelEvent(id: string,eventId: string) {
+  return request<{accepted:true}>(`/api/channels/${encodeURIComponent(id)}/events/${encodeURIComponent(eventId)}/retry`,{method:"POST"});
 }

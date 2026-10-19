@@ -1,3 +1,4 @@
+import { readChannelSource, readChannelMessageMetadata } from "../channels/source.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import type {
@@ -293,6 +294,7 @@ export interface CategoryListFilters {
 export interface TicketListFilters {
   statuses?: TicketStatus[];
   clientId?: string;
+  connectionId?: string;
   /** Undefined includes everyone; null includes unassigned tickets; arrays include any selected assignee. */
   assigneeId?: string | null | readonly string[];
   query?: string;
@@ -407,6 +409,7 @@ export interface ConversationTriageCursor {
 export interface ConversationListFilters {
   limit?: number;
   cursor?: string;
+  connectionId?: string;
   attention?: "pending" | "all";
   scope?: "group" | "direct";
   query?: string;
@@ -657,6 +660,7 @@ function ticketSelect(
   assigneeColumnAvailable: boolean,
   externalTicketMessagesAvailable: boolean,
   assignmentQueueAvailable: boolean,
+  migratedExternalMessagesAvailable: boolean,
 ): string {
   const requesterOverride = requesterOverrideAvailable
     ? "t.requester_id"
@@ -673,7 +677,7 @@ function ticketSelect(
     : "";
   const externalMessageCount = externalTicketMessagesAvailable
     ? `(SELECT COUNT(*) FROM ticket_external_messages external_message
-       WHERE external_message.ticket_id = t.id)`
+       WHERE external_message.ticket_id = t.id ${migratedExternalMessagesAvailable ? "AND external_message.migrated_message_id IS NULL" : ""})`
     : "0";
   const assignmentPending = assignmentQueueAvailable
     ? `EXISTS (
@@ -735,7 +739,7 @@ function ticketSelect(
     latest_suggestion.status AS suggestion_status
   FROM tickets t
   JOIN clients c ON c.id = t.client_id
-  JOIN whatsapp_groups g ON g.id = t.group_id
+  JOIN conversations g ON g.id = t.group_id
   LEFT JOIN participants requester
     ON requester.id = COALESCE(${requesterOverride}, (
       SELECT requester_message.sender_id
@@ -1216,6 +1220,16 @@ export class SupportStore {
   private readonly assignmentQueueAvailable: boolean;
   private readonly knowledgeSchemaAvailable: boolean;
 
+  private conversationStorageReady = false;
+
+  /** Old snapshots remain readable while the upgrade is being prepared. */
+  private prepare(sql: string) {
+    if (!this.conversationStorageReady) {
+      this.conversationStorageReady = databaseHasTable(this.database, "conversations");
+    }
+    return this.database.prepare(this.conversationStorageReady ? sql : sql.replace(/\bconversations\b/g, "whatsapp_groups"));
+  }
+
   constructor(readonly database: SupportDatabase) {
     this.requesterOverrideAvailable = Boolean(
       this.database
@@ -1271,6 +1285,7 @@ export class SupportStore {
       this.assigneeColumnAvailable,
       this.externalTicketMessagesAvailable,
       this.assignmentQueueAvailable,
+      databaseHasTable(this.database, "channel_connections"),
     );
   }
 
@@ -1559,16 +1574,15 @@ export class SupportStore {
       .get(clientId) as { id: string; ignored_at: string | null } | undefined;
     if (!client) throw new NotFoundError("Cliente", clientId);
 
-    const preserved = this.database
-      .prepare(
+    const preserved = this.prepare(
         `SELECT
-          (SELECT COUNT(*) FROM whatsapp_groups g WHERE g.client_id = ?) AS groups,
+          (SELECT COUNT(*) FROM conversations g WHERE g.client_id = ?) AS groups,
           (SELECT COUNT(*) FROM messages m
-           JOIN whatsapp_groups g ON g.id = m.group_id
+           JOIN conversations g ON g.id = m.group_id
            WHERE g.client_id = ?) AS messages,
           (SELECT COUNT(*) FROM attachments a
            JOIN messages m ON m.id = a.message_id
-           JOIN whatsapp_groups g ON g.id = m.group_id
+           JOIN conversations g ON g.id = m.group_id
            WHERE g.client_id = ?) AS attachments,
           (SELECT COUNT(*) FROM tickets t WHERE t.client_id = ?) AS tickets,
           (SELECT COUNT(*) FROM tickets t
@@ -1609,20 +1623,19 @@ export class SupportStore {
            WHERE id = ? AND ignored_at IS NULL`,
         )
         .run(ignoredAt, actor, reason, ignoredAt, clientId);
-      this.database
-        .prepare(
-          `UPDATE whatsapp_groups
+      this.prepare(
+          `UPDATE conversations
            SET monitored = 0, updated_at = ?
            WHERE client_id = ?`,
         )
         .run(ignoredAt, clientId);
-      this.database
+      this
         .prepare(
           `UPDATE messages
            SET triage_kind = 'context', triage_state = 'context', updated_at = ?
            WHERE triage_state = 'unreviewed'
              AND group_id IN (
-               SELECT id FROM whatsapp_groups WHERE client_id = ?
+               SELECT id FROM conversations WHERE client_id = ?
              )`,
         )
         .run(ignoredAt, clientId);
@@ -1647,13 +1660,13 @@ export class SupportStore {
     input: UpdateTicketContextInput,
   ): TicketDetailDto {
     return this.database.transaction(() => {
-      const ticket = this.database
+      const ticket = this
         .prepare(
           `SELECT t.id, t.client_id, t.group_id, t.affected_store_id,
                   g.client_id AS conversation_client_id,
                   c.name AS current_client_name
            FROM tickets t
-           JOIN whatsapp_groups g ON g.id = t.group_id
+           JOIN conversations g ON g.id = t.group_id
            JOIN clients c ON c.id = t.client_id
            WHERE t.id = ?`,
         )
@@ -1723,9 +1736,8 @@ export class SupportStore {
       this.invalidateTicketGuidance(ticketId, timestamp);
 
       if (rememberForConversation) {
-        this.database
-          .prepare(
-          `UPDATE whatsapp_groups
+        this.prepare(
+          `UPDATE conversations
              SET client_id = ?, client_link_source = 'manual', updated_at = ?
              WHERE id = ?`,
           )
@@ -1754,7 +1766,7 @@ export class SupportStore {
       });
 
       if (rememberForConversation && ticket.client_id !== targetClient.id) {
-        this.database
+        this
           .prepare(
             `UPDATE clients
              SET ignored_at = ?, ignored_by = 'system',
@@ -1763,7 +1775,7 @@ export class SupportStore {
              WHERE id = ?
                AND identification_pending = 1
                AND NOT EXISTS (
-                 SELECT 1 FROM whatsapp_groups g WHERE g.client_id = clients.id
+                 SELECT 1 FROM conversations g WHERE g.client_id = clients.id
                )
                AND NOT EXISTS (
                  SELECT 1 FROM tickets t WHERE t.client_id = clients.id
@@ -2465,6 +2477,7 @@ export class SupportStore {
   }
 
   upsertGroup(input: UpsertGroupInput): EntityRecord {
+    const conversationTable = databaseHasTable(this.database, "conversations") ? "conversations" : "whatsapp_groups";
     this.assertEntityExists("Conta WhatsApp", "whatsapp_accounts", input.accountId);
     this.assertEntityExists("Cliente", "clients", input.clientId);
     const id = input.id ?? randomUUID();
@@ -2474,34 +2487,33 @@ export class SupportStore {
       normalizedText(input.subject, "Nome do grupo"),
       externalJid,
     );
-    return this.database
-      .prepare(
-        `INSERT INTO whatsapp_groups
+    return this.prepare(
+        `INSERT INTO ${conversationTable}
           (id, account_id, client_id, external_jid, subject, monitored,
            history_oldest_at, history_newest_at, history_complete,
            client_link_source, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(external_jid) DO UPDATE SET
           account_id = excluded.account_id,
-          client_id = whatsapp_groups.client_id,
+          client_id = ${conversationTable}.client_id,
           subject = excluded.subject,
           monitored = excluded.monitored,
           history_oldest_at = CASE
-            WHEN whatsapp_groups.history_oldest_at IS NULL THEN excluded.history_oldest_at
-            WHEN excluded.history_oldest_at IS NULL THEN whatsapp_groups.history_oldest_at
-            WHEN excluded.history_oldest_at < whatsapp_groups.history_oldest_at
+            WHEN ${conversationTable}.history_oldest_at IS NULL THEN excluded.history_oldest_at
+            WHEN excluded.history_oldest_at IS NULL THEN ${conversationTable}.history_oldest_at
+            WHEN excluded.history_oldest_at < ${conversationTable}.history_oldest_at
               THEN excluded.history_oldest_at
-            ELSE whatsapp_groups.history_oldest_at
+            ELSE ${conversationTable}.history_oldest_at
           END,
           history_newest_at = CASE
-            WHEN whatsapp_groups.history_newest_at IS NULL THEN excluded.history_newest_at
-            WHEN excluded.history_newest_at IS NULL THEN whatsapp_groups.history_newest_at
-            WHEN excluded.history_newest_at > whatsapp_groups.history_newest_at
+            WHEN ${conversationTable}.history_newest_at IS NULL THEN excluded.history_newest_at
+            WHEN excluded.history_newest_at IS NULL THEN ${conversationTable}.history_newest_at
+            WHEN excluded.history_newest_at > ${conversationTable}.history_newest_at
               THEN excluded.history_newest_at
-            ELSE whatsapp_groups.history_newest_at
+            ELSE ${conversationTable}.history_newest_at
           END,
           history_complete = CASE
-            WHEN whatsapp_groups.history_complete = 1 OR excluded.history_complete = 1 THEN 1
+            WHEN ${conversationTable}.history_complete = 1 OR excluded.history_complete = 1 THEN 1
             ELSE 0
           END,
           updated_at = excluded.updated_at
@@ -2524,11 +2536,10 @@ export class SupportStore {
   }
 
   getConversationTriageCursor(groupId: string): ConversationTriageCursor | null {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
-    const row = this.database
-      .prepare(
+    this.assertEntityExists("Conversa", "conversations", groupId);
+    const row = this.prepare(
         `SELECT triage_enabled_at, triage_watermark_at
-         FROM whatsapp_groups WHERE id = ?`,
+         FROM conversations WHERE id = ?`,
       )
       .get(groupId) as {
       triage_enabled_at: string | null;
@@ -2546,12 +2557,11 @@ export class SupportStore {
     occurredAt: string,
     enabledAt = nowUtc(),
   ): ConversationTriageCursor {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    this.assertEntityExists("Conversa", "conversations", groupId);
     const normalizedOccurredAt = normalizedText(occurredAt, "Data da mensagem");
     const normalizedEnabledAt = normalizedText(enabledAt, "Início da triagem");
-    this.database
-      .prepare(
-        `UPDATE whatsapp_groups
+    this.prepare(
+        `UPDATE conversations
          SET triage_enabled_at = COALESCE(triage_enabled_at, ?),
              triage_watermark_at = CASE
                WHEN triage_watermark_at IS NULL OR triage_watermark_at < ? THEN ?
@@ -2575,16 +2585,15 @@ export class SupportStore {
     input: ConversationSuggestionSettingsInput,
   ): ConversationSuggestionSettingsResponse {
     return this.database.transaction(() => {
-      this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+      this.assertEntityExists("Conversa", "conversations", groupId);
       const actor = normalizedNullableText(input.actor) ?? "Operador local";
       const timestamp = nowUtc();
       let contextualizedMessageCount = 0;
       let resolvedBlockCount = 0;
 
       if (input.muted) {
-        this.database
-          .prepare(
-            `UPDATE whatsapp_groups
+        this.prepare(
+            `UPDATE conversations
              SET suggestions_muted_at = COALESCE(suggestions_muted_at, ?),
                  suggestions_muted_by = ?,
                  updated_at = ?
@@ -2658,16 +2667,15 @@ export class SupportStore {
           }
         }
       } else {
-        this.database
-          .prepare(
-            `UPDATE whatsapp_groups
+        this.prepare(
+            `UPDATE conversations
              SET suggestions_muted_at = NULL,
                  suggestions_muted_by = NULL,
                  triage_enabled_at = ?,
                  triage_watermark_at = COALESCE(
                    (SELECT MAX(message.occurred_at)
                     FROM messages message
-                    WHERE message.group_id = whatsapp_groups.id),
+                    WHERE message.group_id = conversations.id),
                    ?
                  ),
                  updated_at = ?
@@ -2692,11 +2700,10 @@ export class SupportStore {
       const conversationId = normalizedNullableText(input.conversationId);
       if (conversationId) this.getConversationSummary(conversationId);
       const timestamp = nowUtc();
-      const pendingBlocks = this.database
-        .prepare(
+      const pendingBlocks = this.prepare(
           `SELECT block.id, block.group_id
            FROM triage_blocks block
-           JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+           JOIN conversations conversation ON conversation.id = block.group_id
            JOIN clients client ON client.id = conversation.client_id
            WHERE block.state = 'pending'
              AND client.ignored_at IS NULL
@@ -2728,14 +2735,14 @@ export class SupportStore {
           messageIds.push(row.message_id);
           pendingBlockMessages.set(row.block_id, messageIds);
         }
-        this.database
+        this
           .prepare(
             `UPDATE triage_block_messages
              SET active = 0, updated_at = ?
              WHERE active = 1
                AND block_id IN (
                  SELECT block.id FROM triage_blocks block
-                 JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+                 JOIN conversations conversation ON conversation.id = block.group_id
                  JOIN clients client ON client.id = conversation.client_id
                  WHERE block.state = 'pending'
                    AND client.ignored_at IS NULL
@@ -2743,14 +2750,14 @@ export class SupportStore {
                )`,
           )
           .run(timestamp, ...(conversationId ? [conversationId] : []));
-        this.database
+        this
           .prepare(
             `UPDATE triage_blocks
              SET state = 'context', resolved_at = ?, updated_at = ?
              WHERE state = 'pending'
                AND id IN (
                  SELECT block.id FROM triage_blocks block
-                 JOIN whatsapp_groups conversation ON conversation.id = block.group_id
+                 JOIN conversations conversation ON conversation.id = block.group_id
                  JOIN clients client ON client.id = conversation.client_id
                  WHERE client.ignored_at IS NULL
                    ${conversationId ? "AND block.group_id = ?" : ""}
@@ -2768,14 +2775,14 @@ export class SupportStore {
           });
         }
       }
-      const messages = this.database
+      const messages = this
         .prepare(
           `SELECT message.id, message.group_id, message.sender_id,
                   message.occurred_at, message.text, message.message_type,
                   message.triage_kind, message.triage_state,
                   CASE WHEN staff.participant_id IS NULL THEN 0 ELSE 1 END AS is_staff
            FROM messages message
-           JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+           JOIN conversations conversation ON conversation.id = message.group_id
            JOIN clients client ON client.id = conversation.client_id
            LEFT JOIN staff_members staff
              ON staff.participant_id = message.sender_id AND staff.active = 1
@@ -2878,7 +2885,7 @@ export class SupportStore {
     const attention = filters.attention ?? "all";
     const scope = filters.scope ?? null;
     const query = normalizedNullableText(filters.query)?.toLocaleLowerCase("pt-BR") ?? null;
-    const filterKey = JSON.stringify({ attention, scope, query });
+    const filterKey = JSON.stringify({ attention, scope, query, ...(filters.connectionId ? {connectionId:filters.connectionId} : {}) });
     const cursor = decodePageCursor(filters.cursor, "Cursor de conversas");
     if (cursor && cursor.filterKey !== filterKey) {
       throw new ValidationError(
@@ -2887,7 +2894,7 @@ export class SupportStore {
     }
     const clauses = [
       "client.ignored_at IS NULL",
-      `( NOT (
+      `( conversation.connection_id IS NOT NULL OR NOT (
           conversation.external_jid LIKE '%@s.whatsapp.net'
           OR conversation.external_jid LIKE '%@lid'
         )
@@ -2929,11 +2936,15 @@ export class SupportStore {
         )`,
       );
     }
+    if (filters.connectionId) {
+      if (filters.connectionId === "whatsapp") { clauses.push("conversation.connection_id IS NULL"); }
+      else { clauses.push("conversation.connection_id = ?"); parameters.push(filters.connectionId); }
+    }
     if (scope === "group") {
-      clauses.push("conversation.external_jid LIKE '%@g.us'");
+      clauses.push("(conversation.external_jid LIKE '%@g.us' OR (conversation.connection_id IS NOT NULL AND conversation.conversation_scope = 'group'))");
     } else if (scope === "direct") {
       clauses.push(
-        `(conversation.external_jid LIKE '%@s.whatsapp.net'
+        `((conversation.connection_id IS NOT NULL AND conversation.conversation_scope = 'direct') OR conversation.external_jid LIKE '%@s.whatsapp.net'
           OR conversation.external_jid LIKE '%@lid')`,
       );
     }
@@ -2964,7 +2975,7 @@ export class SupportStore {
     const rankedSql = `
       SELECT conversation.id,
              COALESCE(MAX(message.occurred_at), conversation.created_at) AS sort_at
-      FROM whatsapp_groups conversation
+      FROM conversations conversation
       JOIN clients client ON client.id = conversation.client_id
       LEFT JOIN messages message
         ON message.group_id = conversation.id
@@ -2980,7 +2991,7 @@ export class SupportStore {
       WHERE ${clauses.join(" AND ")}
       GROUP BY conversation.id
     `;
-    const rows = this.database
+    const rows = this
       .prepare(
         `SELECT ranked.id, ranked.sort_at
          FROM (${rankedSql}) ranked
@@ -3000,16 +3011,15 @@ export class SupportStore {
     const selected = rows.slice(0, limit);
     const last = selected.at(-1);
     const total = (
-      this.database
+      this
         .prepare(`SELECT COUNT(*) AS count FROM (${rankedSql}) ranked`)
         .get(...parameters) as { count: number }
     ).count;
     const pendingTotal = (
-      this.database
-        .prepare(
+      this.prepare(
           `SELECT COUNT(*) AS count
            FROM messages message
-           JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+           JOIN conversations conversation ON conversation.id = message.group_id
            JOIN clients client ON client.id = conversation.client_id
            WHERE client.ignored_at IS NULL
              AND message.triage_state = 'unreviewed'
@@ -3239,6 +3249,7 @@ export class SupportStore {
       selected.map((row) => row.raw_json),
     );
     const items = selected.toReversed().map<ConversationMessageDto>((row) => ({
+      ...readChannelMessageMetadata(this.database,row.id),
       id: row.id,
       externalId: row.external_id,
       occurredAt: row.occurred_at,
@@ -3338,7 +3349,7 @@ export class SupportStore {
     groupId: string,
     includeResolved = false,
   ): ConversationTriageBlocksResponse {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    this.assertEntityExists("Conversa", "conversations", groupId);
     const rows = this.database
       .prepare(
         `SELECT id FROM triage_blocks
@@ -3587,7 +3598,7 @@ export class SupportStore {
     source: "message" | "group_roster" | "group_participant_update" = "message",
     confirmedAt = nowUtc(),
   ): void {
-    this.assertEntityExists("Grupo", "whatsapp_groups", groupId);
+    this.assertEntityExists("Grupo", "conversations", groupId);
     this.assertEntityExists("Participante", "participants", participantId);
     const timestamp = nowUtc();
     this.database
@@ -3688,7 +3699,7 @@ export class SupportStore {
     activeParticipantIds: readonly string[],
     confirmedAt: string,
   ): void {
-    this.assertEntityExists("Grupo", "whatsapp_groups", groupId);
+    this.assertEntityExists("Grupo", "conversations", groupId);
     const active = [...new Set(activeParticipantIds)];
     const clause = active.length
       ? `AND participant_id NOT IN (${active.map(() => "?").join(", ")})`
@@ -3738,12 +3749,12 @@ export class SupportStore {
     }
     if (!identityClauses.length) return [];
 
-    const rows = this.database
+    const rows = this
       .prepare(
         `SELECT c.id, c.name, c.kind, MAX(gp.last_seen_at) AS last_seen_at
          FROM participants p
          JOIN group_participants gp ON gp.participant_id = p.id
-         JOIN whatsapp_groups g ON g.id = gp.group_id
+         JOIN conversations g ON g.id = gp.group_id
          JOIN clients c ON c.id = g.client_id
          WHERE g.external_jid LIKE '%@g.us'
            AND gp.active = 1
@@ -3796,14 +3807,13 @@ export class SupportStore {
       .get(clientId) as EntityRecord | undefined;
     if (!client) throw new NotFoundError("Cliente ativo", clientId);
 
-    const result = this.database
-      .prepare(
-        `UPDATE whatsapp_groups
+    const result = this.prepare(
+        `UPDATE conversations
          SET client_id = ?, client_link_source = ?, updated_at = ?
          WHERE id = ? AND (client_id != ? OR client_link_source != ?)`,
       )
       .run(clientId, source, nowUtc(), groupId, clientId, source);
-    if (!result.changes) this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    if (!result.changes) this.assertEntityExists("Conversa", "conversations", groupId);
   }
 
   deactivateStaffMember(participantId: string): void {
@@ -3836,6 +3846,7 @@ export class SupportStore {
             `SELECT participant_id AS id
              FROM staff_members
              WHERE active = 1
+               AND participant_id IN (SELECT id FROM participants WHERE connection_id IS NULL)
                ${desiredIds.length
                  ? `AND participant_id NOT IN (${desiredIds.map(() => "?").join(", ")})`
                  : ""}`,
@@ -3853,7 +3864,7 @@ export class SupportStore {
             .run(nowUtc(), ...staleIds).changes
         : 0;
       const restoredMessages = staleIds.length
-        ? this.database
+        ? this
             .prepare(
               `UPDATE messages AS message
                SET triage_kind = 'unclassified',
@@ -3863,7 +3874,7 @@ export class SupportStore {
                  AND message.ingestion_source = 'realtime_notify'
                  AND message.triage_state = 'context'
                  AND EXISTS (
-                   SELECT 1 FROM whatsapp_groups conversation
+                   SELECT 1 FROM conversations conversation
                    WHERE conversation.id = message.group_id
                      AND conversation.monitored = 1
                      AND conversation.suggestions_muted_at IS NULL
@@ -3949,7 +3960,7 @@ export class SupportStore {
   }
 
   upsertMessage(input: UpsertMessageInput): UpsertMessageResult {
-    this.assertEntityExists("Grupo", "whatsapp_groups", input.groupId);
+    this.assertEntityExists("Conversa", "conversations", input.groupId);
     this.assertEntityExists("Participante", "participants", input.senderId);
     const existing = this.database
       .prepare(
@@ -4073,17 +4084,19 @@ export class SupportStore {
     return { id, inserted: !existing };
   }
 
+  notifyConversationMessageChanged(groupId: string): void {
+    this.invalidateTriageJobsForNewExternalMessage(groupId);
+  }
+
   private invalidateTriageJobsForNewExternalMessage(groupId: string): void {
     if (!this.hasTriageAiJobSchema()) return;
     const timestamp = nowUtc();
     if (this.hasTriageContextWaitSchema()) {
       this.releaseTriageContextWaitMessages(groupId, timestamp);
-      this.database
-        .prepare("DELETE FROM triage_context_waits WHERE group_id = ?")
+      this.database.prepare("DELETE FROM triage_context_waits WHERE group_id = ?")
         .run(groupId);
     }
-    this.database
-      .prepare(
+    this.database.prepare(
         `UPDATE triage_ai_job_messages
          SET active = 0, updated_at = ?
          WHERE active = 1
@@ -4222,7 +4235,7 @@ export class SupportStore {
   upsertMessageReactionEvent(
     input: UpsertMessageReactionEventInput,
   ): EntityRecord {
-    this.assertEntityExists("Conversa", "whatsapp_groups", input.groupId);
+    this.assertEntityExists("Conversa", "conversations", input.groupId);
     this.assertEntityExists("Participante", "participants", input.reactorId);
     const externalId = normalizedText(
       input.externalId,
@@ -4499,10 +4512,9 @@ export class SupportStore {
         if (existing) return this.getTicketDetail(existing.id);
       }
 
-      const group = this.database
-        .prepare(
+      const group = this.prepare(
           `SELECT g.id, g.client_id, c.ignored_at
-           FROM whatsapp_groups g
+           FROM conversations g
            JOIN clients c ON c.id = g.client_id
            WHERE g.id = ?`,
         )
@@ -5038,11 +5050,9 @@ export class SupportStore {
            )`,
         )
         .run(ticketId);
-      this.database
-        .prepare("DELETE FROM evidence_queries WHERE ticket_id = ?")
+      this.database.prepare("DELETE FROM evidence_queries WHERE ticket_id = ?")
         .run(ticketId);
-      this.database
-        .prepare(
+      this.database.prepare(
           `DELETE FROM triage_blocks
            WHERE (suggested_ticket_id = ?
               OR confirmed_ticket_id = ?
@@ -5124,7 +5134,7 @@ export class SupportStore {
 
   listTriageCandidates(limit = 100): TriageCandidate[] {
     const safeLimit = Math.min(Math.max(limit, 1), 500);
-    const rows = this.database
+    const rows = this
       .prepare(
         `WITH eligible_messages AS (
            SELECT
@@ -5139,7 +5149,7 @@ export class SupportStore {
                PARTITION BY g.id ORDER BY m.occurred_at, m.id
              ) AS conversation_position
            FROM messages m
-           JOIN whatsapp_groups g ON g.id = m.group_id
+           JOIN conversations g ON g.id = m.group_id
            JOIN clients c ON c.id = g.client_id
            JOIN participants p ON p.id = m.sender_id
            LEFT JOIN staff_members staff
@@ -5214,7 +5224,7 @@ export class SupportStore {
       triageKind: row.triage_kind,
       group: {
         id: row.group_id,
-        externalJid: row.group_external_jid,
+        externalJid: row.group_external_jid ?? "",
         subject: row.group_subject,
       },
       client: {
@@ -5366,8 +5376,7 @@ export class SupportStore {
       )
       .run(timestamp);
     this.database.prepare("DELETE FROM triage_context_waits").run();
-    this.database
-      .prepare(
+    this.database.prepare(
         `UPDATE triage_ai_job_messages
          SET active = 0, updated_at = ?
          WHERE active = 1
@@ -5393,11 +5402,10 @@ export class SupportStore {
   }
 
   latestEligibleTriageMessageAt(groupId: string): string | null {
-    const row = this.database
-      .prepare(
+    const row = this.prepare(
         `SELECT MAX(message.occurred_at) AS occurred_at
          FROM messages message
-         JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+         JOIN conversations conversation ON conversation.id = message.group_id
          JOIN clients client ON client.id = conversation.client_id
          LEFT JOIN staff_members staff
            ON staff.participant_id = message.sender_id AND staff.active = 1
@@ -5440,8 +5448,7 @@ export class SupportStore {
         .prepare("DELETE FROM triage_context_waits WHERE group_id = ?")
         .run(message.group_id);
     }
-    this.database
-      .prepare(
+    this.database.prepare(
         `UPDATE triage_ai_job_messages
          SET active = 0, updated_at = ?
          WHERE active = 1
@@ -5483,7 +5490,7 @@ export class SupportStore {
   getConversationSuggestionAnalysis(
     groupId: string,
   ): ConversationSuggestionAnalysisDto {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    this.assertEntityExists("Conversa", "conversations", groupId);
     const activeJob = this.database
       .prepare(
         `SELECT state
@@ -5494,11 +5501,10 @@ export class SupportStore {
          LIMIT 1`,
       )
       .get(groupId) as { state: "queued" | "running" } | undefined;
-    const pending = this.database
-      .prepare(
+    const pending = this.prepare(
         `SELECT COUNT(*) AS count, MAX(message.occurred_at) AS latest_at
          FROM messages message
-         JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+         JOIN conversations conversation ON conversation.id = message.group_id
          JOIN clients client ON client.id = conversation.client_id
          LEFT JOIN staff_members staff
            ON staff.participant_id = message.sender_id AND staff.active = 1
@@ -5550,13 +5556,12 @@ export class SupportStore {
     groupId: string,
     input: { model?: string; promptVersion: string },
   ): { accepted: boolean; jobId: string | null; analysis: ConversationSuggestionAnalysisDto } {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    this.assertEntityExists("Conversa", "conversations", groupId);
     const settings = this.getTriageAiSettings();
     if (!settings.enabled) {
       throw new ConflictError("Ative as sugestões por IA antes de analisar a conversa");
     }
-    const conversation = this.database
-      .prepare("SELECT suggestions_muted_at FROM whatsapp_groups WHERE id = ?")
+    const conversation = this.prepare("SELECT suggestions_muted_at FROM conversations WHERE id = ?")
       .get(groupId) as { suggestions_muted_at: string | null };
     if (conversation.suggestions_muted_at) {
       throw new ConflictError("As sugestões estão silenciadas para esta conversa");
@@ -5643,11 +5648,10 @@ export class SupportStore {
       if (activeConversationJob) return null;
 
       const placeholders = uniqueMessageIds.map(() => "?").join(", ");
-      const eligible = this.database
-        .prepare(
+      const eligible = this.prepare(
           `SELECT COUNT(*) AS count
            FROM messages message
-           JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+           JOIN conversations conversation ON conversation.id = message.group_id
            JOIN clients client ON client.id = conversation.client_id
            LEFT JOIN staff_members staff
              ON staff.participant_id = message.sender_id AND staff.active = 1
@@ -5783,11 +5787,10 @@ export class SupportStore {
     const claimedAt = nowUtc();
     const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
     return this.database.transaction(() => {
-      const candidate = this.database
-        .prepare(
+      const candidate = this.prepare(
           `SELECT job.id
            FROM triage_ai_jobs job
-           JOIN whatsapp_groups conversation ON conversation.id = job.group_id
+           JOIN conversations conversation ON conversation.id = job.group_id
            JOIN clients client ON client.id = conversation.client_id
            JOIN triage_ai_settings settings
              ON settings.singleton = 1 AND settings.enabled = 1
@@ -6001,11 +6004,10 @@ export class SupportStore {
         return 0;
       }
       const placeholders = candidateIds.map(() => "?").join(", ");
-      const eligible = this.database
-        .prepare(
+      const eligible = this.prepare(
           `SELECT COUNT(*) AS count
            FROM messages message
-           JOIN whatsapp_groups conversation ON conversation.id = message.group_id
+           JOIN conversations conversation ON conversation.id = message.group_id
            JOIN clients client ON client.id = conversation.client_id
            LEFT JOIN staff_members staff
              ON staff.participant_id = message.sender_id AND staff.active = 1
@@ -6580,7 +6582,7 @@ export class SupportStore {
       .prepare(
         `SELECT message.id, message.external_id, message.provider_message_id,
                 message.occurred_at, message.text, message.quoted_external_id,
-                participant.external_jid, participant.display_name,
+                COALESCE(participant.external_jid, participant.id) AS external_jid, participant.display_name,
                 CASE
                   WHEN participant.external_jid LIKE 'self:%' THEN 'self'
                   WHEN staff.participant_id IS NOT NULL THEN 'staff'
@@ -6664,11 +6666,10 @@ export class SupportStore {
     const input = parseJson<TriageAnalysisInput | null>(job.input_json, null);
     const message = input?.messages.find((item) => item.id === messageId);
     if (!input || !message) return null;
-    const group = this.database
-      .prepare(
+    const group = this.prepare(
         `SELECT conversation.id, conversation.external_jid, conversation.subject,
                 client.id AS client_id, client.name, client.kind
-         FROM whatsapp_groups conversation
+         FROM conversations conversation
          JOIN clients client ON client.id = conversation.client_id
          JOIN messages source ON source.group_id = conversation.id
          WHERE source.id = ?`,
@@ -6704,7 +6705,7 @@ export class SupportStore {
       triageKind: "unclassified",
       group: {
         id: group.id,
-        externalJid: group.external_jid,
+        externalJid: group.external_jid ?? "",
         subject: group.subject,
       },
       client: { id: group.client_id, name: group.name, kind: group.kind },
@@ -6719,8 +6720,7 @@ export class SupportStore {
   }
 
   private clientIdForConversation(groupId: string): string {
-    const row = this.database
-      .prepare("SELECT client_id FROM whatsapp_groups WHERE id = ?")
+    const row = this.prepare("SELECT client_id FROM conversations WHERE id = ?")
       .get(groupId) as { client_id: string } | undefined;
     if (!row) throw new NotFoundError("Conversa", groupId);
     return row.client_id;
@@ -6844,13 +6844,13 @@ export class SupportStore {
     input: RecordTriageSuggestionInput,
   ): TriageBlockDto {
     return this.database.transaction(() => {
-      const message = this.database
+      const message = this
         .prepare(
           `SELECT m.id, m.group_id, m.sender_id, m.occurred_at,
                   g.suggestions_muted_at,
                   CASE WHEN staff.participant_id IS NULL THEN 0 ELSE 1 END AS is_staff
            FROM messages m
-           JOIN whatsapp_groups g ON g.id = m.group_id
+           JOIN conversations g ON g.id = m.group_id
            LEFT JOIN staff_members staff
              ON staff.participant_id = m.sender_id AND staff.active = 1
            WHERE m.id = ?`,
@@ -6916,11 +6916,10 @@ export class SupportStore {
         }
       }
       if (input.affectedStoreId) {
-        const validStore = this.database
-          .prepare(
+        const validStore = this.prepare(
             `SELECT 1
              FROM client_stores store
-             JOIN whatsapp_groups conversation ON conversation.client_id = store.client_id
+             JOIN conversations conversation ON conversation.client_id = store.client_id
              WHERE store.id = ? AND store.active = 1 AND conversation.id = ?`,
           )
           .get(input.affectedStoreId, message.group_id);
@@ -7251,8 +7250,7 @@ export class SupportStore {
         );
       }
     }
-    this.database
-      .prepare(
+    this.database.prepare(
         `UPDATE messages SET triage_kind = ?, triage_state = ?, updated_at = ?
          WHERE id = ?`,
       )
@@ -7263,8 +7261,8 @@ export class SupportStore {
     groupId: string,
     sinceAt?: string,
   ): TicketSummaryDto | null {
-    this.assertEntityExists("Grupo", "whatsapp_groups", groupId);
-    const row = this.database
+    this.assertEntityExists("Grupo", "conversations", groupId);
+    const row = this
       .prepare(
         `${this.ticketSelect()}
          WHERE t.group_id = ?
@@ -7307,7 +7305,7 @@ export class SupportStore {
     groupId: string,
     quotedProviderMessageId: string,
   ): QuotedTicketReference | null {
-    this.assertEntityExists("Grupo", "whatsapp_groups", groupId);
+    this.assertEntityExists("Grupo", "conversations", groupId);
     const rows = this.database
       .prepare(
         `SELECT DISTINCT t.id, t.status, t.last_message_at
@@ -7342,7 +7340,7 @@ export class SupportStore {
     sinceAt: string,
     untilAt: string,
   ): TopicTicketCandidate[] {
-    this.assertEntityExists("Grupo", "whatsapp_groups", groupId);
+    this.assertEntityExists("Grupo", "conversations", groupId);
     const rows = this.database
       .prepare(
         `SELECT id, status, last_message_at, affected_store_id, title, summary
@@ -7788,7 +7786,7 @@ export class SupportStore {
         });
       }
 
-      const ticketSummary = this.database.prepare(
+      const ticketSummary = this.prepare(
         `${this.ticketSelect()} WHERE t.id = ?`,
       );
       return {
@@ -7863,6 +7861,10 @@ export class SupportStore {
       where.push("t.status != 'archived'");
     }
 
+    if (filters.connectionId) {
+      if (filters.connectionId === "whatsapp") { where.push("g.connection_id IS NULL"); }
+      else { where.push("g.connection_id = ?"); parameters.push(filters.connectionId); }
+    }
     if (filters.clientId) {
       where.push("t.client_id = ?");
       parameters.push(filters.clientId);
@@ -7937,18 +7939,18 @@ export class SupportStore {
     }
     const limit = Math.min(requestedLimit, 200);
     const offset = requestedOffset;
-    const totalRow = this.database
+    const totalRow = this
       .prepare(
         `SELECT COUNT(*) AS count
          FROM tickets t
          JOIN clients c ON c.id = t.client_id
-         JOIN whatsapp_groups g ON g.id = t.group_id
+         JOIN conversations g ON g.id = t.group_id
          LEFT JOIN client_stores s ON s.id = t.affected_store_id
          ${clause}`,
       )
       .get(...parameters) as { count: number };
 
-    const rows = this.database
+    const rows = this
       .prepare(
         `${this.ticketSelect()}
          ${clause}
@@ -7977,8 +7979,7 @@ export class SupportStore {
     groupId: string,
     filters: ConversationTicketListFilters = {},
   ): ConversationTicketListResponse {
-    const conversation = this.database
-      .prepare("SELECT id FROM whatsapp_groups WHERE id = ?")
+    const conversation = this.prepare("SELECT id FROM conversations WHERE id = ?")
       .get(groupId) as { id: string } | undefined;
     if (!conversation) throw new NotFoundError("Conversa", groupId);
 
@@ -8326,8 +8327,7 @@ export class SupportStore {
         this.database
           .prepare("DELETE FROM ticket_categories WHERE ticket_id = ? AND category_id = ?")
           .run(link.ticket_id, category.id);
-        this.database
-          .prepare("UPDATE tickets SET updated_at = ? WHERE id = ?")
+        this.database.prepare("UPDATE tickets SET updated_at = ? WHERE id = ?")
           .run(timestamp, link.ticket_id);
         this.insertTicketEvent({
           ticketId: link.ticket_id,
@@ -8451,7 +8451,7 @@ export class SupportStore {
   }
 
   getTicketDetail(ticketId: string): TicketDetailDto {
-    const row = this.database
+    const row = this
       .prepare(`${this.ticketSelect()} WHERE t.id = ?`)
       .get(ticketId) as TicketSummaryRow | undefined;
     if (!row) {
@@ -8484,9 +8484,8 @@ export class SupportStore {
       | undefined;
     if (!ticket) throw new NotFoundError("Ticket", ticketId);
 
-    const rows = this.database
-      .prepare(
-        `SELECT participant.id, participant.external_jid,
+    const rows = this.database.prepare(
+        `SELECT participant.id, COALESCE(participant.external_jid, participant.id) AS external_jid,
                 participant.display_name, participant.phone_e164,
                 participant.created_at, participant.updated_at
          FROM group_participants membership
@@ -8675,7 +8674,7 @@ export class SupportStore {
              WHERE c.ignored_at IS NULL${createdScopeSql}`,
           )
           .get(...createdScopeParameters) as { count: number })
-      : (this.database
+      : (this
           .prepare(
             `SELECT COUNT(*) AS count
              FROM clients c
@@ -8683,8 +8682,8 @@ export class SupportStore {
                AND (
                  c.identification_pending = 1
                  OR EXISTS (
-                   SELECT 1 FROM whatsapp_groups g
-                   WHERE g.client_id = c.id AND g.external_jid LIKE '%@g.us'
+                   SELECT 1 FROM conversations g
+                   WHERE g.client_id = c.id AND (g.external_jid LIKE '%@g.us' OR g.connection_id IS NOT NULL)
                  )
                  OR EXISTS (
                    SELECT 1 FROM tickets t WHERE t.client_id = c.id
@@ -8700,11 +8699,10 @@ export class SupportStore {
          WHERE c.ignored_at IS NULL${createdScopeSql}`,
       )
       .get(...createdScopeParameters) as { count: number };
-    const orphanTotal = this.database
-      .prepare(
+    const orphanTotal = this.prepare(
         `SELECT COUNT(DISTINCT m.group_id) AS count
          FROM messages m
-         JOIN whatsapp_groups g ON g.id = m.group_id
+         JOIN conversations g ON g.id = m.group_id
          JOIN clients c ON c.id = g.client_id
          LEFT JOIN staff_members staff
           ON staff.participant_id = m.sender_id AND staff.active = 1
@@ -8807,13 +8805,13 @@ export class SupportStore {
       client_name: string;
       count: number;
     }>;
-    const topGroups = this.database
+    const topGroups = this
       .prepare(
         `SELECT conversation.id AS group_id,
                 conversation.subject AS group_subject,
                 COUNT(t.id) AS count
          FROM tickets t
-         JOIN whatsapp_groups conversation ON conversation.id = t.group_id
+         JOIN conversations conversation ON conversation.id = t.group_id
          JOIN clients c ON c.id = t.client_id
          WHERE c.ignored_at IS NULL${createdScopeSql}
          GROUP BY conversation.id
@@ -9303,7 +9301,7 @@ export class SupportStore {
       ...periodParameters,
       ...assigneePredicate.parameters,
     ];
-    const rows = this.database
+    const rows = this
       .prepare(
         `SELECT
            t.id,
@@ -9330,7 +9328,7 @@ export class SupportStore {
            ) AS latest_resolution_at
          FROM tickets t
          JOIN clients client ON client.id = t.client_id
-         JOIN whatsapp_groups conversation ON conversation.id = t.group_id
+         JOIN conversations conversation ON conversation.id = t.group_id
          LEFT JOIN client_stores store ON store.id = t.affected_store_id
          LEFT JOIN local_users assignee ON assignee.id = t.assignee_user_id
          WHERE client.ignored_at IS NULL
@@ -9426,7 +9424,7 @@ export class SupportStore {
   }
 
   listOperationalGroups(): OperationalGroupDto[] {
-    const rows = this.database
+    const rows = this
       .prepare(
         `SELECT
           g.id,
@@ -9443,7 +9441,7 @@ export class SupportStore {
           (SELECT COUNT(*) FROM tickets t
            WHERE t.group_id = g.id AND t.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
           (SELECT MAX(m.occurred_at) FROM messages m WHERE m.group_id = g.id) AS last_message_at
-         FROM whatsapp_groups g
+         FROM conversations g
          JOIN clients c ON c.id = g.client_id
          WHERE c.ignored_at IS NULL
          ORDER BY g.monitored DESC, last_message_at DESC, g.subject`,
@@ -9467,7 +9465,7 @@ export class SupportStore {
     return rows.map((row) => ({
       id: row.id,
       subject: row.subject,
-      externalJid: row.external_jid,
+      externalJid: row.external_jid ?? "",
       client: {
         id: row.client_id,
         name: row.client_name,
@@ -9484,7 +9482,7 @@ export class SupportStore {
   }
 
   listClients(): ClientSummaryDto[] {
-    const rows = this.database
+    const rows = this
       .prepare(
         `SELECT
           c.id,
@@ -9496,22 +9494,23 @@ export class SupportStore {
           (SELECT COUNT(DISTINCT COALESCE(
              identity_link.phone_jid,
              NULLIF(participant.phone_e164, ''),
-             participant.external_jid
+             participant.external_jid,
+             participant.id
            ))
-           FROM whatsapp_groups participant_group
+           FROM conversations participant_group
            JOIN group_participants gp ON gp.group_id = participant_group.id
            JOIN participants participant ON participant.id = gp.participant_id
            LEFT JOIN whatsapp_identity_links identity_link
              ON identity_link.phone_jid = participant.external_jid
              OR identity_link.lid_jid = participant.external_jid
            WHERE participant_group.client_id = c.id
-             AND participant_group.external_jid LIKE '%@g.us'
+             AND (participant_group.external_jid LIKE '%@g.us' OR participant_group.connection_id IS NOT NULL)
              AND gp.active = 1) AS participant_count,
           (SELECT COUNT(*) FROM tickets t WHERE t.client_id = c.id) AS ticket_count,
           (SELECT COUNT(*) FROM tickets t
            WHERE t.client_id = c.id AND t.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
           (SELECT MAX(m.occurred_at)
-           FROM whatsapp_groups activity_group
+           FROM conversations activity_group
            JOIN messages m ON m.group_id = activity_group.id
            WHERE activity_group.client_id = c.id) AS last_activity_at
          FROM clients c
@@ -9519,9 +9518,9 @@ export class SupportStore {
            AND (
              c.identification_pending = 1
              OR EXISTS (
-               SELECT 1 FROM whatsapp_groups visible_group
+               SELECT 1 FROM conversations visible_group
                WHERE visible_group.client_id = c.id
-                 AND visible_group.external_jid LIKE '%@g.us'
+                 AND (visible_group.external_jid LIKE '%@g.us' OR visible_group.connection_id IS NOT NULL)
              )
              OR EXISTS (
                SELECT 1 FROM tickets visible_ticket
@@ -9543,8 +9542,8 @@ export class SupportStore {
       last_activity_at: string | null;
     }>;
 
-    const groupStatement = this.database.prepare(
-      "SELECT id, subject, external_jid FROM whatsapp_groups WHERE client_id = ? ORDER BY subject",
+    const groupStatement = this.prepare(
+      "SELECT id, subject, external_jid FROM conversations WHERE client_id = ? ORDER BY subject",
     );
     const storeStatement = this.database.prepare(
       `SELECT id, name, business_id, platform
@@ -9567,7 +9566,7 @@ export class SupportStore {
       }>).map((group) => ({
         id: group.id,
         subject: group.subject,
-        externalJid: group.external_jid,
+        externalJid: group.external_jid ?? "",
       })),
       stores: (storeStatement.all(row.id) as Array<{
         id: string;
@@ -9670,7 +9669,7 @@ export class SupportStore {
     const allowedTables = new Set([
       "whatsapp_accounts",
       "clients",
-      "whatsapp_groups",
+      "conversations",
       "participants",
       "messages",
       "tickets",
@@ -9678,7 +9677,7 @@ export class SupportStore {
     if (!allowedTables.has(table)) {
       throw new Error(`Tabela não permitida em assertEntityExists: ${table}`);
     }
-    const found = this.database.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);
+    const found = this.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id);
     if (!found) {
       throw new NotFoundError(label, id);
     }
@@ -10201,8 +10200,10 @@ export class SupportStore {
   }
 
   private mapTicketSummary(row: TicketSummaryRow): TicketSummaryDto {
+    const channel = readChannelSource(this.database,row.group_id);
     return {
       id: row.id,
+      ...(channel ? {channel} : {}),
       number: row.number,
       title: row.title,
       summary: row.summary,
@@ -10221,7 +10222,7 @@ export class SupportStore {
       group: {
         id: row.group_id,
         subject: row.group_subject,
-        externalJid: row.group_external_jid,
+        externalJid: row.group_external_jid ?? "",
       },
       requester:
         row.requester_id && row.requester_display_name
@@ -10381,7 +10382,7 @@ export class SupportStore {
           m.text,
           m.message_type,
           m.raw_json,
-          ticket.group_id,
+          m.group_id,
           CASE WHEN ticket.source_message_id = m.id THEN 0 ELSE 1 END AS can_detach,
           p.id AS sender_id,
           p.display_name,
@@ -10416,7 +10417,7 @@ export class SupportStore {
             `SELECT id, external_message_id, occurred_at, author_name, author_role,
                     body, source_type, position
              FROM ticket_external_messages
-             WHERE ticket_id = ?`,
+             WHERE ticket_id = ? ${databaseHasTable(this.database,"channel_connections") ? "AND migrated_message_id IS NULL" : ""}`,
           )
           .all(ticketId) as Array<{
       id: string;
@@ -10541,6 +10542,7 @@ export class SupportStore {
       text: presentMessageText(row.text, row.raw_json, mentionNames),
       messageType: row.message_type,
       canDetach: Boolean(row.can_detach),
+      ...readChannelMessageMetadata(this.database,row.id),
       attachments: attachmentsByMessage.get(row.id) ?? [],
     })).concat(externalMessageRows.map((row) => ({
       type: "message" as const,
@@ -10940,7 +10942,7 @@ export class SupportStore {
     groupId: string,
     messageIds: readonly string[],
   ): ConversationActionMessageRow[] {
-    this.assertEntityExists("Conversa", "whatsapp_groups", groupId);
+    this.assertEntityExists("Conversa", "conversations", groupId);
     const ids = [...new Set(messageIds.map((id) => id.trim()).filter(Boolean))];
     if (!ids.length) throw new ValidationError("Selecione ao menos uma mensagem");
     if (ids.length > 500) {
@@ -10966,6 +10968,7 @@ export class SupportStore {
         ids.find((id) => !found.has(id)) ?? "desconhecida",
       );
     }
+    if (rows.some(row=>readChannelMessageMetadata(this.database,row.id).deletedAt)) throw new ValidationError("Mensagens excluídas na origem não podem abrir ou receber novos vínculos de ticket.");
     const foreign = rows.find((message) => message.group_id !== groupId);
     if (foreign) {
       throw new ValidationError("Todas as mensagens devem pertencer à mesma conversa", {
@@ -11220,9 +11223,8 @@ export class SupportStore {
       const repeated = this.getConversationActionByRequestKey(requestKey);
       if (repeated) return repeated;
       if (action === "restore") {
-        const conversation = this.database
-          .prepare(
-            `SELECT suggestions_muted_at FROM whatsapp_groups WHERE id = ?`,
+        const conversation = this.prepare(
+            `SELECT suggestions_muted_at FROM conversations WHERE id = ?`,
           )
           .get(groupId) as { suggestions_muted_at: string | null } | undefined;
         if (!conversation) throw new NotFoundError("Conversa", groupId);
@@ -11311,10 +11313,9 @@ export class SupportStore {
   }
 
   private getConversationSummary(groupId: string): ConversationSummaryDto {
-    const row = this.database
-      .prepare(
+    const row = this.prepare(
         `SELECT
-           conversation.id, conversation.subject, conversation.external_jid,
+           conversation.id, conversation.subject, conversation.external_jid, conversation.conversation_scope,
            conversation.monitored, conversation.suggestions_muted_at,
            client.id AS client_id, client.name AS client_name,
            client.kind AS client_kind,
@@ -11377,7 +11378,7 @@ export class SupportStore {
                 )
               )
             ORDER BY message.occurred_at DESC, message.id DESC LIMIT 1) AS last_message_preview
-         FROM whatsapp_groups conversation
+         FROM conversations conversation
          JOIN clients client ON client.id = conversation.client_id
          WHERE conversation.id = ? AND client.ignored_at IS NULL`,
       )
@@ -11388,6 +11389,7 @@ export class SupportStore {
           external_jid: string;
           monitored: number;
           suggestions_muted_at: string | null;
+          conversation_scope: string;
           client_id: string;
           client_name: string;
           client_kind: ClientKind;
@@ -11401,17 +11403,19 @@ export class SupportStore {
         }
       | undefined;
     if (!row) throw new NotFoundError("Conversa", groupId);
-    const direct = isDirectConversationJid(row.external_jid);
+    const source = readChannelSource(this.database, groupId);
+    const direct = source ? row.conversation_scope === "direct" : isDirectConversationJid(row.external_jid ?? "");
     return {
+      ...(source ? { channel: source } : {}),
       id: row.id,
-      subject: direct
+      subject: source ? row.subject : direct
         ? this.getDirectConversationSubject(
             row.id,
             row.external_jid,
             row.subject,
           )
         : normalizeConversationSubject(row.subject, row.external_jid),
-      externalJid: row.external_jid,
+      externalJid: row.external_jid ?? "",
       scope: direct ? "direct" : "group",
       monitored: Boolean(row.monitored),
       suggestionsMuted: Boolean(row.suggestions_muted_at),
@@ -11436,10 +11440,9 @@ export class SupportStore {
     externalJid: string,
     storedSubject: string,
   ): string {
-    const candidates = this.database
-      .prepare(
+    const candidates = this.database.prepare(
         `SELECT
-           participant.external_jid,
+           COALESCE(participant.external_jid, participant.id) AS external_jid,
            participant.phone_e164,
            participant.display_name,
            MAX(message.occurred_at) AS last_message_at,
@@ -11522,10 +11525,9 @@ export class SupportStore {
 
     const jids = [...mentionedJids];
     const placeholders = jids.map(() => "?").join(", ");
-    const candidates = this.database
-      .prepare(
+    const candidates = this.database.prepare(
         `SELECT
-           participant.external_jid,
+           COALESCE(participant.external_jid, participant.id) AS external_jid,
            participant.phone_e164,
            participant.display_name,
            identity_link.phone_jid,

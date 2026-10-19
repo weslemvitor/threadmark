@@ -15,14 +15,14 @@ export function readRuntimeCounts(database: SupportDatabase): RuntimeCounts {
       `SELECT
         (SELECT COUNT(*) FROM messages) AS messages_stored,
         (SELECT COUNT(*)
-         FROM whatsapp_groups
+         FROM conversations
          WHERE external_jid LIKE '%@g.us') AS groups_discovered,
         (SELECT COUNT(DISTINCT conversation.id)
-         FROM whatsapp_groups conversation
+         FROM conversations conversation
          JOIN messages message ON message.group_id = conversation.id
          WHERE conversation.external_jid LIKE '%@g.us') AS groups_synced,
         (SELECT COUNT(*)
-         FROM whatsapp_groups conversation
+         FROM conversations conversation
          WHERE (conversation.external_jid LIKE '%@s.whatsapp.net'
             OR conversation.external_jid LIKE '%@lid')
            AND EXISTS (
@@ -43,7 +43,7 @@ export function readRuntimeCounts(database: SupportDatabase): RuntimeCounts {
            )) AS private_conversations,
         (SELECT COUNT(*) FROM tickets) AS tickets_created,
         (SELECT COUNT(*)
-         FROM whatsapp_groups
+         FROM conversations
          WHERE external_jid LIKE '%@g.us'
            AND monitored = 1) AS monitored_groups`,
     )

@@ -165,15 +165,15 @@ test("catálogo nunca oferece WhatsApp como ação de automação", () => {
   );
 });
 
-test("Intercom nativo legado não expõe ação incompleta no editor", () => {
+test("catálogo só oferece ações genéricas para conexões HTTP", () => {
   const catalog = catalogWithConnectedApps([{
-    id: "intercom-1",
-    type: "intercom",
-    name: "Intercom do suporte",
+    id: "custom-1",
+    type: "custom_http",
+    name: "API do suporte",
     description: null,
     status: "active",
     secretConfigured: true,
-    endpointPreview: "https://api.intercom.io/",
+    endpointPreview: "https://api.example.com/",
     lastTestAt: null,
     lastTestSucceeded: true,
     updatedAt: "2026-08-20T12:00:00.000Z",

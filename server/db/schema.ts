@@ -1,3 +1,4 @@
+import { channelMigration } from "./channel-migration.js";
 export interface Migration {
   version: number;
   name: string;
@@ -3813,4 +3814,5 @@ export const migrations: Migration[] = [
         ON integration_credentials(user_id, revoked_at, created_at DESC);
     `,
   },
+  channelMigration,
 ];

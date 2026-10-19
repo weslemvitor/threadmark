@@ -147,7 +147,7 @@ const NotificationsView = dynamic(
 const pageContent: Record<ViewId, { title: string; subtitle: string }> = {
   conversations: {
     title: "Conversas",
-    subtitle: "Histórico do WhatsApp e fila de triagem, sem envio de mensagens",
+    subtitle: "Histórico dos canais e fila de triagem, sem envio de mensagens",
   },
   inbox: {
     title: "Tickets",

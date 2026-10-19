@@ -97,6 +97,7 @@ export function KanbanCard({
           {selected ? <Check size={13} /> : null}
         </span>
       ) : null}
+      {ticket.channel ? <span className="px-3 pt-2 text-xs font-medium text-primary">{ticket.channel.name}</span> : null}
       <Button
         aria-label={
           selectable

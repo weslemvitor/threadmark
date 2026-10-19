@@ -109,7 +109,8 @@ export class DirectoryStore {
            (SELECT COUNT(DISTINCT COALESCE(
               identity.phone_jid,
               NULLIF(participant.phone_e164, ''),
-              participant.external_jid
+              participant.external_jid,
+              participant.id
             ))
             FROM group_participants membership
             JOIN participants participant ON participant.id = membership.participant_id
@@ -125,8 +126,8 @@ export class DirectoryStore {
               AND ticket.status NOT IN ('resolved', 'cancelled', 'archived')) AS open_ticket_count,
            (SELECT MAX(message.occurred_at) FROM messages message
             WHERE message.group_id = group_row.id) AS last_activity_at
-         FROM whatsapp_groups group_row
-         WHERE group_row.external_jid LIKE '%@g.us'
+         FROM conversations group_row
+         WHERE (group_row.external_jid LIKE '%@g.us' OR (group_row.connection_id IS NOT NULL AND group_row.conversation_scope = 'group'))
          ORDER BY group_row.subject COLLATE NOCASE, group_row.id`,
       )
       .all() as Array<{
@@ -143,7 +144,7 @@ export class DirectoryStore {
     return rows.map((row) => ({
       id: row.id,
       subject: row.subject,
-      externalJid: row.external_jid,
+      externalJid: row.external_jid ?? "",
       monitored: Boolean(row.monitored),
       participantCount: row.participant_count,
       ticketCount: row.ticket_count,
@@ -157,9 +158,9 @@ export class DirectoryStore {
       .prepare(
         `SELECT membership.participant_id, membership.group_id
          FROM group_participants membership
-         JOIN whatsapp_groups group_row ON group_row.id = membership.group_id
+         JOIN conversations group_row ON group_row.id = membership.group_id
          WHERE membership.active = 1
-           AND group_row.external_jid LIKE '%@g.us'`,
+           AND (group_row.external_jid LIKE '%@g.us' OR (group_row.connection_id IS NOT NULL AND group_row.conversation_scope = 'group'))`,
       )
       .all() as Array<{ participant_id: string; group_id: string }>;
     const activeGroupIdsByParticipant = new Map<string, Set<string>>();
@@ -228,7 +229,7 @@ export class DirectoryStore {
            participant.id,
            participant.display_name,
            participant.phone_e164,
-           participant.external_jid,
+           COALESCE(participant.external_jid, participant.id) AS external_jid,
            participant.created_at,
            participant.updated_at,
            EXISTS (

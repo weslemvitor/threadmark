@@ -11,6 +11,8 @@ import {
   TICKET_STATUSES,
 } from "../../shared/contracts.js";
 import { triageAnalysisSchema } from "../agent/validation.js";
+import { channelWriteSchema } from "../channels/normalize.js";
+import type { ChannelConnection } from "../../shared/channels.js";
 
 export const HEADLESS_SCHEMA_VERSION = "threadmark.headless.v1" as const;
 
@@ -18,6 +20,7 @@ const HEADLESS_COMMANDS = new Set([
   "agent",
   "capabilities",
   "categories",
+  "channels",
   "clients",
   "conversations",
   "dashboard",
@@ -166,7 +169,7 @@ const ticketNoteSchema = z
 
 const externalTicketMessagesSchema = z
   .object({
-    sourceType: z.literal("intercom_conversation"),
+    sourceType: z.string().trim().min(1).max(100),
     sourceConversationId: z.string().trim().min(1).max(200),
     messages: z
       .array(
@@ -386,6 +389,9 @@ async function execute(
   if (command === "categories") {
     return executeCategories(args, transport, options);
   }
+  if (command === "channels") {
+    return executeChannels(args, transport, options);
+  }
   if (command === "agent") {
     return executeAgent(args, transport, options);
   }
@@ -519,6 +525,76 @@ async function executeCategories(
   throw usageError("Use: threadmark categories list|create|delete.");
 }
 
+async function executeChannels(
+  args: ParsedArguments,
+  transport: HeadlessTransport,
+  options: HeadlessCommandOptions,
+) {
+  const action = args.positionals[0] ?? "list";
+  const usage = "Use: threadmark channels list|get|create|update|test|activate|pause.";
+  if (action === "list") {
+    assertAction(args, "list", "threadmark channels list [--json]");
+    return {command: "channels.list", data: await transport.request("/api/channels"), readOnly: true};
+  }
+  if (action === "get") {
+    if (args.positionals.length > 2) throw usageError(usage);
+    const channel = await resolveChannel(requirePositional(args, 1, "ID ou nome do canal"), transport);
+    return {command: "channels.get", data: channel, readOnly: true};
+  }
+  if (!["create", "update", "test", "activate", "pause"].includes(action)) throw usageError(usage);
+  if (args.positionals.length > (action === "create" ? 1 : 2)) throw usageError(usage);
+  const reference = action === "create" ? null : requirePositional(args, 1, "ID ou nome do canal");
+  const identity = await requireMutationIdentity(args, transport);
+  if (action === "create") {
+    const body = channelWriteSchema.parse(await readInput(args, options));
+    // The caller already owns this credential, so it never needs to pass through CLI output.
+    if (body.config.authentication === "bearer" && !body.bearerToken) {
+      throw usageError("Informe bearerToken no JSON privado de criação (mínimo de 32 caracteres). A CLI não exibe segredos.");
+    }
+    const created = await transport.request<{connection: ChannelConnection}>("/api/channels", {
+      method: "POST", body, ...identity,
+    });
+    return writeResult("channels.create", created.connection, identity);
+  }
+  const channel = await resolveChannel(reference!, transport);
+  const base = `/api/channels/${encodeURIComponent(channel.id)}`;
+  if (action === "update") {
+    const body = channelWriteSchema.parse(await readInput(args, options));
+    return writeResult("channels.update", await transport.request(base, {method: "PATCH", body, ...identity}), identity);
+  }
+  if (action === "test") {
+    const body = await readInput(args, options);
+    return writeResult("channels.test", await transport.request(`${base}/preview`, {method: "POST", body, ...identity}), identity);
+  }
+  return writeResult(`channels.${action}`, await transport.request(`${base}/status`, {
+    method: "PATCH", body: {status: action === "activate" ? "active" : "paused"}, ...identity,
+  }), identity);
+}
+
+async function resolveChannel(reference: string, transport: HeadlessTransport): Promise<ChannelConnection> {
+  const {items} = await transport.request<{items: ChannelConnection[]}>("/api/channels");
+  const exact = items.find(channel => channel.id === reference.trim());
+  if (exact) return exact;
+  const normalized = reference.trim().toLocaleLowerCase("pt-BR");
+  const matches = items.filter(channel => channel.name.toLocaleLowerCase("pt-BR") === normalized);
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw new HeadlessCliError("channel_ambiguous", "Mais de um canal corresponde ao nome. Use o ID exato.",
+      matches.map(channel => ({id: channel.id, name: channel.name})));
+  }
+  throw new HeadlessCliError("channel_not_found", "Canal não encontrado. Consulte `threadmark channels list --json`.");
+}
+
+async function channelFilter(args: ParsedArguments, transport: HeadlessTransport): Promise<string | undefined> {
+  const reference = option(args, "channel")?.trim();
+  if (args.flags.has("channel") || (args.values.has("channel") && !reference) || optionsFor(args, "channel").length > 1) {
+    throw usageError("Use --channel uma vez, com ID, nome, whatsapp ou all.");
+  }
+  if (!reference || reference === "all") return undefined;
+  if (reference === "whatsapp") return "whatsapp";
+  return (await resolveChannel(reference, transport)).id;
+}
+
 async function executeConversations(
   args: ParsedArguments,
   transport: HeadlessTransport,
@@ -529,6 +605,7 @@ async function executeConversations(
     appendIfPresent(params, "q", option(args, "query"));
     appendIfPresent(params, "attention", option(args, "attention"));
     appendIfPresent(params, "scope", option(args, "scope"));
+    appendIfPresent(params, "connectionId", await channelFilter(args, transport));
     appendIfPresent(params, "cursor", option(args, "cursor"));
     params.set("limit", String(parseLimit(option(args, "limit"), 20)));
     return {
@@ -590,6 +667,7 @@ async function executeTickets(
     const params = new URLSearchParams();
     appendIfPresent(params, "q", option(args, "query"));
     appendIfPresent(params, "clientId", option(args, "client"));
+    appendIfPresent(params, "connectionId", await channelFilter(args, transport));
     appendIfPresent(params, "order", option(args, "order"));
     for (const status of optionsFor(args, "status")) params.append("status", status);
     if (flag(args, "include-archived")) params.set("includeArchived", "true");
@@ -1105,6 +1183,7 @@ function headlessCapabilities() {
       secretsInOutput: false,
     },
     resources: {
+      channels: ["list", "get", "create", "update", "test", "activate", "pause"],
       agent: ["triage-status", "triage-claim", "triage-heartbeat", "triage-complete"],
       conversations: ["list", "get", "messages", "tickets"],
       triage: ["blocks", "analyze", "create", "attach", "ignore", "context", "restore"],
@@ -1126,6 +1205,13 @@ function headlessCapabilities() {
       operators: ["list"],
       clients: ["list"],
       dashboard: ["show"],
+    },
+    filters: {
+      channel: {
+        option: "--channel",
+        commands: ["conversations.list", "tickets.list"],
+        values: ["channel-id", "channel-name", "whatsapp", "all"],
+      },
     },
   };
 }

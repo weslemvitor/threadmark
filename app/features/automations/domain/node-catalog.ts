@@ -370,33 +370,7 @@ export const defaultAutomationNodeCatalog: AutomationNodeDefinition[] = [
     ],
     baseConfig: { appId: "linear", connectionId: "", actionId: "create_issue" },
   },
-  {
-    id: "app.intercom.create_article",
-    nodeType: "app_action",
-    category: "connected_app",
-    label: "Criar rascunho no Intercom",
-    description: "Cria um artigo revisável sem publicar automaticamente.",
-    icon: "book-open-text",
-    accent: "violet",
-    connected: false,
-    connectionLabel: "Intercom",
-    fields: [
-      {
-        key: "input.collectionId",
-        label: "Coleção",
-        type: "text",
-        required: true,
-      },
-      {
-        key: "input.documentId",
-        label: "Documentação do Threadmark",
-        type: "text",
-        required: true,
-        defaultValue: "{{documentation.id}}",
-      },
-    ],
-    baseConfig: { appId: "intercom", connectionId: "", actionId: "create_article" },
-  },
+
   {
     id: "app.custom.http_request",
     nodeType: "app_action",
@@ -552,9 +526,6 @@ export function catalogWithConnectedApps(
     });
   const connectedNodes: AutomationNodeDefinition[] = [];
   for (const connection of connections.filter((item) => item.status === "active")) {
-    // Conexões Intercom legadas não implementam ações no motor de automações.
-    // Preserve a configuração armazenada sem anunciar uma ação indisponível.
-    if (connection.type === "intercom") continue;
     if (connection.type === "mcp_remote") {
       for (const action of connection.actions?.filter((item) => item.automationEnabled) ?? []) {
         connectedNodes.push({

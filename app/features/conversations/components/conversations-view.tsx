@@ -245,6 +245,7 @@ export function ConversationsView({
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
+  const [channelFilter, setChannelFilter] = useState("all");
   const [filter, setFilter] = useState<ConversationFilter>("pending");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -321,6 +322,7 @@ export function ConversationsView({
   }, []);
 
   const conversationFilters = useMemo(() => ({
+    connectionId: channelFilter === "all" ? undefined : channelFilter,
     query: debouncedQuery,
     attention: filter === "pending" ? "pending" as const : "all" as const,
     scope:
@@ -329,7 +331,7 @@ export function ConversationsView({
         : filter === "direct"
           ? "direct" as const
           : undefined,
-  }), [debouncedQuery, filter]);
+  }), [debouncedQuery, filter, channelFilter]);
   const conversationFilterKey = JSON.stringify(conversationFilters);
 
   useEffect(() => {
@@ -1104,6 +1106,8 @@ export function ConversationsView({
   return (
     <div className="grid h-full min-h-0 grid-cols-[310px_minmax(360px,1fr)_292px] bg-card max-[1279px]:grid-cols-[292px_minmax(340px,1fr)_280px] max-[1050px]:grid-cols-[275px_minmax(310px,1fr)_265px] min-[761px]:max-[900px]:grid-cols-[260px_minmax(0,1fr)] max-[760px]:block max-[760px]:overflow-hidden">
       <ConversationDirectory
+        channelFilter={channelFilter}
+        onChannelFilterChange={setChannelFilter}
         keepingAllPending={keepingAllPending}
         conversationTotal={conversationTotal}
         conversations={conversations}

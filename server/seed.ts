@@ -701,7 +701,7 @@ export function seedPresentationData(config = loadConfig()): void {
         `SELECT
           (SELECT COUNT(*) FROM clients) AS clients,
           (SELECT COUNT(*) FROM client_stores WHERE active = 1) AS stores,
-          (SELECT COUNT(*) FROM whatsapp_groups) AS groups,
+          (SELECT COUNT(*) FROM conversations) AS groups,
           (SELECT COUNT(*) FROM messages) AS messages,
           (SELECT COUNT(*) FROM tickets WHERE status NOT IN ('resolved', 'cancelled', 'archived')) AS open_tickets`,
       )

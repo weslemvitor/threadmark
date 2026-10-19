@@ -1,3 +1,4 @@
+import { ChannelFilter } from "@/app/components/shared/channel-filter";
 import {
   CircleAlert,
   ListChecks,
@@ -34,6 +35,8 @@ const filterOptions: Array<{ id: ConversationFilter; label: string }> = [
 ];
 
 export function ConversationDirectory({
+  channelFilter,
+  onChannelFilterChange,
   conversations,
   conversationTotal,
   pendingTotal,
@@ -53,6 +56,8 @@ export function ConversationDirectory({
   onLoadMore,
   onSelect,
 }: {
+  channelFilter: string;
+  onChannelFilterChange(value: string): void;
   conversations: ConversationSummary[];
   conversationTotal: number;
   pendingTotal: number;
@@ -91,6 +96,7 @@ export function ConversationDirectory({
           <LockKeyhole size={12} /> <span>Somente leitura</span>
         </span>
       </div>
+      <div className="mx-3 mb-2"><ChannelFilter value={channelFilter} onValueChange={onChannelFilterChange}/></div>
       <label className="mx-3 mb-2 flex h-9 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-muted-foreground focus-within:border-primary/50 focus-within:ring-3 focus-within:ring-primary/10">
         <Search className="shrink-0" size={16} />
         <Input
@@ -184,7 +190,7 @@ export function ConversationDirectory({
             }
             description={
               filter === "pending"
-                ? "As mensagens foram triadas. A captura continua acompanhando o WhatsApp."
+                ? "As mensagens foram triadas. A captura dos canais continua ativa."
                 : "Ajuste a busca ou troque o filtro."
             }
           />

@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 
 import { migrateDatabase, migrations } from "../server/db/index.js";
 
-test("migração transforma a antiga API de artigos em conexão nativa do Intercom", () => {
+test("migração preserva conexão antiga como HTTP genérico pausado para revisão", () => {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
   try {
@@ -56,7 +56,7 @@ test("migração transforma a antiga API de artigos em conexão nativa do Interc
       secret_configured: number;
     };
     const config = JSON.parse(row.config_json) as { endpoint: string; endpointPreview: string };
-    assert.equal(row.provider_type, "intercom");
+    assert.equal(row.provider_type, "custom_http");
     assert.equal(config.endpoint, "https://api.intercom.io/");
     assert.equal(config.endpointPreview, "https://api.intercom.io/");
     assert.equal(row.ai_enabled, 1);

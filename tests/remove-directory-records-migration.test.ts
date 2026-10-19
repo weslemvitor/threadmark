@@ -52,13 +52,13 @@ test("migração remove registros e segmentos sem afetar grupos, pessoas e ticke
 
     const preservedTables = database.prepare(`
       SELECT name FROM sqlite_master
-      WHERE type = 'table' AND name IN ('whatsapp_groups', 'participants', 'tickets')
+      WHERE type = 'table' AND name IN ('conversations', 'participants', 'tickets')
       ORDER BY name
     `).all() as Array<{ name: string }>;
     assert.deepEqual(preservedTables.map((row) => row.name), [
+      "conversations",
       "participants",
       "tickets",
-      "whatsapp_groups",
     ]);
     assert.equal(
       (database.prepare(

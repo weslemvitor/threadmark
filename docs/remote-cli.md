@@ -72,7 +72,7 @@ Para revogar a credencial no servidor e removê-la do Keychain:
 threadmark remote logout production --json
 ```
 
-A API aceita essa credencial somente nos pares de método e rota usados pela família headless. Ela não autoriza runtime, shutdown, usuários, configurações, backup ou acesso ao banco. A identidade delegada de uma escrita deve ser o mesmo usuário vinculado à credencial. A identidade e as permissões são as do usuário vinculado ao token, independentemente do agente que executa a CLI.
+A API aceita essa credencial somente nos pares de método e rota usados pela família headless. Ela não autoriza runtime, shutdown, usuários, configurações gerais, backup ou acesso ao banco. A gestão de canais de coleta pela família `channels` exige proprietário ou administrador; consultas e filtros respeitam o acesso normal de leitura. A identidade delegada de uma escrita deve ser o mesmo usuário vinculado à credencial. A identidade e as permissões são as do usuário vinculado ao token, independentemente do agente que executa a CLI.
 
 HTTP sem TLS é recusado, exceto em loopback (`localhost`, `127.0.0.1` ou `::1`) para desenvolvimento local. A URL deve apontar para a origem, sem caminho adicional, query string, fragmento ou credenciais.
 
@@ -131,7 +131,9 @@ threadmark --remote production tickets status ticket-123 \
 
 A última chamada lê `update.json` no computador que invocou a CLI e o encaminha pela entrada padrão ao container como `--input -`; o caminho local nunca é enviado ao host remoto. A entrada é limitada a 64 KiB. `--input -` encaminha a entrada padrão local diretamente. Escritas continuam exigindo `--apply`, `--as`; a instância remota mantém a mesma resolução de ator e auditoria headless.
 
-São aceitas as famílias headless: `capabilities`, `operators`, `conversations`, `triage`, `tickets`, `categories`, `clients`, `dashboard` e `agent`. A CLI rejeita explicitamente comandos de ciclo de vida ou dados locais, como `on`, `off`, `start`, `stop`, `restore`, `service`, `backup`, `backups`, `configure` e similares. Não há fallback automático para a instância local quando um remoto não existe ou falha.
+São aceitas as famílias headless: `capabilities`, `operators`, `channels`, `conversations`, `triage`, `tickets`, `categories`, `clients`, `dashboard` e `agent`. A CLI rejeita explicitamente comandos de ciclo de vida ou dados locais, como `on`, `off`, `start`, `stop`, `restore`, `service`, `backup`, `backups`, `configure` e similares. Não há fallback automático para a instância local quando um remoto não existe ou falha.
+
+Para cadastrar, testar, ativar ou pausar canais e filtrar conversas/tickets por origem, consulte [Canais de coleta](channels.md#operação-pela-cli). Exemplo: `threadmark --remote production conversations list --channel whatsapp --json`. Arquivos privados de configuração e payloads seguem o mesmo transporte de `--input`, sem incluir segredos na saída JSON.
 
 ## Transporte SSH e limites
 

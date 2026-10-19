@@ -49,7 +49,7 @@ const metadataSchema = z.object({
 }).strict();
 
 const connectedAppSchema = z.object({
-  type: z.enum(["slack_webhook", "intercom", "custom_http", "mcp_remote"]),
+  type: z.enum(["slack_webhook", "custom_http", "mcp_remote"]),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1_000).nullable().optional(),
   enabled: z.boolean().default(true),
@@ -572,11 +572,7 @@ function validateConnectedApps(
     if (app.status !== "active") {
       throw new AutomationApiError(`Ative o app conectado “${app.name}” antes do fluxo.`);
     }
-    if (app.type === "intercom") {
-      throw new AutomationApiError(
-        "O Intercom nativo ainda não expõe etapas automáticas. Use uma conexão MCP para este fluxo.",
-      );
-    }
+
     if (app.type !== "mcp_remote") continue;
     const tool = app.mcpTools.find(
       (candidate) =>
@@ -643,15 +639,12 @@ function withActions(app: ConnectedAppDto) {
     actions:
       app.type === "slack_webhook"
         ? [{ id: "send_message", name: "Enviar mensagem", description: "Publica no canal do webhook." }]
-        : app.type === "intercom"
-          ? []
           : [{ id: "request", name: "Executar requisição", description: "Envia um payload para a API." }],
   };
 }
 
-function providerId(type: ConnectedAppType): "slack-webhook" | "intercom" | "custom-http" | "mcp-remote" {
+function providerId(type: ConnectedAppType): "slack-webhook" | "custom-http" | "mcp-remote" {
   if (type === "slack_webhook") return "slack-webhook";
-  if (type === "intercom") return "intercom";
   if (type === "mcp_remote") return "mcp-remote";
   return "custom-http";
 }

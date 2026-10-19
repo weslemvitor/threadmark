@@ -121,7 +121,7 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
             </DialogTitle>
             <DialogDescription className="mt-1 text-sm leading-relaxed">
               {props.mode === "create"
-                ? "Revise a leitura inicial antes de criar. Nada será enviado ao WhatsApp."
+                ? "Revise a leitura inicial antes de criar. Nada será enviado ao canal de origem."
                 : "As mensagens passam a compor o contexto do ticket escolhido. Tickets resolvidos continuam disponíveis até serem arquivados."}
             </DialogDescription>
           </div>
@@ -254,7 +254,7 @@ export function ConversationActionDialog(props: ConversationActionDialogProps) {
         )}
 
         <footer className="flex items-center justify-between gap-3 border-t border-border bg-muted/20 p-4 max-[760px]:flex-col max-[760px]:items-stretch max-[760px]:pb-[max(12px,env(safe-area-inset-bottom))]">
-          <span className="text-xs text-muted-foreground max-[760px]:text-center">Ação interna · WhatsApp somente leitura</span>
+          <span className="text-xs text-muted-foreground max-[760px]:text-center">Ação interna · Canal de origem somente leitura</span>
           <div className="flex gap-2">
             <Button className="flex-1 sm:flex-none" onClick={props.onCancel} type="button" variant="outline">Cancelar</Button>
             <Button className="flex-1 sm:flex-none" disabled={!canSubmit || props.busy} type="submit" variant="default">

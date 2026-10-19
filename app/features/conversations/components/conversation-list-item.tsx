@@ -66,7 +66,7 @@ export function ConversationListItem({
         <span className="mt-1 flex min-w-0 items-center gap-1.5 truncate text-xs text-muted-foreground">
           <span className="truncate">{conversation.client.name}</span>
           <em className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-2xs font-semibold not-italic text-primary">
-            {conversation.scope === "group" ? "Grupo" : "Privado"}
+            {conversation.channel?.name ?? (conversation.scope === "group" ? "Grupo" : "Privado")}
           </em>
         </span>
         <span className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">

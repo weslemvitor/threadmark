@@ -16,13 +16,11 @@ import { publicHeaderSchema, safeHttpUrlSchema } from "./validation.js";
 
 export const CONNECTED_APP_TYPES = [
   "slack_webhook",
-  "intercom",
   "custom_http",
   "mcp_remote",
 ] as const;
 export type ConnectedAppType = (typeof CONNECTED_APP_TYPES)[number];
 export type ConnectedAppStatus = "active" | "disabled" | "error";
-export type ConnectedAppNativeProvider = "intercom";
 
 export type ConnectedAppMcpTool = McpDiscoveredTool & {
   automationEnabled: boolean;
@@ -66,7 +64,7 @@ export interface ConnectedAppWriteInput {
 export interface ResolvedConnectedApp {
   id: string;
   type: ConnectedAppType;
-  providerId: "slack-webhook" | "intercom" | "custom-http" | "mcp-remote";
+  providerId: "slack-webhook" | "custom-http" | "mcp-remote";
   config: Record<string, unknown>;
 }
 
@@ -167,24 +165,8 @@ export class ConnectedAppService {
     return toDto(this.requireRow(id));
   }
 
-  nativeProvider(id: string): ConnectedAppNativeProvider | null {
-    const row = this.requireRow(id);
-    if (row.provider_type === "intercom") return "intercom";
-    if (row.provider_type !== "custom_http") return null;
-    const endpoint = parseStoredConfig(row.config_json).endpoint;
-    if (!endpoint) return null;
-    try {
-      return isIntercomApiHost(new URL(endpoint).hostname) ? "intercom" : null;
-    } catch {
-      return null;
-    }
-  }
-
   async create(input: ConnectedAppWriteInput, actor: string): Promise<ConnectedAppDto> {
     const parsed = this.parseWrite(input);
-    if (parsed.type === "intercom" && !parsed.secret?.trim()) {
-      throw new ConnectedAppSettingsError("Informe o access token da API do Intercom.");
-    }
     const id = randomUUID();
     const secretRef = `connected-app:${id}:credential`;
     const stored = await this.prepareStoredConfig(parsed, secretRef, false);
@@ -309,8 +291,6 @@ export class ConnectedAppService {
       const now = new Date().toISOString();
       const message = row.provider_type === "mcp_remote"
         ? await this.refreshMcpTools(row)
-        : this.nativeProvider(id) === "intercom"
-          ? await this.validateIntercomAccess(row, url.origin)
           : "Configuração e destino validados; nenhuma ação externa foi executada.";
       this.recordTest(id, true, message, now);
       return { ok: true, message };
@@ -363,7 +343,7 @@ export class ConnectedAppService {
     return {
       id,
       type: row.provider_type,
-      providerId: row.provider_type === "intercom" ? "intercom" : "custom-http",
+      providerId: "custom-http",
       config: parsed,
     };
   }
@@ -417,14 +397,7 @@ export class ConnectedAppService {
       if (parsed.type === "slack_webhook" && endpoint.protocol !== "https:") {
         throw new ConnectedAppSettingsError("O webhook do Slack precisa usar HTTPS.");
       }
-      if (parsed.type === "intercom") {
-        if (endpoint.protocol !== "https:" || !isIntercomApiHost(endpoint.hostname)) {
-          throw new ConnectedAppSettingsError("Selecione uma região válida da API do Intercom.");
-        }
-        endpoint.pathname = "/";
-        endpoint.search = "";
-        endpoint.hash = "";
-      }
+
       for (const [name, value] of Object.entries(parsed.headers)) {
         publicHeaderSchema.parse({ name, value });
       }
@@ -507,41 +480,6 @@ export class ConnectedAppService {
          WHERE id = ?`,
       )
       .run(at, succeeded ? "success" : "failed", message.slice(0, 1_000), id);
-  }
-
-  private async validateIntercomAccess(
-    row: ConnectedAppRow,
-    origin: string,
-  ): Promise<string> {
-    const authorization = row.secret_ref ? await this.secrets.get(row.secret_ref) : null;
-    if (!authorization) {
-      throw new ConnectedAppSettingsError("Informe o access token da API do Intercom.");
-    }
-    const headers = {
-      Accept: "application/json",
-      Authorization: authorization,
-      "Intercom-Version": "2.16",
-    };
-    const checks = [
-      { label: "conversas", path: "/conversations?per_page=1" },
-      { label: "autor", path: "/me" },
-      { label: "coleções", path: "/help_center/collections?per_page=1" },
-    ];
-    for (const check of checks) {
-      const response = await this.fetchImpl(new URL(check.path, origin), {
-        method: "GET",
-        headers,
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) {
-        throw new ConnectedAppSettingsError(
-          `O token do Intercom não possui acesso a ${check.label} (HTTP ${response.status}).`,
-          "unavailable",
-        );
-      }
-      await response.body?.cancel().catch(() => undefined);
-    }
-    return "Intercom conectado: conversas, autor e coleções estão acessíveis. Artigos serão criados somente como rascunho após confirmação.";
   }
 
   private requireRow(id: string): ConnectedAppRow {
@@ -627,9 +565,7 @@ function requiredActor(value: string): string {
   return actor;
 }
 
-function isIntercomApiHost(hostname: string): boolean {
-  return /^(?:api|api\.eu|api\.au)\.intercom\.io$/i.test(hostname);
-}
+
 
 function normalizeAuthorization(value: string): string {
   return /^(?:Bearer|Basic)\s+/i.test(value) ? value : `Bearer ${value}`;

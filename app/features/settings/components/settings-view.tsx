@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/app/components/ui/tabs";
 import { GeneralSection } from "./sections/general-section";
 import { UsersSection } from "./sections/users-section";
 import { StaffSection } from "./sections/staff-section";
+import { ChannelsSection } from "./sections/channels-section";
 import { WhatsappSection } from "./sections/whatsapp-section";
 import { DataSection } from "./sections/data-section";
 import { SecuritySection } from "./sections/security-section";
@@ -42,6 +43,7 @@ const TABS: TabDefinition[] = [
   { id: "users", label: "Usuários", icon: UsersRound },
   { id: "staff", label: "Equipe WhatsApp", icon: UserRound },
   { id: "whatsapp", label: "WhatsApp", icon: QrCode },
+  { id: "channels", label: "Canais", icon: Settings2 },
   { id: "data", label: "Dados", icon: Database },
   { id: "security", label: "Segurança", icon: ShieldCheck },
 ];
@@ -301,6 +303,7 @@ export function SettingsView({
               runtime={runtime}
             />
           ) : null}
+          {activeTab === "channels" ? <ChannelsSection canManage={canManage} /> : null}
           {activeTab === "data" ? (
             <DataSection canManage={canManage} onFeedback={showFeedback} />
           ) : null}

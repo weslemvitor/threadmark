@@ -5,6 +5,10 @@ Threadmark é o sistema operacional local de suporte. Ele captura mensagens inbo
 ```text
 WhatsApp / Baileys (somente entrada)
   -> normalização, aliases e deduplicação
+
+Canais configuráveis HTTP/JSON (somente entrada)
+  -> autenticação por conexão, mapeamento e fila durável
+  -> mensagens e conversas neutras
   -> SQLite + anexos privados
       -> conversas e Diretório
       -> fila de triagem
@@ -166,3 +170,7 @@ A remoção física futura exige backup, migração explícita e validação de 
 Investigações profundas, Git, Linear, AWS, bancos readonly, logs e conhecimento privado são extensões do ambiente do agente. A segurança deve existir nas próprias credenciais e tools — por exemplo, usuário PostgreSQL tecnicamente readonly — além das instruções do modelo.
 
 O SQLite local continua sendo a fonte operacional, independentemente do agente escolhido.
+
+## Canais configuráveis
+
+A coleta HTTP/JSON usa conexões independentes, sem um catálogo de fornecedores no núcleo. A configuração, a autenticação, o contrato de eventos e os procedimentos de migração estão em [channels.md](channels.md). O WhatsApp preserva seu transporte e seus identificadores, compartilhando o modelo de conversas, a triagem e os tickets.
