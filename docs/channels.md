@@ -141,7 +141,7 @@ As rotas abaixo exigem autenticação normal da instalação; alterações, pré
 
 A migração 74 é executada pelo mecanismo existente de upgrade e backup pré-migração. Ela cria `conversations` como armazenamento neutro, preservando IDs e referências. `whatsapp_groups` permanece como visão de compatibilidade dos registros nativos; novos canais não criam contas WhatsApp nem JIDs fictícios.
 
-Históricos externos importados são vinculados a mensagens canônicas, conservando IDs, conteúdo, autoria e tickets, sem duplicar contagens ou timeline. Na ausência de uma identidade confiável entre importações, a migração mantém conexões separadas, pausadas para revisão.
+Históricos externos importados são vinculados a mensagens canônicas, conservando IDs, conteúdo, autoria e tickets, sem duplicar contagens ou timeline. Na ausência de uma identidade confiável entre importações, a migração mantém conexões internas separadas e pausadas. Esses registros de “Importação anterior” preservam os vínculos do histórico e não aparecem na listagem de canais da interface, da API ou da CLI, nem nos seletores de canal. As mensagens continuam acessíveis nos tickets.
 
 Configurações antigas específicas de fornecedores tornam-se HTTP genérico pausado, sem apagar referências aos segredos. Não são feitos testes remotos ou consultas a endpoints específicos durante a migração. Automações não relacionadas e a captura do WhatsApp continuam preservadas.
 
