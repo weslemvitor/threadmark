@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import test from "node:test";
 import { createDatabase } from "../server/db/index.js";
 import { SupportStore } from "../server/domain/support-store.js";
@@ -18,9 +18,10 @@ const sample = {
 async function fixture(configInput: unknown = {}) {
   const database = createDatabase(":memory:"); const store = new SupportStore(database);
   const secrets = new Map<string,string>();
+  const signatureSecret = randomBytes(32).toString("base64url");
   const channels = new ChannelService(store,{set:async (key,value) => {secrets.set(key,value);},get:async key=>secrets.get(key) ?? null});
-  const result = await channels.create({name:"Canal livre",config:channelConfigSchema.parse(configInput),signatureSecret:"test-signature-key-with-32-characters"},"Operador");
-  return {database,store,channels,...result};
+  const result = await channels.create({name:"Canal livre",config:channelConfigSchema.parse(configInput),signatureSecret},"Operador");
+  return {database,store,channels,signatureSecret,...result};
 }
 function activate(channels: ChannelService,id: string,payload: unknown = sample) {
   channels.preview(id,payload); channels.setStatus(id,"active");
@@ -235,7 +236,7 @@ test("mudança de configuração exige novo teste e anexos externos permanecem r
 
 test("assinatura HMAC valida o corpo exato e rejeita alterações", async () => {
   const f=await fixture({authentication:"hmac_sha256"});
-  try {activate(f.channels,f.connection.id);const raw=JSON.stringify(sample);const signature=createHmac("sha256","test-signature-key-with-32-characters").update(raw).digest("hex");
+  try {activate(f.channels,f.connection.id);const raw=JSON.stringify(sample);const signature=createHmac("sha256",f.signatureSecret).update(raw).digest("hex");
     await f.channels.authenticate(f.connection.id,new Headers({"X-Channel-Signature":signature}),raw);
     await assert.rejects(f.channels.authenticate(f.connection.id,new Headers({"X-Channel-Signature":signature}),raw+" "),/inválida/);
   } finally {f.database.close();}
