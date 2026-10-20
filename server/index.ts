@@ -481,6 +481,40 @@ const changePasswordInputSchema = z
   })
   .strict();
 
+const workTimePeriodSchema = z
+  .object({
+    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Informe um horário inicial válido"),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Informe um horário final válido"),
+  })
+  .strict()
+  .refine((period) => period.startTime < period.endTime, {
+    message: "O término precisa ser depois do início",
+    path: ["endTime"],
+  });
+
+const workDayScheduleSchema = z
+  .object({
+    dayOfWeek: z.number().int().min(1).max(7),
+    periods: z
+      .array(workTimePeriodSchema)
+      .min(1)
+      .max(4)
+      .refine(
+        (periods) => periods.every((period, index) => index === 0 || periods[index - 1]!.endTime <= period.startTime),
+        "Os períodos do dia não podem se sobrepor e precisam estar em ordem",
+      ),
+  })
+  .strict();
+
+const workScheduleSchema = z
+  .object({
+    days: z
+      .array(workDayScheduleSchema)
+      .max(7)
+      .refine((days) => new Set(days.map((day) => day.dayOfWeek)).size === days.length, "Os dias não podem se repetir"),
+  })
+  .strict();
+
 const workspaceSettingsInputSchema = z
   .object({
     organizationName: z.string().trim().min(1).max(160).optional(),
@@ -492,6 +526,7 @@ const workspaceSettingsInputSchema = z
       .max(100)
       .refine(isValidTimeZone, "Informe um fuso horário IANA válido")
       .optional(),
+    workSchedule: workScheduleSchema.optional(),
   })
   .strict()
   .refine((input) => Object.keys(input).length > 0, {
@@ -1003,10 +1038,15 @@ function hasOperationalData(database: SupportDatabase): boolean {
 function readWorkspaceSettings(
   database: SupportDatabase,
   fallbackName: string,
-): { organizationName: string; workspaceName: string; timezone: string } {
+): {
+  organizationName: string;
+  workspaceName: string;
+  timezone: string;
+  workSchedule: { days: Array<{ dayOfWeek: number; periods: Array<{ startTime: string; endTime: string }> }> };
+} {
   const row = database
     .prepare(
-      `SELECT organization_name, workspace_name, timezone
+      `SELECT organization_name, workspace_name, timezone, work_schedule_json
        FROM local_app_settings WHERE singleton = 1`,
     )
     .get() as
@@ -1014,13 +1054,63 @@ function readWorkspaceSettings(
         organization_name: string;
         workspace_name: string;
         timezone: string;
+        work_schedule_json: string;
       }
     | undefined;
   return {
     organizationName: row?.organization_name ?? fallbackName,
     workspaceName: row?.workspace_name ?? fallbackName,
     timezone: row?.timezone ?? "UTC",
+    workSchedule: parseWorkSchedule(row?.work_schedule_json),
   };
+}
+
+function parseWorkSchedule(value: string | undefined): {
+  days: Array<{ dayOfWeek: number; periods: Array<{ startTime: string; endTime: string }> }>;
+} {
+  const fallback = {
+    days: [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+      dayOfWeek,
+      periods: [{ startTime: "09:00", endTime: "18:00" }],
+    })),
+  };
+  if (!value) return fallback;
+  try {
+    const schedule = JSON.parse(value) as Record<string, unknown>;
+    if (Array.isArray(schedule.days)) {
+      const parsed = workScheduleSchema.safeParse({ days: schedule.days });
+      if (parsed.success) {
+        return {
+          days: [...parsed.data.days]
+            .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
+            .map((day) => ({ ...day, periods: [...day.periods].sort((a, b) => a.startTime.localeCompare(b.startTime)) })),
+        };
+      }
+    } else if (
+      Array.isArray(schedule.daysOfWeek) &&
+      typeof schedule.startTime === "string" &&
+      /^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.startTime) &&
+      typeof schedule.endTime === "string" &&
+      /^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.endTime) &&
+      schedule.startTime < schedule.endTime
+    ) {
+      const days = schedule.daysOfWeek.filter(
+        (day): day is number => typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 7,
+      );
+      const legacySchedule = workScheduleSchema.safeParse({
+        days: [...new Set(days)].map((dayOfWeek) => ({
+          dayOfWeek,
+          periods: [{ startTime: schedule.startTime as string, endTime: schedule.endTime as string }],
+        })),
+      });
+      if (legacySchedule.success) {
+        return { days: legacySchedule.data.days };
+      }
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
 }
 
 function sessionResponse(
@@ -1522,17 +1612,20 @@ function createApiAppInternal(
       organizationName: input.organizationName ?? current.organizationName,
       workspaceName: input.workspaceName ?? current.workspaceName,
       timezone: input.timezone ?? current.timezone,
+      workSchedule: input.workSchedule ?? current.workSchedule,
     };
     store.database
       .prepare(
         `UPDATE local_app_settings
-         SET organization_name = ?, workspace_name = ?, timezone = ?, updated_at = ?
+         SET organization_name = ?, workspace_name = ?, timezone = ?,
+             work_schedule_json = ?, updated_at = ?
          WHERE singleton = 1`,
       )
       .run(
         next.organizationName,
         next.workspaceName,
         next.timezone,
+        JSON.stringify(next.workSchedule),
         new Date().toISOString(),
       );
     return context.json(next);

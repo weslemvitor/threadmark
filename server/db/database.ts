@@ -94,6 +94,7 @@ export function migrateDatabase(database: SupportDatabase): void {
     ) STRICT;
   `);
 
+  normalizeLegacyMigrationMarkers(database);
   const appliedVersions = readAppliedMigrationVersions(database);
 
   for (const migration of migrations) {
@@ -126,6 +127,39 @@ export function migrateDatabase(database: SupportDatabase): void {
       }
     }
   }
+}
+
+/**
+ * Early PR builds used version 74 for workspace_work_schedule. Version 74 is
+ * now configurable_inbound_channels, so move the legacy marker before applying
+ * migrations; this lets both schema changes run without reapplying the column.
+ */
+function normalizeLegacyMigrationMarkers(database: SupportDatabase): void {
+  const legacySchedule = database
+    .prepare(
+      "SELECT version FROM schema_migrations WHERE version = 74 AND name = ?",
+    )
+    .get("workspace_work_schedule") as { version: number } | undefined;
+  if (!legacySchedule) return;
+
+  const version75 = database
+    .prepare("SELECT name FROM schema_migrations WHERE version = 75")
+    .get() as { name: string } | undefined;
+  if (version75) {
+    if (version75.name !== "workspace_work_schedule") {
+      throw new Error(
+        `Não foi possível reconciliar a migração workspace_work_schedule com a versão 75 já aplicada (${version75.name})`,
+      );
+    }
+    database
+      .prepare("DELETE FROM schema_migrations WHERE version = 74 AND name = ?")
+      .run("workspace_work_schedule");
+    return;
+  }
+
+  database
+    .prepare("UPDATE schema_migrations SET version = 75 WHERE version = 74 AND name = ?")
+    .run("workspace_work_schedule");
 }
 
 function readAppliedMigrationVersions(database: SupportDatabase): Set<number> {

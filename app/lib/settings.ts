@@ -17,7 +17,29 @@ export interface WorkspaceSettings {
   organizationName: string;
   workspaceName: string;
   timezone: string;
+  workSchedule: WorkSchedule;
 }
+
+export interface WorkTimePeriod {
+  startTime: string;
+  endTime: string;
+}
+
+export interface WorkDaySchedule {
+  dayOfWeek: number;
+  periods: WorkTimePeriod[];
+}
+
+export interface WorkSchedule {
+  days: WorkDaySchedule[];
+}
+
+export const DEFAULT_WORK_SCHEDULE: WorkSchedule = {
+  days: [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+    dayOfWeek,
+    periods: [{ startTime: "09:00", endTime: "18:00" }],
+  })),
+};
 
 export interface SettingsUser {
   id: string;
@@ -197,10 +219,53 @@ function roleValue(value: unknown): SettingsRole {
 
 function normalizeWorkspace(value: unknown): WorkspaceSettings {
   const object = asObject(value);
+  const schedule = object.workSchedule && typeof object.workSchedule === "object" && !Array.isArray(object.workSchedule)
+    ? (object.workSchedule as JsonObject)
+    : {};
+  const isClockTime = (time: unknown): time is string =>
+    typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
+  const normalizedDays = Array.isArray(schedule.days)
+    ? schedule.days.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+        const day = candidate as JsonObject;
+        const dayOfWeek = day.dayOfWeek;
+        const periods = Array.isArray(day.periods)
+          ? day.periods.flatMap((period) => {
+              if (!period || typeof period !== "object" || Array.isArray(period)) return [];
+              const range = period as JsonObject;
+              if (!isClockTime(range.startTime) || !isClockTime(range.endTime) || range.startTime >= range.endTime) return [];
+              return [{ startTime: range.startTime, endTime: range.endTime }];
+            })
+          : [];
+        return typeof dayOfWeek === "number" && Number.isInteger(dayOfWeek) && dayOfWeek >= 1 && dayOfWeek <= 7 && periods.length > 0
+          ? [{ dayOfWeek, periods }]
+          : [];
+      })
+    : Array.isArray(schedule.daysOfWeek) &&
+        isClockTime(schedule.startTime) &&
+        isClockTime(schedule.endTime) &&
+        schedule.startTime < schedule.endTime
+      ? schedule.daysOfWeek
+          .filter((day): day is number => typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 7)
+          .map((dayOfWeek) => ({
+            dayOfWeek,
+            periods: [{ startTime: schedule.startTime as string, endTime: schedule.endTime as string }],
+          }))
+      : [];
+  const days = [...new Map(normalizedDays.map((day) => [day.dayOfWeek, day])).values()]
+    .sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+  const validLegacyShape = Array.isArray(schedule.daysOfWeek) &&
+    isClockTime(schedule.startTime) &&
+    isClockTime(schedule.endTime) &&
+    schedule.startTime < schedule.endTime;
+  const hasExplicitSchedule = Array.isArray(schedule.days)
+    ? schedule.days.length === 0 || days.length > 0
+    : validLegacyShape;
   return {
     organizationName: stringValue(object.organizationName),
     workspaceName: stringValue(object.workspaceName),
     timezone: stringValue(object.timezone, "UTC"),
+    workSchedule: { days: hasExplicitSchedule ? days : DEFAULT_WORK_SCHEDULE.days },
   };
 }
 

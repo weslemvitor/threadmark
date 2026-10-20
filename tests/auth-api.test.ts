@@ -113,6 +113,83 @@ test("API exige sessão, conclui bootstrap e aplica papéis sem confiar no naveg
       headers: { cookie: viewerCookie! },
     });
     assert.equal(readableWorkspace.status, 200);
+    assert.deepEqual(((await readableWorkspace.json()) as { workSchedule: unknown }).workSchedule, {
+      days: [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+        dayOfWeek,
+        periods: [{ startTime: "09:00", endTime: "18:00" }],
+      })),
+    });
+
+    store.database
+      .prepare("UPDATE local_app_settings SET work_schedule_json = ? WHERE singleton = 1")
+      .run(JSON.stringify({
+        daysOfWeek: [1, 2, 3, 4, 5],
+        startTime: "08:00",
+        endTime: "16:30",
+      }));
+    const migratedWorkspace = await app.request("/api/settings/workspace", {
+      headers: { cookie: viewerCookie! },
+    });
+    assert.deepEqual(((await migratedWorkspace.json()) as { workSchedule: unknown }).workSchedule, {
+      days: [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+        dayOfWeek,
+        periods: [{ startTime: "08:00", endTime: "16:30" }],
+      })),
+    });
+
+    const workSchedule = {
+      days: [
+        {
+          dayOfWeek: 1,
+          periods: [
+            { startTime: "09:00", endTime: "12:00" },
+            { startTime: "13:00", endTime: "18:00" },
+          ],
+        },
+        { dayOfWeek: 3, periods: [{ startTime: "08:30", endTime: "17:15" }] },
+      ],
+    };
+    const scheduleUpdate = await app.request("/api/settings/workspace", {
+      method: "PATCH",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({ workSchedule }),
+    });
+    assert.equal(scheduleUpdate.status, 200);
+    assert.deepEqual(((await scheduleUpdate.json()) as { workSchedule: unknown }).workSchedule, workSchedule);
+    const invalidSchedule = await app.request("/api/settings/workspace", {
+      method: "PATCH",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({
+        workSchedule: {
+          days: [
+            {
+              dayOfWeek: 1,
+              periods: [
+                { startTime: "09:00", endTime: "14:00" },
+                { startTime: "13:00", endTime: "18:00" },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    assert.equal(invalidSchedule.status, 400);
+    const savedWorkspace = await app.request("/api/settings/workspace", {
+      headers: { cookie: cookie! },
+    });
+    assert.deepEqual(((await savedWorkspace.json()) as { workSchedule: unknown }).workSchedule, workSchedule);
+
+    const disableSchedule = await app.request("/api/settings/workspace", {
+      method: "PATCH",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({ workSchedule: { days: [] } }),
+    });
+    assert.equal(disableSchedule.status, 200);
+    assert.deepEqual(((await disableSchedule.json()) as { workSchedule: unknown }).workSchedule, { days: [] });
+    const disabledWorkspace = await app.request("/api/settings/workspace", {
+      headers: { cookie: cookie! },
+    });
+    assert.deepEqual(((await disabledWorkspace.json()) as { workSchedule: unknown }).workSchedule, { days: [] });
 
     const invalidTimezone = await app.request("/api/settings/workspace", {
       method: "PATCH",

@@ -3815,4 +3815,13 @@ export const migrations: Migration[] = [
     `,
   },
   channelMigration,
+  {
+    version: 75,
+    name: "workspace_work_schedule",
+    sql: `
+      ALTER TABLE local_app_settings
+        ADD COLUMN work_schedule_json TEXT NOT NULL
+          DEFAULT '{"days":[{"dayOfWeek":1,"periods":[{"startTime":"09:00","endTime":"18:00"}]},{"dayOfWeek":2,"periods":[{"startTime":"09:00","endTime":"18:00"}]},{"dayOfWeek":3,"periods":[{"startTime":"09:00","endTime":"18:00"}]},{"dayOfWeek":4,"periods":[{"startTime":"09:00","endTime":"18:00"}]},{"dayOfWeek":5,"periods":[{"startTime":"09:00","endTime":"18:00"}]}]}';
+    `,
+  },
 ];

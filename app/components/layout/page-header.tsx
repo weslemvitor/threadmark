@@ -12,6 +12,7 @@ type PageHeaderProps = {
   onRefresh: () => void;
   onOpenMenu: () => void;
   unreadNotifications: number;
+  onOpenNotificationPreview: () => void;
   onOpenNotifications: () => void;
   onOpenNotificationTarget: (targetUrl: string) => void;
   onUnreadNotificationsChange: (count: number) => void;
@@ -25,6 +26,7 @@ export function PageHeader({
   onRefresh,
   onOpenMenu,
   unreadNotifications,
+  onOpenNotificationPreview,
   onOpenNotifications,
   onOpenNotificationTarget,
   onUnreadNotificationsChange,
@@ -77,6 +79,7 @@ export function PageHeader({
           {connectionLabel}
         </div>
         <NotificationPreview
+          onOpenPreview={onOpenNotificationPreview}
           onOpenAll={onOpenNotifications}
           onOpenTarget={onOpenNotificationTarget}
           onUnreadChange={onUnreadNotificationsChange}
